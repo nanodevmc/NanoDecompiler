@@ -1,15 +1,88 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import * as zlib from "zlib";
-import { spawn } from "child_process";
+import { execFile, spawn } from "child_process";
+import { promisify } from "util";
+import { app } from "electron";
 import * as tar from "tar";
 import { readJarSummaryNative, type JarSummary } from "./jarSummary";
+import { listZipEntries } from "./zipReader";
+
+const execFileAsync = promisify(execFile);
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const unrar = require("node-unrar-js");
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const sevenBin = require("7zip-bin");
+
+// Лимиты на распаковку НЕДОВЕРЕННЫХ архивов (zip/tar-bomb): без них архив в
+// несколько килобайт мог развернуться в сотни гигабайт и забить диск.
+const MAX_EXTRACT_TOTAL_BYTES = 8 * 1024 * 1024 * 1024; // 8 ГиБ суммарно
+const MAX_EXTRACT_ENTRIES = 200000;
+// Старые временные папки распаковки (после падения приложения/закрытия без
+// очистки) подчищаем при старте - иначе они копились бесконечно.
+const STALE_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Корень временных папок распаковки (тот же путь использует C++ движок). */
+export function archivesRootDir(): string {
+  return path.join(os.tmpdir(), "NanoDecompiler", "archives");
+}
+
+/** Удаляет папки распаковки старше STALE_TEMP_MAX_AGE_MS. Безопасно вызывать на старте. */
+export async function sweepStaleArchiveTemps(maxAgeMs: number = STALE_TEMP_MAX_AGE_MS): Promise<void> {
+  const root = archivesRootDir();
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(root);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const name of names) {
+    const full = path.join(root, name);
+    try {
+      const st = await fs.promises.lstat(full);
+      if (st.isSymbolicLink()) {
+        await fs.promises.unlink(full);
+        continue;
+      }
+      if (st.isDirectory() && now - st.mtimeMs > maxAgeMs) {
+        await fs.promises.rm(full, { recursive: true, force: true });
+      }
+    } catch {
+      // занято/нет прав - попробуем при следующем запуске
+    }
+  }
+}
+
+/** Суммарный размер файлов в каталоге; прекращает обход, как только превышен limit. */
+async function dirSizeExceeds(dir: string, limit: number): Promise<boolean> {
+  let total = 0;
+  const stack = [dir];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(cur, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      const full = path.join(cur, e.name);
+      if (e.isDirectory()) {
+        stack.push(full);
+      } else if (e.isFile()) {
+        try {
+          total += (await fs.promises.stat(full)).size;
+        } catch {
+          // файл исчез - пропускаем
+        }
+        if (total > limit) return true;
+      }
+    }
+  }
+  return false;
+}
 
 export interface ArchiveProgressEvent {
   archivePath: string;
@@ -62,6 +135,17 @@ export function isSupportedArchive(filePath: string): boolean {
   );
 }
 
+/**
+ * Каталог для кэша распакованного из asar 7za. Раньше это был
+ * `os.tmpdir()/NanoDecompiler/bin` - общий предсказуемый путь (в /tmp на
+ * Linux/macOS его может заранее создать и подложить свой "7za" любой
+ * локальный пользователь/процесс, и мы бы его запустили). Теперь - каталог
+ * данных самого приложения, доступный только текущему пользователю.
+ */
+function userBinDir(): string {
+  return path.join(app.getPath("userData"), "bin");
+}
+
 /** Получает путь к бинарнику 7za, с поддержкой asar.unpacked и авто-извлечения */
 function get7zaPath(): string | null {
   const binName = process.platform === "win32" ? "7za.exe" : "7za";
@@ -73,16 +157,20 @@ function get7zaPath(): string | null {
         const unpacked = p.replace("app.asar", "app.asar.unpacked");
         if (fs.existsSync(unpacked)) return unpacked;
 
-        // Авто-извлечение бинарника из виртуального app.asar во временный кэш
+        // Авто-извлечение бинарника из виртуального app.asar в кэш приложения
         try {
-          const cachedBin = path.join(os.tmpdir(), "NanoDecompiler", "bin", binName);
+          const cachedBin = path.join(userBinDir(), binName);
           if (fs.existsSync(cachedBin) && fs.statSync(cachedBin).size > 10000) {
             return cachedBin;
           }
           if (fs.existsSync(p)) {
             const buf = fs.readFileSync(p);
-            fs.mkdirSync(path.dirname(cachedBin), { recursive: true });
-            fs.writeFileSync(cachedBin, buf, { mode: 0o755 });
+            fs.mkdirSync(path.dirname(cachedBin), { recursive: true, mode: 0o700 });
+            // Пишем во временный файл и переименовываем - иначе параллельный
+            // запуск мог увидеть наполовину записанный бинарник.
+            const tmpBin = `${cachedBin}.${process.pid}.tmp`;
+            fs.writeFileSync(tmpBin, buf, { mode: 0o700 });
+            fs.renameSync(tmpBin, cachedBin);
             return cachedBin;
           }
         } catch {
@@ -96,12 +184,12 @@ function get7zaPath(): string | null {
     // fallback
   }
 
-  // Проверяем bundled в extraResources и кэш
+  // Проверяем bundled в extraResources и кэш приложения
   const candidates = [
     path.join(process.resourcesPath || "", "app.asar.unpacked", "node_modules", "7zip-bin", process.platform, process.arch, binName),
     path.join(process.env.LOCALAPPDATA || "", "Programs", "NanoDecompiler", "resources", "app.asar.unpacked", "node_modules", "7zip-bin", process.platform, process.arch, binName),
     path.join(process.env.LOCALAPPDATA || "", "Programs", "nano-decompiler-gui", "resources", "app.asar.unpacked", "node_modules", "7zip-bin", process.platform, process.arch, binName),
-    path.join(os.tmpdir(), "NanoDecompiler", "bin", binName),
+    path.join(userBinDir(), binName),
     path.join(process.resourcesPath || "", "engine", "bin", binName),
     path.join(process.resourcesPath || "", "engine", binName),
     path.join(__dirname, "..", "node_modules", "7zip-bin", process.platform, process.arch, binName),
@@ -133,17 +221,27 @@ async function extractZipFallback(
     tempDir: targetDir,
   });
 
-  const { execSync } = await import("child_process");
+  // БЕЗ shell: раньше команда собиралась строкой (`unzip -o "${archivePath}"`) и
+  // исполнялась через /bin/sh - имя архива вида x$(cmd).zip или x"; cmd; ".zip
+  // выполнялось как команда. execFile передаёт аргументы массивом, минуя shell.
+  // Таймаут 10 минут (было 60 с и execSync - блокировал весь main-процесс).
+  const FALLBACK_TIMEOUT_MS = 10 * 60 * 1000;
   if (process.platform === "win32") {
     const ps = `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${targetDir.replace(/'/g, "''")}' -Force`;
     const encoded = Buffer.from(ps, "utf16le").toString("base64");
-    execSync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { windowsHide: true, timeout: 60000 });
+    await execFileAsync("powershell", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
+      windowsHide: true,
+      timeout: FALLBACK_TIMEOUT_MS,
+    });
   } else {
     try {
-      execSync(`unzip -o "${archivePath}" -d "${targetDir}"`, { timeout: 60000 });
+      await execFileAsync("unzip", ["-o", "--", archivePath, "-d", targetDir], { timeout: FALLBACK_TIMEOUT_MS });
     } catch {
-      execSync(`tar -xf "${archivePath}" -C "${targetDir}"`, { timeout: 60000 });
+      await execFileAsync("tar", ["-xf", archivePath, "-C", targetDir], { timeout: FALLBACK_TIMEOUT_MS });
     }
+  }
+  if (await dirSizeExceeds(targetDir, MAX_EXTRACT_TOTAL_BYTES)) {
+    throw new Error("распакованное содержимое превышает допустимый лимит размера");
   }
 
   onProgress({
@@ -180,48 +278,18 @@ export async function inspectJarForPlugin(jarPath: string, rootDir: string): Pro
     // ignore
   }
 
-  // Читаем список файлов внутри jar
+  // Читаем список файлов внутри jar (общий читатель с проверкой границ - см. zipReader.ts)
   const entryNames: string[] = [];
   try {
-    const fh = await fs.promises.open(jarPath, "r");
-    try {
-      const searchSize = Math.min(sizeBytes, 65557);
-      const buf = Buffer.alloc(searchSize);
-      await fh.read(buf, 0, searchSize, sizeBytes - searchSize);
-      let eocd = -1;
-      for (let i = buf.length - 22; i >= 0; i--) {
-        if (buf.readUInt32LE(i) === 0x06054b50) {
-          eocd = i;
-          break;
-        }
-      }
-      if (eocd >= 0) {
-        const cdOffset = buf.readUInt32LE(eocd + 16);
-        const cdSize = buf.readUInt32LE(eocd + 12);
-        const total = buf.readUInt16LE(eocd + 10);
-        if (total < 65535 && cdOffset !== 0xffffffff) {
-          const cdBuf = Buffer.alloc(cdSize);
-          await fh.read(cdBuf, 0, cdSize, cdOffset);
-          let p = 0;
-          for (let i = 0; i < total; i++) {
-            if (cdBuf.readUInt32LE(p) !== 0x02014b50) break;
-            const nameLen = cdBuf.readUInt16LE(p + 28);
-            const extraLen = cdBuf.readUInt16LE(p + 30);
-            const commentLen = cdBuf.readUInt16LE(p + 32);
-            const name = cdBuf.toString("utf-8", p + 46, p + 46 + nameLen);
-            entryNames.push(name);
-            p += 46 + nameLen + extraLen + commentLen;
-          }
-        }
-      }
-    } finally {
-      await fh.close();
-    }
+    for (const e of await listZipEntries(jarPath)) entryNames.push(e.name);
   } catch {
-    // fallback
+    // fallback: не смогли прочитать central directory (ZIP64/битый файл) - классифицируем только по имени
   }
 
-  const has = (name: string) => entryNames.includes(name);
+  // Set вместо entryNames.includes(): has() вызывается по ~10 раз на каждый jar,
+  // а в больших jar десятки тысяч записей.
+  const entrySet = new Set(entryNames);
+  const has = (name: string) => entrySet.has(name);
 
   // 1. Проверка на ПЛАГИН (Bukkit / Paper / Bungee / Velocity / Sponge) — ПРИОРИТЕТ
   const hasPaperPlugin = has("paper-plugin.yml") || has("META-INF/paper-plugin.yml");
@@ -321,10 +389,13 @@ async function scanJars(dir: string): Promise<string[]> {
 
 /** Создает чистую временную папку для разархивации */
 function createTempArchiveDir(archivePath: string): string {
-  const base = path.basename(archivePath).replace(/[^a-zA-Z0-9_\-\.]/g, "_");
-  const tempDir = path.join(os.tmpdir(), "NanoDecompiler", "archives", `${Date.now()}_${base}`);
-  fs.mkdirSync(tempDir, { recursive: true });
-  return tempDir;
+  const base = path.basename(archivePath).replace(/[^a-zA-Z0-9_\-\.]/g, "_").slice(0, 80);
+  const root = archivesRootDir();
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  // mkdtemp добавляет случайный суффикс и создаёт каталог с правами 0700 -
+  // раньше имя было `${Date.now()}_${base}` (предсказуемое: в общем /tmp его
+  // можно занять заранее) и создавалось с правами по умолчанию.
+  return fs.mkdtempSync(path.join(root, `${Date.now()}_${base}_`));
 }
 
 /** Распаковка RAR архивов через WebAssembly node-unrar-js */
@@ -344,6 +415,10 @@ async function extractRar(
   let totalBytes = 0;
   for (const h of fileHeaders) {
     totalBytes += h.unpSize || 0;
+  }
+  // Заголовки RAR читаются ДО распаковки - отказываем сразу, не создавая гигабайты на диске.
+  if (totalFiles > MAX_EXTRACT_ENTRIES || totalBytes > MAX_EXTRACT_TOTAL_BYTES) {
+    throw new Error("архив превышает допустимые лимиты (число файлов / распакованный размер)");
   }
 
   const startTime = Date.now();
@@ -388,9 +463,27 @@ async function extractTar(
   let extractedFiles = 0;
   let extractedBytes = 0;
 
+  let limitExceeded = false;
+  let acceptedEntries = 0;
+  let acceptedBytes = 0;
+
   await tar.x({
     file: archivePath,
     cwd: targetDir,
+    // Ссылки не создаём вообще (symlink/hardlink в недоверенном архиве - классика
+    // записи за пределы каталога), плюс лимиты на число записей и суммарный размер.
+    filter: (_p, entry) => {
+      const type = (entry as { type?: string }).type;
+      if (type === "SymbolicLink" || type === "Link") return false;
+      if (limitExceeded) return false;
+      acceptedEntries++;
+      acceptedBytes += (entry as { size?: number }).size || 0;
+      if (acceptedEntries > MAX_EXTRACT_ENTRIES || acceptedBytes > MAX_EXTRACT_TOTAL_BYTES) {
+        limitExceeded = true;
+        return false;
+      }
+      return true;
+    },
     onentry: (entry) => {
       extractedFiles++;
       extractedBytes += entry.size || 0;
@@ -412,6 +505,10 @@ async function extractTar(
       });
     },
   });
+
+  if (limitExceeded) {
+    throw new Error("архив превышает допустимые лимиты (число файлов / распакованный размер)");
+  }
 }
 
 /** Распаковка .7z, .zip или fallback через 7za */
@@ -423,8 +520,30 @@ async function extractWith7za(
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const startTime = Date.now();
-    const args = ["x", "-y", "-bsp1", "-o" + targetDir, archivePath];
-    const proc = spawn(sevenZipExe, args);
+    // "--" отделяет опции от имени архива: путь, начинающийся с "-", иначе
+    // был бы воспринят 7za как ключ. Запуск БЕЗ shell (spawn с массивом).
+    const args = ["x", "-y", "-bsp1", "-o" + targetDir, "--", archivePath];
+    const proc = spawn(sevenZipExe, args, { windowsHide: true });
+
+    // Сторож размера: у 7za нет лимита распаковки, архив-бомба иначе забьёт диск.
+    let limitHit = false;
+    let checking = false;
+    const watchdog = setInterval(() => {
+      if (checking || limitHit) return;
+      checking = true;
+      dirSizeExceeds(targetDir, MAX_EXTRACT_TOTAL_BYTES)
+        .then((exceeded) => {
+          if (exceeded) {
+            limitHit = true;
+            proc.kill();
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          checking = false;
+        });
+    }, 2000);
+    let stderrTail = "";
 
     let lastPercent = 0;
     let currentFile = "Распаковка...";
@@ -466,17 +585,23 @@ async function extractWith7za(
 
     proc.stderr.on("data", (d) => {
       const text = d.toString("utf-8");
+      stderrTail = (stderrTail + text).slice(-500);
       for (const line of text.split(/\r?\n/)) {
         if (line.trim()) parseLine(line);
       }
     });
 
     proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`7-Zip завершился с кодом ошибки ${code}`));
+      clearInterval(watchdog);
+      if (limitHit) reject(new Error("распакованное содержимое превышает допустимый лимит размера"));
+      else if (code === 0) resolve();
+      else reject(new Error(`7-Zip завершился с кодом ошибки ${code}${stderrTail.trim() ? ": " + stderrTail.trim() : ""}`));
     });
 
-    proc.on("error", (err) => reject(err));
+    proc.on("error", (err) => {
+      clearInterval(watchdog);
+      reject(err);
+    });
   });
 }
 
@@ -566,6 +691,9 @@ export async function extractArchiveAndScanPlugins(
       archiveSizeBytes,
     };
   } catch (err) {
+    // Неудачная/оборванная распаковка (в т.ч. по лимиту размера) не должна
+    // оставлять полураспакованные файлы в %TEMP% - GUI не знает, что их надо чистить.
+    await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => {});
     const fileStat = await fs.promises.stat(archivePath).catch(() => null);
     const archiveSizeBytes = fileStat ? fileStat.size : 0;
     return {

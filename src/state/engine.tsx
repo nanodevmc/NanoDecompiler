@@ -207,11 +207,14 @@ const DEFAULT_SETTINGS: Settings = {
   keepLineNumbers: true,
   openFolderOnDone: false,
     disableVsCodeLogs: false,
-  legitimacyCheck: true,
+  // ПРИВАТНОСТЬ: оба сетевых "удобства" выключены по умолчанию (должно совпадать
+  // с DEFAULT_SETTINGS в electron/main.ts - там источник истины, сюда значения
+  // подтягиваются через getSettings()).
+  legitimacyCheck: false,
   autoUpdateCheck: true,
   appIcon: "terminal",
   setupCompleted: false,
-  telemetryEnabled: true,
+  telemetryEnabled: false,
   telemetryUrl: "http://195.179.231.14:15015/report",
   language: "ru",
 };
@@ -334,19 +337,23 @@ export function EngineProvider({ children }: { children: ReactNode }) {
   // НОВОЕ v1.8.4 (телеметрия по запросу пользователя): собирает отчёт
   // (buildTelemetryReport - версии + stats/fallback_contexts из уже
   // загруженного job.details) и шлёт через IPC -> main-процесс -> fetch на
-  // telemetryUrl из настроек. Ничего не отправляется само по себе - только
-  // по явному вызову (кнопка в PluginDetailsModal), даже если
-  // telemetryEnabled включён в настройках - это отдельная защита ОТ
-  // случайной массовой отправки чужого кода, а не просто формальность.
+  // telemetryUrl из настроек.
+  //
+  // ПРИВАТНОСТЬ: main-процесс не отправит НИЧЕГО, пока telemetryEnabled не включён
+  // пользователем (по умолчанию выключен). includeSources=true (ручная кнопка в
+  // PluginDetailsModal) добавляет в отчёт полные исходники файлов с откатами на
+  // байткод; автоматическая отправка по завершении job'а (finalize) вызывает это
+  // с includeSources=false - только статистика и короткие фрагменты вокруг
+  // мест отката, без выгрузки файлов чужого плагина целиком.
   const sendErrorReport = useCallback(
     // БАГ-ФИКС v1.9.11: detailsOverride - см. jobDetailsRef/liveDetails в
     // finalize() ниже по файлу. Без него buildTelemetryReport читал бы
     // job.details напрямую из (возможно ещё не обновлённого) jobsRef.
-    async (jobId: string, comment: string, detailsOverride?: JobDetails) => {
+    async (jobId: string, comment: string, detailsOverride?: JobDetails, includeSources = true) => {
       const job = jobsRef.current.find(j => j.id === jobId);
       if (!job) return;
       try {
-        const report = await buildTelemetryReport(job, comment, detailsOverride);
+        const report = await buildTelemetryReport(job, comment, detailsOverride, includeSources);
         const res = await window.nano.sendTelemetryReport(report);
         if (res.ok) toast(t(settings.language, "toast.report_sent"), "ok");
         else toast(`${t(settings.language, "toast.report_failed")}: ${res.error ?? t(settings.language, "toast.unknown_error")}`, "err");
@@ -354,7 +361,8 @@ export function EngineProvider({ children }: { children: ReactNode }) {
         toast(`${t(settings.language, "toast.report_failed")}: ${String(e)}`, "err");
       }
     },
-    [toast],
+    // settings.language - в зависимостях, иначе тосты шли на старом языке после его смены
+    [toast, settings.language],
   );
 
   // НОВОЕ v1.9.5 (прямая просьба пользователя - "отдельная кнопка багрепорта
@@ -375,7 +383,7 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       toast(`${t(settings.language, "toast.report_failed")}: ${error}`, "err");
       return { ok: false, error };
     }
-  }, [toast]);
+  }, [toast, settings.language]);
 
   // БАГ-ФИКС v1.9.11 (найдено при разборе жалобы "Maven-кнопка не
   // обновляется" из волны 5/6): installTool() ниже вызывает checkEnv()
@@ -849,7 +857,7 @@ export function EngineProvider({ children }: { children: ReactNode }) {
           const fallbackCount = liveDetails?.stats.fallback_contexts.length ?? 0;
           if (settings.telemetryEnabled && fallbackCount > 0) {
             const autoComment = `Автоматический сбор (telemetryEnabled): ${fallbackCount} мест(а) с нераспознанным байткодом`;
-            void sendErrorReport(jobId, autoComment, liveDetails);
+            void sendErrorReport(jobId, autoComment, liveDetails, false);
           }
         } else {
           toast(`${t(settings.language, "toast.error")}: ${job.fileName}${error ? ` — ${error}` : ""}`, "err");

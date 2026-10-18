@@ -138,8 +138,57 @@ function clientAssetPattern(): RegExp {
 const CHECK_TIMEOUT_MS = 12000;
 const DOWNLOAD_TIMEOUT_MS = 30000;
 
-function httpsGetJson<T>(url: string): Promise<T> {
+// ---------------------------------------------------------------------------
+// Сетевые хелперы апдейтера.
+//
+// БЕЗОПАСНОСТЬ: адрес скачивания приходит из рендерера по IPC, а редиректы
+// ведёт сервер. Раньше:
+//   - хост не проверялся вообще (любой https-адрес, любые редиректы);
+//   - относительный Location не разрешался, петля редиректов была бесконечной;
+//   - при обрыве соединения WriteStream не закрывался (утечка дескриптора) и
+//     недокачанный `.download` оставался на диске;
+//   - размер ответа/файла ничем не ограничивался.
+// ---------------------------------------------------------------------------
+const MAX_REDIRECTS = 5;
+const MAX_JSON_BYTES = 5 * 1024 * 1024;
+const MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024; // 1 ГиБ - с большим запасом для установщика
+
+/**
+ * Разрешённые адреса: только https и только GitHub (сам репозиторий проекта
+ * на первом шаге; на редиректах - ещё и CDN релизных ассетов *.githubusercontent.com).
+ */
+function isAllowedUpdateUrl(raw: string, firstHop: boolean): boolean {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:" || u.username || u.password) return false;
+  if (u.port && u.port !== "443") return false;
+  const host = u.hostname.toLowerCase();
+  const repoPath = `/${GITHUB_OWNER}/${GITHUB_REPO}/`.toLowerCase();
+  const apiPath = `/repos/${GITHUB_OWNER}/${GITHUB_REPO}/`.toLowerCase();
+  const pathname = u.pathname.toLowerCase();
+  if (host === "github.com") return !firstHop || pathname.startsWith(repoPath);
+  if (host === "api.github.com") return !firstHop || pathname.startsWith(apiPath);
+  return !firstHop && host.endsWith(".githubusercontent.com");
+}
+
+function resolveRedirect(from: string, location: string): string | null {
+  try {
+    return new URL(location, from).toString();
+  } catch {
+    return null;
+  }
+}
+
+function httpsGetJson<T>(url: string, redirects = 0): Promise<T> {
   return new Promise((resolve, reject) => {
+    if (!isAllowedUpdateUrl(url, redirects === 0)) {
+      reject(new Error(`Недопустимый адрес запроса: ${url}`));
+      return;
+    }
     const req = https.get(url, { headers: { "User-Agent": "NanoDecompiler-updater" } }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         // БАГ-ФИКС v1.7.3: res.resume() ОБЯЗАТЕЛЕН перед тем, как уйти в
@@ -149,7 +198,12 @@ function httpsGetJson<T>(url: string): Promise<T> {
         // ветка редиректа - нет, хотя именно она срабатывает чаще всего
         // (GitHub API/релизы почти всегда отвечают редиректом).
         res.resume();
-        resolve(httpsGetJson<T>(res.headers.location));
+        const next = resolveRedirect(url, res.headers.location);
+        if (!next || redirects >= MAX_REDIRECTS) {
+          reject(new Error("Слишком много редиректов или некорректный Location"));
+          return;
+        }
+        resolve(httpsGetJson<T>(next, redirects + 1));
         return;
       }
       if (res.statusCode !== 200) {
@@ -157,8 +211,14 @@ function httpsGetJson<T>(url: string): Promise<T> {
         res.resume();
         return;
       }
+      // setEncoding: `data += chunk` над Buffer'ами ломал многобайтовые
+      // UTF-8 символы (кириллица в описании релиза) на границе чанков.
+      res.setEncoding("utf8");
       let data = "";
-      res.on("data", (chunk) => (data += chunk));
+      res.on("data", (chunk: string) => {
+        data += chunk;
+        if (data.length > MAX_JSON_BYTES) req.destroy(new Error("Ответ сервера слишком большой"));
+      });
       res.on("end", () => {
         try {
           resolve(JSON.parse(data));
@@ -166,6 +226,7 @@ function httpsGetJson<T>(url: string): Promise<T> {
           reject(e);
         }
       });
+      res.on("error", reject);
     });
     req.on("error", reject);
     req.setTimeout(CHECK_TIMEOUT_MS, () => req.destroy(new Error("Таймаут запроса к GitHub")));
@@ -175,24 +236,55 @@ function httpsGetJson<T>(url: string): Promise<T> {
 function httpsDownloadFile(
   url: string,
   destPath: string,
-  onProgress?: (downloaded: number, total: number | null) => void
+  onProgress?: (downloaded: number, total: number | null) => void,
+  redirects = 0,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (!isAllowedUpdateUrl(url, redirects === 0)) {
+      reject(new Error(`Недопустимый адрес загрузки: ${url}`));
+      return;
+    }
+    const tmpPath = destPath + ".download";
+    let settled = false;
+    let file: fs.WriteStream | null = null;
+
+    // Единая точка отказа: закрывает сокет И файловый дескриптор и удаляет
+    // недокачанный файл (раньше при обрыве/таймауте они оставались).
+    const fail = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      req.destroy();
+      if (file) file.destroy();
+      fs.unlink(tmpPath, () => {});
+      reject(err);
+    };
+
     const req = https.get(url, { headers: { "User-Agent": "NanoDecompiler-updater" } }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         // БАГ-ФИКС v1.7.3: см. комментарий в httpsGetJson выше - тот же
         // пропущенный res.resume() перед редиректом.
         res.resume();
-        httpsDownloadFile(res.headers.location, destPath, onProgress).then(resolve, reject);
+        const next = resolveRedirect(url, res.headers.location);
+        if (!next || redirects >= MAX_REDIRECTS) {
+          fail(new Error("Слишком много редиректов или некорректный Location"));
+          return;
+        }
+        settled = true; // этот уровень больше не отвечает за результат
+        httpsDownloadFile(next, destPath, onProgress, redirects + 1).then(resolve, reject);
         return;
       }
       if (res.statusCode !== 200) {
-        reject(new Error(`HTTP ${res.statusCode} при скачивании ${url}`));
         res.resume();
+        fail(new Error(`HTTP ${res.statusCode} при скачивании ${url}`));
         return;
       }
       const totalHeader = res.headers["content-length"];
       const total = totalHeader ? parseInt(Array.isArray(totalHeader) ? totalHeader[0] : totalHeader, 10) : null;
+      if (total !== null && (!Number.isFinite(total) || total > MAX_DOWNLOAD_BYTES)) {
+        res.resume();
+        fail(new Error("Размер загрузки превышает допустимый лимит"));
+        return;
+      }
       let downloaded = 0;
       // Троттлинг - см. HANDOFF_22: если слать прогресс на КАЖДЫЙ chunk
       // (могут прилетать десятки раз в секунду на быстром интернете),
@@ -201,37 +293,73 @@ function httpsDownloadFile(
       // достаточно для человеческого глаза (это уже ~8 обновлений/сек).
       let lastEmit = 0;
       if (onProgress) onProgress(0, total);
+      file = fs.createWriteStream(tmpPath);
       res.on("data", (chunk: Buffer) => {
         downloaded += chunk.length;
+        if (downloaded > MAX_DOWNLOAD_BYTES) {
+          fail(new Error("Размер загрузки превышает допустимый лимит"));
+          return;
+        }
         const now = Date.now();
         if (onProgress && now - lastEmit >= 120) {
           lastEmit = now;
           onProgress(downloaded, total);
         }
       });
-      const tmpPath = destPath + ".download";
-      const file = fs.createWriteStream(tmpPath);
+      res.on("error", (err) => fail(err));
+      // Обрыв соединения: 'end' не приходит, раньше промис просто висел до таймаута.
+      res.on("close", () => {
+        if (!res.complete) fail(new Error("Соединение оборвано до завершения загрузки"));
+      });
       res.pipe(file);
       file.on("finish", () => {
-        file.close(() => {
+        file!.close((closeErr) => {
+          if (settled) return;
+          if (closeErr) return fail(closeErr);
+          if (total !== null && downloaded !== total) {
+            return fail(new Error("Файл скачан не полностью"));
+          }
           if (onProgress) onProgress(downloaded, total);
           // Атомарная замена - переименование внутри одной файловой системы
           // почти мгновенное, не оставляет "битого" файла на середине,
           // если что-то пойдёт не так ДО этого момента. safeReplaceFile()
           // (см. выше) добавляет предварительный unlink на Windows -
           // см. БАГ-ФИКС v1.7.3 там же.
-          safeReplaceFile(tmpPath, destPath);
+          try {
+            safeReplaceFile(tmpPath, destPath);
+          } catch (e) {
+            return fail(e as Error);
+          }
+          settled = true;
           resolve();
         });
       });
-      file.on("error", (err) => {
-        fs.unlink(tmpPath, () => {});
-        reject(err);
-      });
+      file.on("error", (err) => fail(err));
     });
-    req.on("error", reject);
-    req.setTimeout(DOWNLOAD_TIMEOUT_MS, () => req.destroy(new Error("Таймаут скачивания")));
+    req.on("error", (err) => fail(err));
+    req.setTimeout(DOWNLOAD_TIMEOUT_MS, () => fail(new Error("Таймаут скачивания")));
   });
+}
+
+/**
+ * checksums.json релиза (плоская мапа "имя ассета" -> sha256 hex). Возвращает
+ * только корректные записи (64 hex-символа, нижний регистр) либо null, если
+ * файла нет/он не читается - вызывающая сторона обязана ОТКАЗАТЬ в установке.
+ */
+async function fetchReleaseChecksums(release: GhRelease): Promise<ChecksumsJson | null> {
+  const asset = release.assets.find((a) => a.name === "checksums.json");
+  if (!asset) return null;
+  try {
+    const parsed = await httpsGetJson<unknown>(asset.browser_download_url);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const out: ChecksumsJson = {};
+    for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === "string" && /^[0-9a-fA-F]{64}$/.test(value)) out[name] = value.toLowerCase();
+    }
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 // См. HANDOFF_7/8/16 - версия ДВИЖКА (api) хранится в маленьком текстовом
@@ -287,8 +415,14 @@ function resolveInstalledApiVersion(
     };
     try {
       const proc = spawn(cmd, args, { env: { ...process.env } });
+      // Зависший/подменённый движок не должен вешать проверку обновлений навсегда.
+      const killTimer = setTimeout(() => {
+        proc.kill();
+        finish(null);
+      }, 15000);
       proc.stdout.on("data", (d) => (out += d.toString("utf-8")));
       proc.on("close", () => {
+        clearTimeout(killTimer);
         try {
           const parsed = JSON.parse(out.trim());
           const num = parsed.version ? extractVersionNumber(String(parsed.version)) : null;
@@ -298,7 +432,10 @@ function resolveInstalledApiVersion(
           finish(null);
         }
       });
-      proc.on("error", () => finish(null));
+      proc.on("error", () => {
+        clearTimeout(killTimer);
+        finish(null);
+      });
     } catch {
       finish(null);
     }
@@ -403,6 +540,31 @@ export function consumeUpdateSuccessFlag(): boolean {
   return viaFlag || viaMarker;
 }
 
+/**
+ * Установщики, скачанные прошлыми обновлениями, остаются в %TEMP% (запущенный
+ * установщик нельзя удалить из самого себя). Подчищаем старше суток на старте.
+ */
+export function sweepStaleUpdateDirs(maxAgeMs: number = 24 * 60 * 60 * 1000): void {
+  try {
+    const base = app.getPath("temp");
+    const now = Date.now();
+    for (const name of fs.readdirSync(base)) {
+      if (!name.startsWith("nanodecompiler-update-")) continue;
+      const full = path.join(base, name);
+      try {
+        const st = fs.lstatSync(full);
+        if (st.isDirectory() && !st.isSymbolicLink() && now - st.mtimeMs > maxAgeMs) {
+          fs.rmSync(full, { recursive: true, force: true });
+        }
+      } catch {
+        // занято/нет прав - в следующий раз
+      }
+    }
+  } catch {
+    // нет доступа к temp - не критично
+  }
+}
+
 export function registerUpdateHandlers(
   engineDir: () => string,
   engineInvocation: (scriptArgs: string[]) => { cmd: string; args: string[] },
@@ -410,71 +572,105 @@ export function registerUpdateHandlers(
   ipcMain.handle("update:consumeSuccessFlag", async () => consumeUpdateSuccessFlag());
 
   ipcMain.handle("update:installClientAndRestart", async (event, downloadUrl: string) => {
+    let workDir = "";
     try {
-      const tmpDir = app.getPath("temp");
-      let downloadPath = "";
-      if (process.platform === "win32") downloadPath = path.join(tmpDir, "NanoDecompiler-Client-Setup.exe");
-      else if (process.platform === "darwin") downloadPath = path.join(tmpDir, "NanoDecompiler-Client.dmg");
-      else downloadPath = path.join(tmpDir, "NanoDecompiler-Client.AppImage");
+      if (typeof downloadUrl !== "string" || !downloadUrl) {
+        return { ok: false, manual: true, error: "Не указан адрес установщика" };
+      }
 
-      await httpsDownloadFile(downloadUrl, downloadPath, (downloaded, total) => {
+      // БЕЗОПАСНОСТЬ: адресу из рендерера не доверяем (раньше он скачивался и
+      // ЗАПУСКАЛСЯ как установщик без какой-либо проверки хоста и хеша). Адрес
+      // обязан совпасть с browser_download_url ассета АКТУАЛЬНОГО релиза нашего
+      // репозитория, а скачанный файл - с SHA256 из checksums.json. Иначе
+      // установку не выполняем, а отдаём пользователю ручную загрузку.
+      const release = await httpsGetJson<GhRelease>(
+        `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`,
+      );
+      const asset = release.assets.find((a) => a.browser_download_url === downloadUrl && clientAssetPattern().test(a.name));
+      if (!asset) {
+        return { ok: false, manual: true, error: "Адрес не соответствует установщику последнего релиза - скачайте обновление вручную" };
+      }
+      const checksums = await fetchReleaseChecksums(release);
+      const expected = checksums?.[asset.name];
+      if (!expected) {
+        return { ok: false, manual: true, error: "В релизе нет контрольной суммы SHA256 для установщика - автоустановка отменена, скачайте вручную" };
+      }
+
+      // Приватный каталог со случайным именем (mkdtemp создаёт его с правами
+      // 0700) вместо предсказуемых путей прямо в %TEMP% (NewVerSetup.bat и т.п.).
+      workDir = fs.mkdtempSync(path.join(app.getPath("temp"), "nanodecompiler-update-"));
+      let downloadPath = "";
+      if (process.platform === "win32") downloadPath = path.join(workDir, "NanoDecompiler-Client-Setup.exe");
+      else if (process.platform === "darwin") downloadPath = path.join(workDir, "NanoDecompiler-Client.dmg");
+      else downloadPath = path.join(workDir, "NanoDecompiler-Client.AppImage");
+
+      await httpsDownloadFile(asset.browser_download_url, downloadPath, (downloaded, total) => {
         event.sender.send("update:downloadProgress", { downloaded, total, kind: "client" });
       });
 
-      // Сверка SHA256 контрольной суммы перед запуском инсталлятора
-      try {
-        const release = await httpsGetJson<GhRelease>(
-          `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`
-        );
-        const checksumsAsset = release.assets.find((a) => a.name === "checksums.json");
-        const setupAsset = release.assets.find((a) => clientAssetPattern().test(a.name));
-        if (checksumsAsset && setupAsset) {
-          const checksums = await httpsGetJson<ChecksumsJson>(checksumsAsset.browser_download_url);
-          const expected = checksums[setupAsset.name];
-          const actual = await sha256File(downloadPath);
-          if (expected && actual && expected.toLowerCase() !== actual.toLowerCase()) {
-            fs.unlinkSync(downloadPath);
-            return { ok: false, error: "Контрольная сумма скачанного установщика не совпадает (SHA256 mismatch). Файл удалён." };
-          }
-        }
-      } catch (err) {
-        // не блокируем при недоступности checksums.json
+      const actual = await sha256File(downloadPath);
+      if (!actual || actual !== expected) {
+        fs.rmSync(workDir, { recursive: true, force: true });
+        return { ok: false, error: "SHA256 установщика не совпадает с checksums.json - установка отменена" };
       }
-
       writeUpdateSuccessMarker();
 
-      let scriptPath = "";
-      let scriptContent = "";
-
+      // Что запустить ПОСЛЕ выхода приложения. Раньше это был .bat/.sh, в который
+      // пути подставлялись текстом (символы % ^ & " в пути ломали или исполняли
+      // команду). Теперь Windows/Linux запускают файл напрямую, macOS - /bin/sh с
+      // путями отдельными аргументами ($1, $2, $3), а не частью текста скрипта.
+      let launchAfterQuit: () => void;
       if (process.platform === "win32") {
-        scriptPath = path.join(tmpDir, "NewVerSetup.bat");
-        scriptContent = `@echo off\r\ntimeout /t 2 /nobreak >nul\r\nstart "" "${downloadPath}" /S --force-run\r\n`;
+        launchAfterQuit = () => {
+          spawn(downloadPath, ["/S", "--force-run"], { detached: true, stdio: "ignore" }).unref();
+        };
       } else if (process.platform === "darwin") {
-        scriptPath = path.join(tmpDir, "NewVerSetup.sh");
         const appPath = app.getPath("exe").split(".app/")[0] + ".app";
-        scriptContent = `#!/bin/bash\nsleep 2\nhdiutil attach "${downloadPath}" -mountpoint /Volumes/NanoDecompilerUpdate -nobrowse\ncp -a /Volumes/NanoDecompilerUpdate/NanoDecompiler.app/ "${appPath}/"\nhdiutil detach /Volumes/NanoDecompilerUpdate -force\nopen "${appPath}"\n`;
+        const mountPoint = fs.mkdtempSync(path.join(workDir, "mnt-"));
+        const script = [
+          "sleep 2",
+          'hdiutil attach "$1" -mountpoint "$3" -nobrowse -readonly -quiet || exit 1',
+          'ditto "$3/NanoDecompiler.app" "$2"',
+          'hdiutil detach "$3" -force -quiet',
+          'open "$2"',
+        ].join("\n");
+        launchAfterQuit = () => {
+          spawn("/bin/sh", ["-c", script, "sh", downloadPath, appPath, mountPoint], { detached: true, stdio: "ignore" }).unref();
+        };
       } else {
-        scriptPath = path.join(tmpDir, "NewVerSetup.sh");
         const currentAppImage = process.env.APPIMAGE;
         if (!currentAppImage) {
           throw new Error("Не удалось определить путь к текущему AppImage (переменная APPIMAGE пуста)");
         }
-        scriptContent = `#!/bin/bash\nsleep 2\nmv -f "${downloadPath}" "${currentAppImage}"\nchmod +x "${currentAppImage}"\n"${currentAppImage}" &\n`;
+        // Подмена делается ЗАРАНЕЕ (на Linux rename поверх запущенного файла
+        // безопасен: старый inode живёт, пока его держат): копия рядом (workDir
+        // может быть на другой ФС - EXDEV) -> chmod -> атомарный rename.
+        const staged = currentAppImage + ".update";
+        fs.copyFileSync(downloadPath, staged);
+        fs.chmodSync(staged, 0o755);
+        fs.renameSync(staged, currentAppImage);
+        launchAfterQuit = () => {
+          spawn(currentAppImage, [], { detached: true, stdio: "ignore" }).unref();
+        };
       }
 
-      fs.writeFileSync(scriptPath, scriptContent, { encoding: "utf8", mode: 0o755 });
-
-      if (process.platform === "win32") {
-        const child = spawn("cmd.exe", ["/c", scriptPath], { detached: true, stdio: "ignore", windowsHide: true });
-        child.unref();
-      } else {
-        const child = spawn("bash", [scriptPath], { detached: true, stdio: "ignore" });
-        child.unref();
-      }
-
+      app.once("quit", () => {
+        try {
+          launchAfterQuit();
+        } catch {
+          // не удалось запустить - пользователь запустит приложение вручную
+        }
+      });
       setTimeout(() => app.quit(), 700);
       return { ok: true };
     } catch (e) {
+      if (workDir) {
+        try {
+          fs.rmSync(workDir, { recursive: true, force: true });
+        } catch {
+          // ignore
+        }
+      }
       return { ok: false, error: String(e) };
     }
   });
@@ -500,14 +696,15 @@ export function registerUpdateHandlers(
       let engineHashMatches = false;
       if (checksumsAsset && cliAsset) {
         try {
-          const checksums = await httpsGetJson<ChecksumsJson>(checksumsAsset.browser_download_url);
-          const expectedHash = checksums[cliAsset.name];
+          const checksums = await fetchReleaseChecksums(release);
+          const expectedHash = checksums?.[cliAsset.name];
           const localBin = path.join(engineDir(), localEngineBinaryName());
           const localHash = expectedHash ? await sha256File(localBin) : null;
           engineHashMatches = !!expectedHash && !!localHash && expectedHash === localHash;
         } catch {
           // checksums.json недоступен/битый - не блокируем обновление
-          // из-за этого, просто не получаем доп. проверку.
+          // из-за этого, просто не получаем доп. проверку (при САМОМ
+          // применении обновления контрольная сумма уже обязательна).
         }
       }
 
@@ -581,51 +778,54 @@ export function registerUpdateHandlers(
     }
   });
 
-  ipcMain.handle("update:apply", async (event, downloadUrl: string, latestApiVersion?: string) => {
+  ipcMain.handle("update:apply", async (event, _downloadUrl: string, latestApiVersion?: string) => {
     // ВАЖНО: apply умеет подменять ТОЛЬКО движок (exe) - см. updateKind
     // выше. Обновление самого клиента "апдейтом" в этом же смысле в
     // принципе невозможно - Windows не даёт процессу перезаписать
     // собственный запущенный .exe/удалить свою же папку в Program Files;
     // для клиента showUpdateKind "client" в App.tsx ведёт на скачивание
     // НОВОГО инсталлятора через shell.openExternal, а не сюда.
+    //
+    // БЕЗОПАСНОСТЬ: адрес из рендерера (_downloadUrl) больше не используется -
+    // движок берётся из ассета актуального релиза нашего репозитория, а
+    // отсутствие/несовпадение SHA256 ТЕПЕРЬ ОТМЕНЯЕТ обновление (раньше при
+    // недоступном checksums.json бинарник применялся непроверенным, и
+    // исполняемый файл подменялся чем угодно, что отдал сервер).
+    let tmpDest = "";
     try {
       const dir = engineDir();
       const dest = path.join(dir, localEngineBinaryName());
+
+      const release = await httpsGetJson<GhRelease>(
+        `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`,
+      );
+      const asset = findEngineAsset(release.assets);
+      if (!asset) return { ok: false, error: "в последнем релизе нет бинарника движка для этой платформы" };
+      const checksums = await fetchReleaseChecksums(release);
+      const expected = checksums?.[asset.name];
+      if (!expected) {
+        return { ok: false, error: "не удалось получить контрольную сумму SHA256 движка - обновление отменено" };
+      }
+
       // БАГ-ФИКС/фича: скачиваем во ВРЕМЕННЫЙ файл, а не сразу поверх
       // рабочего движка - если скачивание оборвётся/повредится (см.
       // "движок завершился с кодом N без вывода - возможно, файл повреждён
       // при скачивании" в main.ts), рабочая копия остаётся нетронутой.
-      // После скачивания сверяем SHA256 с checksums.json релиза - только
-      // при совпадении делаем rename поверх рабочего файла (атомарно на
-      // одной файловой системе).
-      const tmpDest = dest + ".download";
-      await httpsDownloadFile(downloadUrl, tmpDest, (downloaded, total) => {
+      // httpsDownloadFile сам кладёт данные в `<dest>.download` и атомарно
+      // переименовывает в указанный путь - поэтому качаем в отдельное имя.
+      tmpDest = dest + ".verify";
+      await httpsDownloadFile(asset.browser_download_url, tmpDest, (downloaded, total) => {
         event.sender.send("update:downloadProgress", { downloaded, total, kind: "engine" });
       });
 
-      try {
-        const release = await httpsGetJson<GhRelease>(
-          `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`
-        );
-        const checksumsAsset = release.assets.find((a) => a.name === "checksums.json");
-        const foundAsset = findEngineAsset(release.assets);
-        const assetName = foundAsset ? foundAsset.name : "";
-        if (checksumsAsset && assetName) {
-          const checksums = await httpsGetJson<ChecksumsJson>(checksumsAsset.browser_download_url);
-          const expected = checksums[assetName];
-          const actual = await sha256File(tmpDest);
-          if (expected && actual && expected !== actual) {
-            fs.unlinkSync(tmpDest);
-            return { ok: false, error: "скачанный файл повреждён (SHA256 не совпадает) - попробуйте ещё раз" };
-          }
-        }
-      } catch {
-        // checksums.json недоступен - не блокируем обновление из-за этого
-        // (лучше применить непроверенное обновление, чем не обновиться
-        // вовсе, раз основной httpsDownloadFile уже завершился без ошибки).
+      const actual = await sha256File(tmpDest);
+      if (!actual || actual !== expected) {
+        fs.unlinkSync(tmpDest);
+        return { ok: false, error: "скачанный файл повреждён (SHA256 не совпадает) - попробуйте ещё раз" };
       }
 
       safeReplaceFile(tmpDest, dest);
+      tmpDest = "";
       if (process.platform !== "win32") {
         try {
           fs.chmodSync(dest, 0o755);
@@ -633,8 +833,9 @@ export function registerUpdateHandlers(
           // не критично - если бинарник уже был +x, rename сохраняет права
         }
       }
-      if (latestApiVersion) {
-        writeInstalledApiVersion(dir, latestApiVersion);
+      const safeVersion = typeof latestApiVersion === "string" && /^[0-9A-Za-z._+-]{1,64}$/.test(latestApiVersion) ? latestApiVersion : null;
+      if (safeVersion) {
+        writeInstalledApiVersion(dir, safeVersion);
       }
 
       // Синхронизация с установленной версией в AppData/Local/Programs
@@ -646,7 +847,7 @@ export function registerUpdateHandlers(
             if (fs.existsSync(installedDir) && installedDir.toLowerCase() !== dir.toLowerCase()) {
               const installedDest = path.join(installedDir, localEngineBinaryName());
               fs.copyFileSync(dest, installedDest);
-              if (latestApiVersion) writeInstalledApiVersion(installedDir, latestApiVersion);
+              if (safeVersion) writeInstalledApiVersion(installedDir, safeVersion);
             }
           }
         } catch {
@@ -666,6 +867,13 @@ export function registerUpdateHandlers(
 
       return { ok: true };
     } catch (e) {
+      if (tmpDest) {
+        try {
+          fs.unlinkSync(tmpDest);
+        } catch {
+          // ignore
+        }
+      }
       return { ok: false, error: String(e) };
     }
   });

@@ -1,104 +1,26 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
-import * as zlib from "zlib";
 import * as https from "https";
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { listZipEntries, readZipEntry, type ZipEntry } from "./zipReader";
 
 const execFileAsync = promisify(execFile);
 
-type CentralEntry = {
-  name: string;
-  method: number;
-  compSize: number;
-  uncompSize: number;
-  localOffset: number;
-  crc32: number;
-};
-
-async function readZipEntries(jarPath: string): Promise<CentralEntry[]> {
-  const stat = await fs.promises.stat(jarPath);
-  const fileSize = stat.size;
-  const fh = await fs.promises.open(jarPath, "r");
-  try {
-    const maxScan = Math.min(fileSize, 65535 + 22);
-    const buf = Buffer.alloc(maxScan);
-    await fh.read(buf, 0, maxScan, fileSize - maxScan);
-
-    let eocd = -1;
-    for (let i = maxScan - 22; i >= 0; i--) {
-      if (buf.readUInt32LE(i) === 0x06054b50) {
-        eocd = i;
-        break;
-      }
-    }
-    if (eocd < 0) return [];
-
-    const total = buf.readUInt16LE(eocd + 10);
-    const cdSize = buf.readUInt32LE(eocd + 12);
-    const cdOffset = buf.readUInt32LE(eocd + 16);
-
-    const cdBuf = Buffer.alloc(cdSize);
-    await fh.read(cdBuf, 0, cdSize, cdOffset);
-
-    const entries: CentralEntry[] = [];
-    let pos = 0;
-    while (pos < cdSize && entries.length < total) {
-      if (cdBuf.readUInt32LE(pos) !== 0x02014b50) break;
-      const method = cdBuf.readUInt16LE(pos + 10);
-      const crc32 = cdBuf.readUInt32LE(pos + 16);
-      const compSize = cdBuf.readUInt32LE(pos + 20);
-      const uncompSize = cdBuf.readUInt32LE(pos + 24);
-      const nameLen = cdBuf.readUInt16LE(pos + 28);
-      const extraLen = cdBuf.readUInt16LE(pos + 30);
-      const commentLen = cdBuf.readUInt16LE(pos + 32);
-      const localOffset = cdBuf.readUInt32LE(pos + 42);
-      const name = cdBuf.toString("utf-8", pos + 46, pos + 46 + nameLen);
-
-      entries.push({ name, method, compSize, uncompSize, localOffset, crc32 });
-      pos += 46 + nameLen + extraLen + commentLen;
-    }
-    return entries;
-  } finally {
-    await fh.close();
-  }
-}
-
-async function readZipEntryData(jarPath: string, entry: CentralEntry): Promise<Buffer> {
-  const fh = await fs.promises.open(jarPath, "r");
-  try {
-    const head = Buffer.alloc(30);
-    await fh.read(head, 0, 30, entry.localOffset);
-    if (head.readUInt32LE(0) !== 0x04034b50) throw new Error("bad local header");
-    const nameLen = head.readUInt16LE(26);
-    const extraLen = head.readUInt16LE(28);
-    const dataOffset = entry.localOffset + 30 + nameLen + extraLen;
-
-    const compData = Buffer.alloc(entry.compSize);
-    await fh.read(compData, 0, entry.compSize, dataOffset);
-
-    if (entry.method === 0) return compData;
-    if (entry.method === 8) {
-      return await new Promise<Buffer>((resolve, reject) => {
-        zlib.inflateRaw(compData, (err, res) => (err ? reject(err) : resolve(res)));
-      });
-    }
-    throw new Error(`unsupported zip method: ${entry.method}`);
-  } finally {
-    await fh.close();
-  }
-}
+// plugin.yml - крошечный файл; больше не читаем целиком (zip-bomb в jar).
+const MAX_PLUGIN_YML_BYTES = 1024 * 1024;
 
 export async function compareJars(jarA: string, jarB: string) {
   try {
-    const [entriesA, entriesB] = await Promise.all([readZipEntries(jarA), readZipEntries(jarB)]);
+    const [entriesA, entriesB] = await Promise.all([listZipEntries(jarA), listZipEntries(jarB)]);
 
-    const mapA = new Map<string, CentralEntry>();
+    const mapA = new Map<string, ZipEntry>();
     for (const e of entriesA) {
       if (e.name.endsWith(".class")) mapA.set(e.name, e);
     }
 
-    const mapB = new Map<string, CentralEntry>();
+    const mapB = new Map<string, ZipEntry>();
     for (const e of entriesB) {
       if (e.name.endsWith(".class")) mapB.set(e.name, e);
     }
@@ -161,12 +83,12 @@ export async function compareJars(jarA: string, jarB: string) {
 
 export async function getPluginTree(jarPath: string) {
   try {
-    const entries = await readZipEntries(jarPath);
+    const entries = await listZipEntries(jarPath);
     let pluginYmlText = "";
     const pluginYmlEntry = entries.find((e) => e.name === "plugin.yml");
     if (pluginYmlEntry) {
       try {
-        const buf = await readZipEntryData(jarPath, pluginYmlEntry);
+        const buf = await readZipEntry(jarPath, pluginYmlEntry, MAX_PLUGIN_YML_BYTES);
         pluginYmlText = buf.toString("utf-8");
       } catch {
         // ignore
@@ -200,12 +122,13 @@ export async function getPluginTree(jarPath: string) {
           else if (trimmed.startsWith("commands:")) currentSection = "commands";
           else if (trimmed.startsWith("permissions:")) currentSection = "permissions";
           else currentSection = "root";
+          currentItem = null;
           continue;
         }
 
         if (currentSection === "commands") {
           if (indent === 2 && trimmed.endsWith(":")) {
-            const cmdName = trimmed.slice(0, -1).trim();
+            const cmdName = trimmed.slice(0, -1).trim().replace(/^['"]|['"]$/g, "");
             currentItem = { command: `/${cmdName}` };
             commands.push(currentItem);
           } else if (currentItem && indent >= 4) {
@@ -215,7 +138,7 @@ export async function getPluginTree(jarPath: string) {
           }
         } else if (currentSection === "permissions") {
           if (indent === 2 && trimmed.endsWith(":")) {
-            const permName = trimmed.slice(0, -1).trim();
+            const permName = trimmed.slice(0, -1).trim().replace(/^['"]|['"]$/g, "");
             currentItem = { permission: permName };
             permissions.push(currentItem);
           } else if (currentItem && indent >= 4) {
@@ -256,19 +179,103 @@ export async function getPluginTree(jarPath: string) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// GitHub export
+// ---------------------------------------------------------------------------
+
+const GITHUB_API_TIMEOUT_MS = 30000;
+const GITHUB_API_MAX_BODY = 1024 * 1024;
+
+type GitHubApiResponse = { ok: boolean; status: number; body: string };
+
+function githubCreateRepo(token: string, postData: string): Promise<GitHubApiResponse> {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      "https://api.github.com/user/repos",
+      {
+        method: "POST",
+        headers: {
+          "User-Agent": "NanoDecompiler",
+          Authorization: `Bearer ${token}`,
+          Accept: "application/vnd.github.v3+json",
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(postData),
+        },
+      },
+      (res) => {
+        res.setEncoding("utf8");
+        let body = "";
+        res.on("data", (chunk: string) => {
+          body += chunk;
+          if (body.length > GITHUB_API_MAX_BODY) {
+            req.destroy(new Error("ответ GitHub слишком большой"));
+          }
+        });
+        res.on("end", () => resolve({ ok: (res.statusCode ?? 500) < 300, status: res.statusCode ?? 500, body }));
+        res.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(GITHUB_API_TIMEOUT_MS, () => req.destroy(new Error("таймаут запроса к GitHub")));
+    req.write(postData);
+    req.end();
+  });
+}
+
+function expandHome(p: string): string {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
 export async function exportToGitHub(options: {
   outDir: string;
   repoName: string;
   token: string;
   isPrivate: boolean;
 }): Promise<{ ok: boolean; url?: string; error?: string }> {
-  const { outDir, repoName, token, isPrivate } = options;
+  const raw = (options ?? {}) as Partial<typeof options>;
+  const token = typeof raw.token === "string" ? raw.token.trim() : "";
+  const repoName = typeof raw.repoName === "string" ? raw.repoName.trim() : "";
+  const isPrivate = raw.isPrivate === true;
 
-  if (!fs.existsSync(outDir)) {
+  // Любое сообщение, которое уходит в UI/логи, обязано пройти через redact():
+  // execFile кладёт в err.message ПОЛНУЮ командную строку и stderr git, а
+  // stderr/ошибки сети могут содержать токен (раньше он ещё и сидел в argv).
+  const authHeader = token ? `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}` : "";
+  const redact = (s: string): string => {
+    let out = s;
+    if (token) out = out.split(token).join("***");
+    if (authHeader) out = out.split(authHeader).join("***");
+    return out;
+  };
+
+  if (!/^[A-Za-z0-9_\-]{20,255}$/.test(token)) {
+    return { ok: false, error: "Некорректный формат GitHub токена" };
+  }
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(repoName) || repoName === "." || repoName === "..") {
+    return { ok: false, error: "Имя репозитория: 1-100 символов из [A-Za-z0-9._-]" };
+  }
+  if (typeof raw.outDir !== "string" || !raw.outDir.trim() || raw.outDir.includes("\0")) {
+    return { ok: false, error: "Не указана директория проекта" };
+  }
+  // outDir хранится в состоянии GUI с буквальной "~" (настройка outputDir по
+  // умолчанию "~/NanoDecompiler/out") - fs тильду не разворачивает, раньше
+  // экспорт для такого пути всегда падал с "Директория не существует".
+  const outDir = path.resolve(expandHome(raw.outDir.trim()));
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(outDir);
+  } catch {
     return { ok: false, error: `Директория ${outDir} не существует` };
   }
+  if (!stat.isDirectory()) {
+    return { ok: false, error: `${outDir} не является директорией` };
+  }
+  if (path.parse(outDir).root === outDir || outDir === os.homedir()) {
+    return { ok: false, error: "Нельзя экспортировать корень диска или домашнюю папку целиком" };
+  }
 
-  // 1. Create repo on GitHub
   const postData = JSON.stringify({
     name: repoName,
     private: isPrivate,
@@ -276,30 +283,13 @@ export async function exportToGitHub(options: {
     description: "Decompiled with NanoDecompiler 2.0.0-alpha",
   });
 
+  const baseEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+  const git = (args: string[], env: NodeJS.ProcessEnv = baseEnv, timeout = 120000) =>
+    execFileAsync("git", args, { cwd: outDir, env, timeout, windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+
+  let htmlUrl = "";
   try {
-    const createRes = await new Promise<{ ok: boolean; status: number; body: string }>((resolve, reject) => {
-      const req = https.request(
-        "https://api.github.com/user/repos",
-        {
-          method: "POST",
-          headers: {
-            "User-Agent": "NanoDecompiler",
-            Authorization: `Bearer ${token}`,
-            Accept: "application/vnd.github.v3+json",
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(postData),
-          },
-        },
-        (res) => {
-          let body = "";
-          res.on("data", (chunk) => (body += chunk));
-          res.on("end", () => resolve({ ok: (res.statusCode ?? 500) < 300, status: res.statusCode ?? 500, body }));
-        }
-      );
-      req.on("error", reject);
-      req.write(postData);
-      req.end();
-    });
+    const createRes = await githubCreateRepo(token, postData);
 
     let repoJson: any = {};
     try {
@@ -310,51 +300,59 @@ export async function exportToGitHub(options: {
 
     if (!createRes.ok) {
       const msg = repoJson?.message || `Ошибка создания репозитория HTTP ${createRes.status}`;
-      return { ok: false, error: msg };
+      return { ok: false, error: redact(String(msg)) };
     }
 
-    const htmlUrl = repoJson.html_url;
-    const cloneUrl = repoJson.clone_url;
+    htmlUrl = typeof repoJson.html_url === "string" ? repoJson.html_url : "";
+    const cloneUrl = typeof repoJson.clone_url === "string" ? repoJson.clone_url : "";
 
-    if (!cloneUrl) {
-      return { ok: false, error: "GitHub не вернул URL репозитория" };
+    if (!cloneUrl || !/^https:\/\/github\.com\//i.test(cloneUrl)) {
+      return { ok: false, error: "GitHub не вернул корректный URL репозитория" };
     }
 
-    // Authenticated remote URL
-    const authRemote = cloneUrl.replace("https://", `https://${token}@`);
+    // Токен НЕ попадает ни в URL remote, ни в argv git (его видно в списке
+    // процессов и в .git/config): авторизация передаётся ТОЛЬКО через
+    // переменные окружения дочернего процесса (GIT_CONFIG_COUNT/KEY/VALUE,
+    // git >= 2.31) и только на время push.
+    const pushEnv: NodeJS.ProcessEnv = {
+      ...baseEnv,
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.extraHeader",
+      GIT_CONFIG_VALUE_0: `Authorization: ${authHeader}`,
+    };
 
-    // 2. Initialize git and push
-    await execFileAsync("git", ["init"], { cwd: outDir });
-    await execFileAsync("git", ["config", "user.name", "NanoDecompiler"], { cwd: outDir });
-    await execFileAsync("git", ["config", "user.email", "nanodecompiler@local"], { cwd: outDir });
-    await execFileAsync("git", ["add", "."], { cwd: outDir });
+    await git(["init"]);
+    await git(["config", "user.name", "NanoDecompiler"]);
+    await git(["config", "user.email", "nanodecompiler@local"]);
+    await git(["add", "."]);
 
     try {
-      await execFileAsync("git", ["commit", "-m", "Decompiled with NanoDecompiler v2.0.0-alpha"], { cwd: outDir });
-    } catch {
-      // Nothing to commit or already committed
+      await git(["commit", "-m", "Decompiled with NanoDecompiler v2.0.0-alpha"]);
+    } catch (e: any) {
+      // "nothing to commit" (повторный экспорт того же дерева) - не ошибка,
+      // любые другие причины (нет identity, сбой git) раньше глотались и
+      // превращались в загадочное "src refspec main does not match any".
+      const text = `${e?.stdout ?? ""}${e?.stderr ?? ""}${e?.message ?? ""}`;
+      if (!/nothing to commit|nothing added to commit|no changes added/i.test(text)) throw e;
     }
 
-    await execFileAsync("git", ["branch", "-M", "main"], { cwd: outDir });
+    await git(["branch", "-M", "main"]);
 
     try {
-      await execFileAsync("git", ["remote", "remove", "origin"], { cwd: outDir });
+      await git(["remote", "remove", "origin"]);
     } catch {
       // Ignore if origin doesn't exist
     }
 
-    await execFileAsync("git", ["remote", "add", "origin", authRemote], { cwd: outDir });
-    await execFileAsync("git", ["push", "-u", "origin", "main", "--force"], { cwd: outDir });
-
-    // Clean remote URL to avoid storing token in .git/config
-    try {
-      await execFileAsync("git", ["remote", "set-url", "origin", cloneUrl], { cwd: outDir });
-    } catch {
-      // Ignore
-    }
+    await git(["remote", "add", "origin", cloneUrl]);
+    // Репозиторий только что создан и пуст - --force не нужен (раньше push
+    // шёл с --force и мог затереть чужую историю, если создание повторялось).
+    await git(["push", "-u", "origin", "main"], pushEnv, 600000);
 
     return { ok: true, url: htmlUrl };
   } catch (err: any) {
-    return { ok: false, error: err?.message || String(err) };
+    const base = redact(String(err?.stderr || err?.message || err));
+    const hint = htmlUrl ? ` (репозиторий уже создан: ${htmlUrl} - удалите его вручную или повторите отправку)` : "";
+    return { ok: false, error: base + hint };
   }
 }

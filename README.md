@@ -4,10 +4,10 @@
 
 **Декомпилятор Minecraft-плагинов и модов с честной эвристикой вместо красивого вранья.**
 
-[![Version](https://img.shields.io/badge/version-1.9.157-b6ff3c?style=for-the-badge&logo=codeforces&logoColor=000)](https://github.com/NanoDev1488/NanoDecompiler)
+[![Version](https://img.shields.io/badge/version-2.0.0--alpha-b6ff3c?style=for-the-badge&logo=codeforces&logoColor=000)](https://github.com/NanoDev1488/NanoDecompiler)
 [![Engine](https://img.shields.io/badge/Engine-C%2B%2B17%20Native-38bdf8?style=for-the-badge&logo=c%2B%2B&logoColor=white)](https://github.com/NanoDev1488/NanoDecompiler)
 [![Lite GUI](https://img.shields.io/badge/Lite%20GUI-C%23%20Avalonia-a855f7?style=for-the-badge&logo=dotnet&logoColor=white)](https://github.com/NanoDev1488/NanoDecompiler)
-[![Telemetry](https://img.shields.io/badge/Telemetry-0%25%20Offline-4ade80?style=for-the-badge&logo=shield&logoColor=white)](https://github.com/NanoDev1488/NanoDecompiler)
+[![Telemetry](https://img.shields.io/badge/Telemetry-opt--in%20(off%20by%20default)-4ade80?style=for-the-badge&logo=shield&logoColor=white)](https://github.com/NanoDev1488/NanoDecompiler)
 [![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-38bdf8?style=for-the-badge&logo=githubpages&logoColor=white)](https://nanodev1488.github.io/NanoDecompiler/)
 
 Bukkit · Spigot · Paper · Purpur · Velocity · BungeeCord · Fabric · Forge · NeoForge
@@ -45,8 +45,8 @@ Bukkit · Spigot · Paper · Purpur · Velocity · BungeeCord · Fabric · Forge
       <p>Эвристический аудит безопасности на наличие скрытых Discord Webhook'ов, троянов, удаленного исполнения команд и кражи сессий.</p>
     </td>
     <td width="33%" valign="top">
-      <h3>🔒 100% Офлайн и Приватность</h3>
-      <p>Абсолютно нулевая телеметрия. Приложение не отправляет ваши JAR-файлы, исходники или логи на сторонние серверы.</p>
+      <h3>🔒 Офлайн по умолчанию</h3>
+      <p>Телеметрия и сетевая проверка легитимности плагинов <b>выключены по умолчанию</b> и включаются только вами. Подробности - в разделе «Приватность» ниже.</p>
     </td>
   </tr>
 </table>
@@ -61,10 +61,24 @@ NanoDecompiler берёт `.jar` скомпилированного плагин
 ресурсы плагина рядом с кодом — всё так, как будто открываешь исходники
 автора, а не байткод.
 
-Инструмент целиком **desktop, офлайн, без Python** — Electron-приложение
-на React поверх собственного декомпилятора на C++17. На данный момент
-инструмент не отправляет никуда ничего — ни сам jar, ни какие-либо данные
-о нём или о вас.
+Инструмент целиком **desktop, без Python** — Electron-приложение
+на React поверх собственного декомпилятора на C++17. Сам jar никогда не
+покидает ваш компьютер. Из коробки приложение обращается к сети только за
+номером новой версии (api.github.com); всё остальное — см. «Приватность».
+
+## Приватность
+
+Что приложение может отправлять в сеть и когда:
+
+| Функция | По умолчанию | Что уходит и куда |
+|---|---|---|
+| Проверка обновлений | включена | запрос версии к `api.github.com` (виден ваш IP); отключается в настройках |
+| Проверка легитимности плагинов | **выключена** | название/автор плагина → GitHub, Modrinth, Spiget, Hangar, SpigotMC.ru; список сайтов подтягивается с `raw.githubusercontent.com` |
+| Отправка отчётов об ошибках | **выключена** | имя jar/плагина, версии, ОС, статистика и короткие фрагменты декомпилированного кода вокруг мест с байткодом → сервер разработчика (HTTP). Полные исходники файлов — только по ручной кнопке в карточке плагина |
+| Поиск похожих репозиториев | только по клику | название/автор плагина → api.github.com |
+| Экспорт в GitHub | только по клику | декомпилированный проект → ваш репозиторий на GitHub (токен передаётся только в окружении процесса git и нигде не сохраняется) |
+
+Пока вы не включили соответствующий переключатель в «Настройках» (и в мастере первого запуска), ничего, кроме запроса версии, не отправляется. Свой сервер отчётов можно указать переменной окружения `NANO_TELEMETRY_URL` (желательно HTTPS), секрет сервера — `NANO_TELEMETRY_SECRET`.
 
 ## Возможности
 

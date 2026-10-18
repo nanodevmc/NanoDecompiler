@@ -55,14 +55,22 @@ async function getAppVersions(): Promise<{ app_version: string; engine_version: 
 // отчёта с пустой статистикой (или к пропуску отправки вовсе, если
 // решение "отправлять или нет" тоже принималось по этому же устаревшему
 // job.details). Если override передан - используем его вместо job.details.
-export async function buildTelemetryReport(job: Job, userComment: string, detailsOverride?: JobDetails): Promise<TelemetryReport> {
+export async function buildTelemetryReport(
+  job: Job,
+  userComment: string,
+  detailsOverride?: JobDetails,
+  // false при автоматической отправке: полные исходники файлов чужого плагина
+  // уходят на сервер только по явному действию пользователя (ручная кнопка).
+  includeSources = true,
+): Promise<TelemetryReport> {
   const versions = await getAppVersions();
   const stats = (detailsOverride ?? job.details)?.stats;
   const fallbackPct = stats && stats.total_methods > 0 ? (stats.fallback_methods / stats.total_methods) * 100 : 0;
   const heavy_files: { file: string; content: string; fallback_pct: number }[] = [];
 
   // Если более 5% байткод в файле/проекте остался - отправляется содержимое файлов для отладки
-  if (fallbackPct > 5.0 && job.files && job.files.length > 0) {
+  // (только при includeSources - см. комментарий к параметру выше)
+  if (includeSources && fallbackPct > 5.0 && job.files && job.files.length > 0) {
     for (const f of job.files.slice(0, 15)) {
       if (f.code && (f.note || stats?.fallback_contexts.some(c => c.file.includes(f.name)))) {
         heavy_files.push({

@@ -240,7 +240,9 @@ export function SetupWizard() {
                 </label>
                 <label className="flex items-center justify-between rounded-lg border border-line bg-bg px-3.5 py-2.5">
                   <span className="text-[12px] text-ink/90">
-                    {lang === "ru" ? "Проверка легитимности плагинов" : "Plugin legitimacy check"}
+                    {lang === "ru"
+                      ? "Проверка легитимности плагинов (отправляет название плагина в GitHub/Modrinth/Spiget/Hangar)"
+                      : "Plugin legitimacy check (sends the plugin name to GitHub/Modrinth/Spiget/Hangar)"}
                   </span>
                   <input
                     type="checkbox"

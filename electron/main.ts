@@ -9,17 +9,25 @@
 // на Python; сейчас GUI по-прежнему остаётся отдельным TypeScript-слоем
 // поверх движка, спавнящим его как дочерний процесс - изменился только сам
 // движок, не сама архитектура "GUI отдельно, движок отдельно").
-import { app, BrowserWindow, ipcMain, dialog, shell } from "electron";
-import { spawn, ChildProcessWithoutNullStreams, execSync } from "child_process";
+import { app, BrowserWindow, ipcMain, dialog, shell, session } from "electron";
+import { spawn, execFile, ChildProcess, ChildProcessWithoutNullStreams } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as https from "https";
-import { registerUpdateHandlers } from "./updater";
+import { promisify } from "util";
+import { registerUpdateHandlers, sweepStaleUpdateDirs } from "./updater";
 import { readJarSummaryNative } from "./jarSummary";
 import { GUI_VERSION } from "./version";
-import { extractArchiveAndScanPlugins, isSupportedArchive, ArchiveProgressEvent } from "./archiveExtractor";
+import {
+  extractArchiveAndScanPlugins,
+  isSupportedArchive,
+  ArchiveProgressEvent,
+  archivesRootDir,
+  sweepStaleArchiveTemps,
+} from "./archiveExtractor";
 import { getPluginTree, compareJars, exportToGitHub } from "./pluginTools";
+import { resolveWithinRoot as resolveWithinRootGuarded, isSamePathOrInside, isFilesystemRootOrHome, isRiskyToOpen } from "./pathGuards";
 
 // БАГ-ФИКС (реальный, воспроизведён пользователем на AntiX Linux -
 // "Read-only file system"): DEFAULT_SETTINGS.outputDir = "~/NanoDecompiler/out"
@@ -29,6 +37,8 @@ import { getPluginTree, compareJars, exportToGitHub } from "./pluginTools";
 // смонтированный squashfs-образ - физически read-only. На Windows "~"
 // вообще ничего не значит ни в каком контексте - та же причина там тоже
 // правдоподобно объясняет "движок не запускается" с самого начала.
+const execFileAsync = promisify(execFile);
+
 function expandHome(p: string): string {
   if (p === "~") return os.homedir();
   if (p.startsWith("~/") || p.startsWith("~\\")) return path.join(os.homedir(), p.slice(2));
@@ -63,6 +73,26 @@ function pushAppLog(kind: string, msg: string) {
 }
 let runningProc: ChildProcessWithoutNullStreams | null = null;
 
+// Убивает процесс вместе с дочерними (движок сам запускает curl при установке
+// JDK/Maven): на Windows - taskkill /T, на POSIX - вся process group, если
+// процесс был запущен с detached:true, иначе только он сам.
+function killProcessTree(proc: ChildProcess | null): void {
+  if (!proc || !proc.pid || proc.exitCode !== null) return;
+  try {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/PID", String(proc.pid), "/T", "/F"], { windowsHide: true });
+    } else {
+      try {
+        process.kill(-proc.pid, "SIGTERM");
+      } catch {
+        proc.kill();
+      }
+    }
+  } catch {
+    // процесс уже завершился
+  }
+}
+
 const isDev = !app.isPackaged;
 
 // Настройки (см. HANDOFF_19 - экран настроек, раньше не было вообще).
@@ -87,27 +117,34 @@ type Settings = {
   // НОВОЕ v1.8.4: язык интерфейса.
   language: "ru" | "en";
   // НОВОЕ v1.8.4 (телеметрия - "сбор ошибок + отправка на сервер"): адрес
-  // мини-бэкенда (см. telemetry-server/) и переключатель. По умолчанию
-  // ВЫКЛЮЧЕНО - отчёт содержит фрагменты декомпилированного кода ЧУЖОГО
-  // плагина (не только метаданные о самом приложении), отправлять это
-  // молча без явного согласия пользователя нечестно. Доработка v1.9.5
-  // (прямая просьба - "если телеметрия включена, обязательно отправлять
-  // ВСЁ, все байткоды ошибок"): включение ЗДЕСЬ теперь и есть согласие -
-  // при завершении любого job'а с хотя бы одним fallback-контекстом отчёт
-  // уходит автоматически (см. finalize() в state/engine.tsx), кнопка в
-  // карточке плагина остаётся для ручной отправки/повтора.
+  // мини-бэкенда (см. telemetry-server/) и переключатель.
+  //
+  // ПРИВАТНОСТЬ (исправлено в 2.0.0-alpha): по умолчанию ВЫКЛЮЧЕНО. Раньше
+  // здесь стояло true, а комментарий утверждал обратное - из-за этого отчёт с
+  // декомпилированным кодом ЧУЖОГО плагина уходил на сервер без ведома
+  // пользователя, при том что README обещал "нулевую телеметрию". Теперь:
+  //  - пока пользователь сам не включил переключатель, не отправляется НИЧЕГО;
+  //  - автоматический отчёт (после job'а с байткод-откатами) содержит ТОЛЬКО
+  //    статистику и короткие фрагменты вокруг мест отката; полные исходники
+  //    файлов (heavy_files) уходят исключительно по ручной кнопке отправки
+  //    в карточке плагина (см. sendErrorReport в state/engine.tsx).
   disableVsCodeLogs: boolean;
   telemetryEnabled: boolean;
   telemetryUrl: string;
 };
+// ПРИВАТНОСТЬ: всё, что обращается к сети ради "удобства" (проверка
+// легитимности плагина на GitHub/Modrinth/Spiget/Hangar - раскрывает, КАКОЙ
+// плагин вы анализируете), и телеметрия выключены по умолчанию и включаются
+// осознанно (мастер первого запуска и экран настроек). Проверка обновлений
+// (запрос к api.github.com за номером версии) остаётся включённой.
 const DEFAULT_SETTINGS: Settings = {
-  legitimacyCheck: true,
+  legitimacyCheck: false,
   autoUpdateCheck: true,
   appIcon: "terminal",
   setupCompleted: false,
   language: "ru",
   disableVsCodeLogs: false,
-  telemetryEnabled: true,
+  telemetryEnabled: false,
   telemetryUrl: "http://195.179.231.14:15015/report",
 };
 
@@ -115,43 +152,81 @@ function settingsPath(): string {
   return path.join(app.getPath("userData"), "settings.json");
 }
 
+// Адрес телеметрии можно переопределить ТОЛЬКО переменной окружения (для
+// собственного сервера за HTTPS), но не данными из settings.json / рендерера.
+function effectiveTelemetryUrl(): string {
+  const fromEnv = process.env.NANO_TELEMETRY_URL;
+  if (fromEnv) {
+    try {
+      const u = new URL(fromEnv);
+      if (u.protocol === "https:" || u.protocol === "http:") return u.toString();
+    } catch {
+      // некорректный адрес в окружении - игнорируем, берём значение по умолчанию
+    }
+  }
+  return DEFAULT_SETTINGS.telemetryUrl;
+}
+
+// Разбираем поле за полем (не просто {...DEFAULT, ...parsed}) - на случай если
+// в файле окажется мусор/чужой тип по конкретному ключу (напр. кто-то руками
+// отредактировал файл) - тогда берём дефолт именно для ЭТОГО ключа, а не
+// роняем все настройки разом. Та же функция чистит и входящий патч из
+// рендерера (settings:set) - раньше туда принимался любой объект целиком.
+function normalizeSettings(parsed: unknown): Settings {
+  const p = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
+  const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
+  return {
+    legitimacyCheck: bool(p.legitimacyCheck, DEFAULT_SETTINGS.legitimacyCheck),
+    autoUpdateCheck: bool(p.autoUpdateCheck, DEFAULT_SETTINGS.autoUpdateCheck),
+    appIcon: p.appIcon === "terminal" || p.appIcon === "layers" ? p.appIcon : DEFAULT_SETTINGS.appIcon,
+    setupCompleted: bool(p.setupCompleted, DEFAULT_SETTINGS.setupCompleted),
+    language: p.language === "ru" || p.language === "en" ? p.language : DEFAULT_SETTINGS.language,
+    disableVsCodeLogs: bool(p.disableVsCodeLogs, DEFAULT_SETTINGS.disableVsCodeLogs),
+    telemetryEnabled: bool(p.telemetryEnabled, DEFAULT_SETTINGS.telemetryEnabled),
+    // БАГ-ФИКС v1.9.12 (жалоба "новый IP не работает"): telemetryUrl
+    // ВСЕГДА берётся из кода, сохранённое значение из settings.json на
+    // диске ИГНОРИРУЕТСЯ. Причина: ввод URL был убран из UI ещё несколько
+    // волн назад (поле больше не показывается, не редактируется) - значит
+    // пользователь ЗАВЕДОМО не контролирует его вручную. У пользователей со
+    // старым IP в settings.json отчёты летели на несуществующий сервер.
+    telemetryUrl: effectiveTelemetryUrl(),
+  };
+}
+
 function loadSettings(): Settings {
   try {
     const raw = fs.readFileSync(settingsPath(), "utf-8");
-    const parsed = JSON.parse(raw);
-    // Разбираем поле за полем (не просто {...DEFAULT, ...parsed}) - на
-    // случай если в файле окажется мусор/чужой тип по конкретному ключу
-    // (напр. кто-то руками отредактировал файл) - тогда берём дефолт
-    // именно для ЭТОГО ключа, а не роняем все настройки разом.
-    return {
-      legitimacyCheck: typeof parsed.legitimacyCheck === "boolean" ? parsed.legitimacyCheck : DEFAULT_SETTINGS.legitimacyCheck,
-      autoUpdateCheck: typeof parsed.autoUpdateCheck === "boolean" ? parsed.autoUpdateCheck : DEFAULT_SETTINGS.autoUpdateCheck,
-      appIcon: parsed.appIcon === "terminal" || parsed.appIcon === "layers" ? parsed.appIcon : DEFAULT_SETTINGS.appIcon,
-      setupCompleted: typeof parsed.setupCompleted === "boolean" ? parsed.setupCompleted : DEFAULT_SETTINGS.setupCompleted,
-      language: parsed.language === "ru" || parsed.language === "en" ? parsed.language : DEFAULT_SETTINGS.language,
-      disableVsCodeLogs: typeof parsed.disableVsCodeLogs === "boolean" ? parsed.disableVsCodeLogs : DEFAULT_SETTINGS.disableVsCodeLogs,
-      telemetryEnabled: typeof parsed.telemetryEnabled === "boolean" ? parsed.telemetryEnabled : DEFAULT_SETTINGS.telemetryEnabled,
-      // БАГ-ФИКС v1.9.12 (жалоба "новый IP не работает"): telemetryUrl
-      // ВСЕГДА берётся из DEFAULT_SETTINGS, сохранённое значение из
-      // settings.json на диске ИГНОРИРУЕТСЯ. Причина: ввод URL был убран из
-      // UI ещё несколько волн назад (поле больше не показывается, не
-      // редактируется) - значит пользователь ЗАВЕДОМО не контролирует его
-      // вручную, и хранить его в settings.json как "пользовательскую
-      // настройку" больше не имеет смысла. Конкретная проблема: у
-      // пользователей, у которых уже есть settings.json со старым IP,
-      // loadSettings() читал СТАРЫЙ IP из файла, и отчёты летели на
-      // несуществующий сервер - несмотря на то что DEFAULT_SETTINGS
-      // давно содержит актуальный адрес. Теперь смена адреса в
-      // DEFAULT_SETTINGS.telemetryUrl гарантированно работает для всех.
-      telemetryUrl: DEFAULT_SETTINGS.telemetryUrl,
-    };
+    return normalizeSettings(JSON.parse(raw));
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return normalizeSettings({});
   }
 }
 
+// Из патча рендерера берём только известные ключи с корректным типом.
+function sanitizeSettingsPatch(partial: unknown): Partial<Settings> {
+  const out: Partial<Settings> = {};
+  if (!partial || typeof partial !== "object") return out;
+  const p = partial as Record<string, unknown>;
+  const defaults = normalizeSettings({});
+  const full = normalizeSettings(p);
+  for (const key of Object.keys(defaults) as (keyof Settings)[]) {
+    if (key === "telemetryUrl") continue; // адрес менять нельзя
+    if (!(key in p)) continue;
+    // normalizeSettings подставил дефолт при неверном типе - берём только "родные" значения
+    const given = p[key];
+    if (typeof given === typeof defaults[key] && given === full[key]) (out as Record<string, unknown>)[key] = given;
+  }
+  return out;
+}
+
 function saveSettings(s: Settings): void {
-  fs.writeFileSync(settingsPath(), JSON.stringify(s, null, 2), "utf-8");
+  // Атомарная запись (tmp + rename): падение процесса посреди writeFileSync
+  // раньше оставляло обрезанный settings.json и сброс ВСЕХ настроек.
+  const target = settingsPath();
+  const tmp = `${target}.${process.pid}.tmp`;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(tmp, JSON.stringify(s, null, 2), "utf-8");
+  fs.renameSync(tmp, target);
 }
 
 // БАГ-ФИКС/фича: выбор иконки приложения (см. Settings.appIcon выше).
@@ -213,6 +288,53 @@ function engineInvocation(scriptArgs: string[]): { cmd: string; args: string[] }
   return { cmd: binPath, args: scriptArgs };
 }
 
+// БЕЗОПАСНОСТЬ окна: в рендерере показывается текст из ЧУЖИХ плагинов
+// (декомпилированный код, plugin.yml, changelog с GitHub), поэтому он работает
+// в песочнице и не может ни открыть произвольное окно, ни уйти на другой адрес.
+//  - sandbox: true - preload.ts использует только contextBridge/ipcRenderer
+//    (никакого require("fs") и т.п.), так что песочница ему не мешает;
+//  - вебвью, popup'ы и навигация за пределы index.html запрещены; http(s)-ссылки
+//    открываются в системном браузере.
+function secureWebPreferences(): Electron.WebPreferences {
+  return {
+    preload: path.join(__dirname, "preload.js"),
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+    webSecurity: true,
+    allowRunningInsecureContent: false,
+    webviewTag: false,
+  };
+}
+
+function isAppNavigationUrl(rawUrl: string): boolean {
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol === "file:") {
+      const indexPath = path.resolve(path.join(__dirname, "..", "dist", "index.html"));
+      const requested = path.resolve(decodeURIComponent(u.pathname.replace(/^\/([A-Za-z]:)/, "$1")));
+      return process.platform === "win32" ? requested.toLowerCase() === indexPath.toLowerCase() : requested === indexPath;
+    }
+    const dev = process.env.VITE_DEV_SERVER_URL;
+    return !!(isDev && dev && u.origin === new URL(dev).origin);
+  } catch {
+    return false;
+  }
+}
+
+function hardenWindow(win: BrowserWindow): void {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: "deny" };
+  });
+  win.webContents.on("will-navigate", (event, url) => {
+    if (isAppNavigationUrl(url)) return;
+    event.preventDefault();
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+  });
+  win.webContents.on("will-attach-webview", (event) => event.preventDefault());
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1180,
@@ -236,12 +358,10 @@ function createWindow() {
     // (см. window:minimize/maximize/close ниже).
     frame: false,
     icon: iconPathFor(loadSettings().appIcon),
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    webPreferences: secureWebPreferences(),
   });
+
+  hardenWindow(mainWindow);
 
   if (isDev && process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
@@ -258,8 +378,24 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Рендереру не нужны камера/микрофон/геолокация/уведомления и т.п. - отказываем во всём.
+  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
+
+  // Подчищаем временные каталоги прошлых запусков (распакованные архивы и
+  // скачанные установщики) - раньше они копились в %TEMP% бесконечно.
+  void sweepStaleArchiveTemps();
+  sweepStaleUpdateDirs();
+
   registerUpdateHandlers(engineDir, engineInvocation);
   createWindow();
+});
+
+// Не оставляем осиротевшие дочерние процессы (движок декомпиляции, установщик
+// JDK/Maven с их curl) при закрытии окна во время работы.
+app.on("before-quit", () => {
+  killProcessTree(runningProc);
+  killProcessTree(installingProc);
 });
 
 // НОВОЕ v1.9.8: создаёт/фокусирует окно логов - вызывается по IPC
@@ -280,12 +416,9 @@ function openLogWindow() {
     autoHideMenuBar: true,
     frame: false,
     icon: iconPathFor(loadSettings().appIcon),
-    webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    webPreferences: secureWebPreferences(),
   });
+  hardenWindow(logWindow);
   const hash = "#/logs";
   if (isDev && process.env.VITE_DEV_SERVER_URL) {
     logWindow.loadURL(process.env.VITE_DEV_SERVER_URL + hash);
@@ -306,7 +439,9 @@ ipcMain.handle("applog:getAll", () => appLogBuffer);
 // fire-and-forget со стороны renderer'а (см. toast() в engine.tsx) - не
 // invoke, специально handle с "on", а не "handle" - ответ не нужен никому.
 ipcMain.on("applog:push", (_event, kind: string, msg: string) => {
-  pushAppLog(String(kind), String(msg));
+  // Ограничиваем длину: рендерер может прислать любой объём текста, а буфер
+  // живёт в памяти main-процесса и рассылается в оба окна.
+  pushAppLog(String(kind).slice(0, 32), String(msg).slice(0, 8000));
 });
 
 app.on("window-all-closed", () => {
@@ -315,7 +450,10 @@ app.on("window-all-closed", () => {
 
 ipcMain.handle("settings:get", async (): Promise<Settings> => loadSettings());
 
-ipcMain.handle("settings:set", async (_e, partial: Partial<Settings>): Promise<Settings & { ok: boolean; error?: string }> => {
+ipcMain.handle("settings:set", async (_e, rawPartial: unknown): Promise<Settings & { ok: boolean; error?: string }> => {
+  // Принимаем только известные ключи с корректным типом (раньше в settings.json
+  // записывался любой объект, присланный рендерером).
+  const partial = sanitizeSettingsPatch(rawPartial);
   const merged = { ...loadSettings(), ...partial };
   try {
     saveSettings(merged);
@@ -367,24 +505,45 @@ ipcMain.handle("dialog:selectJar", async () => {
   return res.filePaths;
 });
 
-ipcMain.handle("archive:isArchive", async (_e, filePath: string) => {
-  return isSupportedArchive(filePath);
+ipcMain.handle("archive:isArchive", async (_e, filePath: unknown) => {
+  return typeof filePath === "string" && isSupportedArchive(filePath);
 });
 
-ipcMain.handle("archive:extract", async (_e, archivePath: string) => {
-  return await extractArchiveAndScanPlugins(archivePath, (ev: ArchiveProgressEvent) => {
+ipcMain.handle("archive:extract", async (_e, archivePath: unknown) => {
+  if (typeof archivePath !== "string" || !archivePath || archivePath.includes("\0")) {
+    return {
+      ok: false,
+      archivePath: String(archivePath ?? ""),
+      tempDir: "",
+      plugins: [],
+      serverCores: [],
+      skippedNonPlugins: 0,
+      totalJarsFound: 0,
+      error: "некорректный путь к архиву",
+    };
+  }
+  // Абсолютный путь: имя, начинающееся с "-", иначе могло бы быть принято
+  // внешним распаковщиком за ключ командной строки.
+  return await extractArchiveAndScanPlugins(path.resolve(expandHome(archivePath)), (ev: ArchiveProgressEvent) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send("archive:progress", ev);
     }
   });
 });
 
-ipcMain.handle("archive:cleanupTemp", async (_e, tempDir: string) => {
+ipcMain.handle("archive:cleanupTemp", async (_e, tempDir: unknown) => {
+  // БЕЗОПАСНОСТЬ: раньше удалялось всё, чей путь СОДЕРЖАЛ подстроку "NanoDecompiler"
+  // (в т.ч. ~/Documents/NanoDecompiler_projects или папка с результатом). Теперь
+  // удаляются только подкаталоги именно нашей временной папки распаковки.
   try {
-    if (tempDir && tempDir.includes("NanoDecompiler") && fs.existsSync(tempDir)) {
-      await fs.promises.rm(tempDir, { recursive: true, force: true });
-      return true;
-    }
+    if (typeof tempDir !== "string" || !tempDir || tempDir.includes("\0")) return false;
+    const root = path.resolve(archivesRootDir());
+    const target = path.resolve(tempDir);
+    if (target === root || !isSamePathOrInside(root, target)) return false;
+    const st = await fs.promises.lstat(target).catch(() => null);
+    if (!st || !st.isDirectory() || st.isSymbolicLink()) return false;
+    await fs.promises.rm(target, { recursive: true, force: true });
+    return true;
   } catch {
     // ignore
   }
@@ -408,16 +567,28 @@ ipcMain.handle("dialog:selectOutDir", async (_e, defaultPath?: string) => {
   return res.filePaths[0];
 });
 
-ipcMain.handle("shell:openPath", async (_e, target: string) => {
-  await shell.openPath(expandHome(target));
+ipcMain.handle("shell:openPath", async (_e, target: unknown) => {
+  if (typeof target !== "string" || !target || target.includes("\0")) return;
+  const resolved = path.resolve(expandHome(target));
+  // shell.openPath работает как двойной клик: для .exe/.bat/.jar/.sh и т.п. это
+  // ЗАПУСК файла. Исполняемые типы не открываем (папки и обычные файлы - можно).
+  if (isRiskyToOpen(resolved)) return;
+  await shell.openPath(resolved);
 });
 
-ipcMain.handle("shell:openExternal", async (_e, url: string) => {
+ipcMain.handle("shell:openExternal", async (_e, url: unknown) => {
   // Только http(s) - см. HANDOFF_16, ссылка на баг-репорт/скачивание
   // нового инсталлятора открывается в системном браузере, а не внутри
   // окна приложения.
-  if (/^https?:\/\//i.test(url)) {
-    await shell.openExternal(url);
+  if (typeof url !== "string" || url.length > 4096) return;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+    await shell.openExternal(parsed.toString());
   }
 });
 
@@ -442,11 +613,35 @@ const EDITOR_REGISTRY: Record<EditorId, { label: string; command: string; winOnl
 
 function isCommandAvailable(cmd: string): Promise<boolean> {
   return new Promise(resolve => {
+    // `where`/`which` - обычные исполняемые файлы: shell не нужен (раньше стоял
+    // shell:true, а имя команды подставлялось в командную строку).
     const checker = process.platform === "win32" ? "where" : "which";
-    const proc = spawn(checker, [cmd], { shell: true, windowsHide: true });
+    const proc = spawn(checker, [cmd], { windowsHide: true });
+    // Без обработки stdout/stderr буфер пайпа мог забиться и повесить процесс.
+    proc.stdout.resume();
+    proc.stderr.resume();
     proc.on("error", () => resolve(false));
     proc.on("close", code => resolve(code === 0));
   });
+}
+
+// Запуск редактора с путём к проекту. На POSIX - без shell. На Windows .cmd-обёртки
+// (code.cmd, subl.cmd) без cmd.exe не запустить, поэтому там shell остаётся, но
+// командную строку собираем САМИ: путь в двойных кавычках (внутри них cmd.exe
+// не трактует & | < > ^ как операторы), а символы, которые и в кавычках
+// раскрываются/ломают разбор (% и "), отвергаем. Раньше путь передавался как
+// есть и имя папки вида `a&calc&.jar` исполнялось как команда.
+function spawnEditor(command: string, rawTarget: string): ChildProcess {
+  const target = path.resolve(expandHome(rawTarget));
+  if (process.platform === "win32") {
+    if (/["%\r\n\0]/.test(target)) {
+      throw new Error('путь содержит недопустимые символы (", % или перевод строки)');
+    }
+    const quoted = `"${target.replace(/[\\/]+$/, "")}"`;
+    return spawn(command, [quoted], { shell: true, windowsHide: true, windowsVerbatimArguments: true });
+  }
+  if (target.includes("\0")) throw new Error("путь содержит NUL");
+  return spawn(command, [target], { windowsHide: true });
 }
 
 // НОВОЕ v1.7.6 (реальный запрос - "поиск похожих репозиториев на GitHub по
@@ -471,8 +666,22 @@ function githubApiGet(query: string): Promise<{ items?: unknown[] } | null> {
         timeout: 8000,
       },
       res => {
+        // Лимит на размер ответа и проверка статуса (rate limit 403/429 раньше
+        // парсился как "успешный" JSON с сообщением об ошибке вместо items).
+        if (res.statusCode !== 200) {
+          res.resume();
+          resolve(null);
+          return;
+        }
+        res.setEncoding("utf8");
         let data = "";
-        res.on("data", chunk => (data += chunk));
+        res.on("data", (chunk: string) => {
+          data += chunk;
+          if (data.length > 2 * 1024 * 1024) {
+            req.destroy();
+            resolve(null);
+          }
+        });
         res.on("end", () => {
           try {
             resolve(JSON.parse(data));
@@ -480,6 +689,7 @@ function githubApiGet(query: string): Promise<{ items?: unknown[] } | null> {
             resolve(null);
           }
         });
+        res.on("error", () => resolve(null));
       },
     );
     req.on("error", () => resolve(null));
@@ -490,11 +700,19 @@ function githubApiGet(query: string): Promise<{ items?: unknown[] } | null> {
   });
 }
 
-ipcMain.handle("github:searchSimilar", async (_e, pluginName: string | null, author: string | null) => {
+ipcMain.handle("github:searchSimilar", async (_e, pluginNameRaw: unknown, authorRaw: unknown) => {
   const byFullName = new Map<string, GithubRepoResult>();
   const queries: string[] = [];
-  if (pluginName && pluginName.trim()) queries.push(`${pluginName.trim()} in:name`);
-  if (author && author.trim()) queries.push(`user:${author.trim()}`);
+  // Имя плагина и автор берутся из plugin.yml ЧУЖОГО jar. Раньше они вставлялись в
+  // поисковый запрос как есть - автор вида `x user:other in:name` подмешивал
+  // произвольные квалификаторы GitHub Search. Теперь: имя - только слова/цифры/
+  // . _ - и пробелы, автор - только допустимый логин GitHub.
+  const pluginName =
+    typeof pluginNameRaw === "string" ? pluginNameRaw.replace(/[^\p{L}\p{N} ._-]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 100) : "";
+  const author =
+    typeof authorRaw === "string" && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(authorRaw.trim()) ? authorRaw.trim() : "";
+  if (pluginName) queries.push(`${pluginName} in:name`);
+  if (author) queries.push(`user:${author}`);
   if (queries.length === 0) return { ok: false, error: "не удалось определить ни имя плагина, ни автора из plugin.yml" };
 
   for (const q of queries) {
@@ -550,9 +768,11 @@ ipcMain.handle("apps:detect", async () => {
   return result;
 });
 
-ipcMain.handle("apps:openWith", async (_e, editorId: EditorId, target: string) => {
-  const editor = EDITOR_REGISTRY[editorId];
+ipcMain.handle("apps:openWith", async (_e, editorId: EditorId, target: unknown) => {
+  // hasOwn: без него editorId вроде "constructor"/"__proto__" давал бы "редактор".
+  const editor = Object.prototype.hasOwnProperty.call(EDITOR_REGISTRY, editorId) ? EDITOR_REGISTRY[editorId] : undefined;
   if (!editor) return { ok: false, error: "Неизвестный редактор" };
+  if (typeof target !== "string" || !target) return { ok: false, error: "Не указан путь" };
   // См. комментарий в apps:detect - на Linux `code` может отсутствовать,
   // а `codium` (VSCodium) - быть. Проверяем `code` первым (более
   // распространённый случай), падаем на `codium` только если `code`
@@ -563,7 +783,13 @@ ipcMain.handle("apps:openWith", async (_e, editorId: EditorId, target: string) =
     if (await isCommandAvailable("codium")) command = "codium";
   }
   return new Promise(resolve => {
-    const proc = spawn(command, [expandHome(target)], { shell: true, windowsHide: true });
+    let proc: ChildProcess;
+    try {
+      proc = spawnEditor(command, target);
+    } catch (e) {
+      resolve({ ok: false, error: (e as Error).message });
+      return;
+    }
     let errored = false;
     proc.on("error", () => {
       errored = true;
@@ -576,7 +802,8 @@ ipcMain.handle("apps:openWith", async (_e, editorId: EditorId, target: string) =
   });
 });
 
-ipcMain.handle("shell:openInVSCode", async (_e, target: string) => {
+ipcMain.handle("shell:openInVSCode", async (_e, target: unknown) => {
+  if (typeof target !== "string" || !target) return { ok: false, error: "Не указан путь" };
   // `code` - это shell-команда, которую сам VS Code добавляет в PATH при
   // установке (опция "Add to PATH" в инсталляторе, включена по умолчанию
   // на Windows) - если её нет, значит VS Code либо не установлен, либо
@@ -584,7 +811,13 @@ ipcMain.handle("shell:openInVSCode", async (_e, target: string) => {
   // Code на Windows (сам `code` там - это code.cmd, как и `mvn.cmd` в
   // toolinstaller.hpp - на POSIX это шло бы иначе, но здесь конкретно про code.cmd/mvn.cmd на Windows).
   return new Promise((resolve) => {
-    const proc = spawn("code", [target], { shell: true, windowsHide: true });
+    let proc: ChildProcess;
+    try {
+      proc = spawnEditor("code", target);
+    } catch (e) {
+      resolve({ ok: false, error: (e as Error).message });
+      return;
+    }
     let errored = false;
     proc.on("error", () => {
       errored = true;
@@ -597,14 +830,28 @@ ipcMain.handle("shell:openInVSCode", async (_e, target: string) => {
   });
 });
 
-ipcMain.handle("run:decompile", async (event, jarPath: string, outDir: string) => {
+ipcMain.handle("run:decompile", async (event, jarPathRaw: unknown, outDirRaw: unknown) => {
   if (runningProc) {
     return { ok: false, error: "Декомпиляция уже запущена" };
   }
+  if (typeof jarPathRaw !== "string" || !jarPathRaw || jarPathRaw.includes("\0")) {
+    return { ok: false, error: "Некорректный путь к файлу" };
+  }
+  if (typeof outDirRaw !== "string" || !outDirRaw.trim() || outDirRaw.includes("\0")) {
+    return { ok: false, error: "Некорректная папка результата" };
+  }
+  // Абсолютные пути: движок разбирает argv сам, а имя вида "--flag" иначе
+  // было бы воспринято им как опция, а не как путь.
+  const jarPath = path.resolve(expandHome(jarPathRaw));
   if (!fs.existsSync(jarPath)) {
     return { ok: false, error: "Файл не найден: " + jarPath };
   }
-  outDir = expandHome(outDir);
+  const outDir = path.resolve(expandHome(outDirRaw));
+  if (isFilesystemRootOrHome(outDir)) {
+    return { ok: false, error: "Нельзя выводить результат прямо в корень диска или домашнюю папку - выберите подпапку" };
+  }
+  // Этот каталог теперь можно просматривать во встроенном проводнике/редакторе (см. allowedRoots).
+  allowRoot(outDir);
 
   // HANDOFF_47: --headless убран совсем (был no-op в cli_main.cpp - см.
   // HANDOFF_46, движок и так никогда не пытается открыть GUI, вся
@@ -710,7 +957,7 @@ ipcMain.handle("run:decompile", async (event, jarPath: string, outDir: string) =
       if (bufErr) pendingLines.push({ line: bufErr, stream: "stderr" });
       if (flushTimer) clearTimeout(flushTimer);
       if (pendingLines.length > 0) send("run:log", { lines: pendingLines });
-      runningProc = null;
+      if (runningProc === proc) runningProc = null;
       const fallbackError =
         lastReasonLine ?? (recentLines.length > 0 ? recentLines.join(" | ") : `движок завершился с кодом ${code} без вывода - возможно, антивирус блокирует запуск, или файл повреждён при скачивании`);
       resolve({ ok: code === 0, code, outDir, error: code !== 0 ? fallbackError : undefined });
@@ -721,7 +968,7 @@ ipcMain.handle("run:decompile", async (event, jarPath: string, outDir: string) =
       // EACCES - нет прав на выполнение) - раньше это тоже уходило в
       // generic "код N", хотя код здесь даже не появится (процесс не
       // стартовал вовсе).
-      runningProc = null;
+      if (runningProc === proc) runningProc = null;
       resolve({ ok: false, code: null, outDir, error: `не удалось запустить движок: ${err.message}` });
     });
   });
@@ -941,17 +1188,26 @@ ipcMain.handle("tools:addToSystemPath", async (_e, tool: "java" | "maven") => {
         psCommands.push(`[Environment]::SetEnvironmentVariable('JAVA_HOME', '${javaHomeDir.replace(/'/g, "''")}', 'User');`);
         process.env.JAVA_HOME = javaHomeDir;
       }
+      // Сравнение по ТОЧНОМУ элементу PATH (-notcontains). Раньше стоял -notlike "*$dir*":
+      // wildcard-символы в пути (скобки [ ], ?) ломали сопоставление, а подпуть
+      // (C:\Tools\jdk-17 внутри C:\Tools\jdk-17.0.2) считался "уже добавленным".
       psCommands.push(`
         $current = [Environment]::GetEnvironmentVariable('Path', 'User');
         $dir = '${binDir.replace(/'/g, "''")}';
-        if ($current -notlike "*$dir*") {
+        $parts = @();
+        if ($current) { $parts = @($current.Split(';') | Where-Object { $_ -ne '' }) }
+        if ($parts -notcontains $dir) {
           $newPath = if ($current) { "$current;$dir" } else { $dir };
           [Environment]::SetEnvironmentVariable('Path', $newPath, 'User');
         }
       `);
       const script = psCommands.join("\n");
       const encoded = Buffer.from(script, "utf16le").toString("base64");
-      execSync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { windowsHide: true, timeout: 10000 });
+      // Асинхронно: execSync блокировал весь main-процесс (и окно) на время запуска PowerShell.
+      await execFileAsync("powershell", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
+        windowsHide: true,
+        timeout: 15000,
+      });
       if (!process.env.PATH?.toLowerCase().includes(binDir.toLowerCase())) {
         process.env.PATH = `${binDir};${process.env.PATH}`;
       }
@@ -976,15 +1232,33 @@ ipcMain.handle("gui:version", async () => GUI_VERSION);
 // рендерер - песочница без прямого сетевого fetch к произвольным хостам
 // (CSP) и потому что telemetryUrl читаем из тех же настроек на диске, а не
 // дублируем его копию во фронтенд-стейте.
+// Лимит тела совпадает с MAX_BODY сервера (telemetry-server/server.js): больше
+// сервер всё равно отвергнет, а гнать десятки МБ по сети впустую незачем.
+const MAX_TELEMETRY_BODY_BYTES = 25 * 1024 * 1024;
+
 ipcMain.handle("telemetry:sendReport", async (_e, report: unknown) => {
   const settings = loadSettings();
+  // Единственная точка отправки: пока телеметрия не включена пользователем,
+  // не уходит НИЧЕГО - ни автоматически, ни по ручной кнопке.
   if (!settings.telemetryEnabled) return { ok: false, error: "телеметрия выключена в настройках" };
   if (!settings.telemetryUrl) return { ok: false, error: "не задан адрес сервера телеметрии" };
+  if (!report || typeof report !== "object" || Array.isArray(report)) {
+    return { ok: false, error: "некорректный отчёт" };
+  }
   try {
+    const body = JSON.stringify(report);
+    if (Buffer.byteLength(body, "utf8") > MAX_TELEMETRY_BODY_BYTES) {
+      return { ok: false, error: "отчёт слишком большой для отправки" };
+    }
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    // Общий секрет для СВОЕГО сервера телеметрии (REPORT_SECRET в telemetry-server):
+    // задаётся переменной окружения, а не вшивается в публичный клиент.
+    if (process.env.NANO_TELEMETRY_SECRET) headers["x-report-secret"] = process.env.NANO_TELEMETRY_SECRET;
     const res = await fetch(settings.telemetryUrl, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(report),
+      headers,
+      body,
+      redirect: "error",
       signal: AbortSignal.timeout(60000),
     });
     if (!res.ok) {
@@ -1048,7 +1322,11 @@ ipcMain.handle("engine:version", async () => {
   });
 });
 
-ipcMain.handle("jar:summary", async (_e, jarPath: string) => {
+ipcMain.handle("jar:summary", async (_e, jarPathRaw: unknown) => {
+  if (typeof jarPathRaw !== "string" || !jarPathRaw || jarPathRaw.includes("\0")) {
+    return { error: "некорректный путь" };
+  }
+  const jarPath = path.resolve(expandHome(jarPathRaw));
   // См. HANDOFF_22 (история): раньше ВСЕГДА спавнили Python-подпроцесс - для
   // PyInstaller onefile-сборки это была самораспаковка exe на КАЖДЫЙ вызов,
   // ощущалось как "очень долго". Сейчас движок - компактный C++-бинарник
@@ -1093,16 +1371,9 @@ ipcMain.handle("run:cancel", async () => {
   // заспавнен с detached:true, так что pid == pgid, убиваем -pid); на
   // Windows - через taskkill /T (рекурсивно по дереву процессов).
   if (runningProc && runningProc.pid) {
-    const pid = runningProc.pid;
-    if (process.platform === "win32") {
-      spawn("taskkill", ["/PID", String(pid), "/T", "/F"]);
-    } else {
-      try {
-        process.kill(-pid, "SIGTERM");
-      } catch {
-        runningProc.kill();
-      }
-    }
+    killProcessTree(runningProc);
+    // Обработчик close() старого процесса теперь сбрасывает runningProc ТОЛЬКО если
+    // это всё ещё он (раньше он обнулял уже НОВЫЙ запущенный процесс).
     runningProc = null;
     return true;
   }
@@ -1129,17 +1400,31 @@ ipcMain.handle("run:cancel", async () => {
 // пути атаки типа openInVSCode/openPath - отдельный вопрос, не эта задача).
 const MAX_TEXT_FILE_BYTES = 4 * 1024 * 1024; // 4 МБ - с запасом для любого разумного .java/.xml/.txt
 
-function resolveWithinRoot(root: string, relPath: string): string | null {
-  const resolvedRoot = path.resolve(expandHome(root));
-  const resolvedTarget = path.resolve(resolvedRoot, relPath || ".");
-  if (resolvedTarget === resolvedRoot) return resolvedTarget;
-  if (process.platform === "win32") {
-    if (resolvedTarget.toLowerCase() === resolvedRoot.toLowerCase()) return resolvedTarget;
-    if (resolvedTarget.toLowerCase().startsWith(resolvedRoot.toLowerCase() + path.sep)) return resolvedTarget;
-    return null;
+// Корни проектов, которые рендереру разрешено просматривать/редактировать через fs:* и
+// search:inProject. Раньше `root` приходил из рендерера и проверялся только относительно
+// самого себя: "root = C:\Windows" + "relPath = win.ini" проходило как "внутри корня", то
+// есть защита была формальной - скомпрометированная страница читала и правила любой
+// существующий текстовый файл. Теперь корнем может быть только каталог результата, который
+// мы САМИ отдали на декомпиляцию (run:decompile), либо вложенная в него папка.
+const allowedRoots = new Set<string>();
+
+function allowRoot(dir: string): void {
+  allowedRoots.add(path.resolve(dir));
+}
+
+function isAllowedRoot(root: string): boolean {
+  const resolved = path.resolve(expandHome(root));
+  for (const allowed of allowedRoots) {
+    if (isSamePathOrInside(allowed, resolved)) return true;
   }
-  if (resolvedTarget.startsWith(resolvedRoot + path.sep)) return resolvedTarget;
-  return null;
+  return false;
+}
+
+// Реализация проверки пути - в pathGuards.ts: учитывает symlink'и (сравнение
+// РЕАЛЬНЫХ путей) и запрещает корень диска / домашнюю папку в роли root.
+function resolveWithinRoot(root: unknown, relPath: unknown): string | null {
+  if (typeof root !== "string" || !isAllowedRoot(root)) return null;
+  return resolveWithinRootGuarded(root, relPath, expandHome);
 }
 
 ipcMain.handle("fs:listDir", async (_e, root: string, relDir: string) => {
@@ -1177,7 +1462,12 @@ ipcMain.handle("page:stopFind", () => {
   mainWindow.webContents.stopFindInPage("clearSelection");
 });
 
-ipcMain.handle("search:inProject", async (_e, root: string, query: string) => {
+ipcMain.handle("search:inProject", async (_e, rootRaw: unknown, queryRaw: unknown) => {
+  // root проходит ту же проверку, что и fs:* (не корень диска/домашняя папка и т.п.)
+  const guardedRoot = resolveWithinRoot(rootRaw, ".");
+  if (!guardedRoot || typeof queryRaw !== "string") return { ok: true, results: [], truncated: false };
+  let root: string = guardedRoot;
+  const query: string = queryRaw;
   // БАГ-ФИКС v1.7.6 (реальная жалоба - "Ctrl+Shift+F не работает, не
   // может найти"): забыл развернуть "~" в реальный домашний каталог -
   // job.outDir хранится как "~/NanoDecompiler/out/..." (буквально с
@@ -1209,6 +1499,8 @@ ipcMain.handle("search:inProject", async (_e, root: string, query: string) => {
         await walk(full);
         continue;
       }
+      // Только обычные файлы: symlink'и пропускаем (иначе ссылка на файл вне проекта читалась бы).
+      if (!entry.isFile()) continue;
       // Ограничиваемся текстовыми расширениями, реально встречающимися в
       // выводе декомпилятора - не тратим время на .class/.png/бинарники,
       // которых в out_dir и так почти нет (декомпилятор их не пишет).
@@ -1270,9 +1562,19 @@ ipcMain.handle("fs:readTextFile", async (_e, root: string, relPath: string) => {
 // MAX_TEXT_FILE_BYTES лимит на чтение уже отсекает крупные), блокировка
 // event loop на миллисекунды не критична, а гарантия "либо записалось
 // целиком, либо явная ошибка до возврата" важнее.
-ipcMain.handle("fs:writeTextFile", async (_e, root: string, relPath: string, content: string) => {
+ipcMain.handle("fs:writeTextFile", async (_e, root: unknown, relPath: unknown, content: unknown) => {
   const filePath = resolveWithinRoot(root, relPath);
   if (!filePath) return { ok: false, error: "путь вне корневой директории проекта" };
+  // Редактор правит только существующие ТЕКСТОВЫЕ файлы проекта: тот же запрет
+  // бинарных расширений, что и при чтении, и тот же лимит размера (раньше
+  // писать можно было что угодно и любого размера).
+  if (typeof content !== "string") return { ok: false, error: "содержимое должно быть строкой" };
+  if (/\.(sql|sqlite|sqlite3|db|db3|bin|dat|class|exe|dll|so|dylib)$/i.test(path.basename(filePath))) {
+    return { ok: false, error: "запись в бинарные файлы запрещена" };
+  }
+  if (Buffer.byteLength(content, "utf-8") > MAX_TEXT_FILE_BYTES) {
+    return { ok: false, error: "содержимое слишком большое для сохранения из редактора" };
+  }
   try {
     const stat = fs.statSync(filePath);
     if (!stat.isFile()) return { ok: false, error: "не файл" };
@@ -1285,10 +1587,15 @@ ipcMain.handle("fs:writeTextFile", async (_e, root: string, relPath: string, con
 
 let installingProc: ChildProcessWithoutNullStreams | null = null;
 
-ipcMain.handle("tools:install", async (_event, only?: "jdk" | "java" | "maven") => {
+ipcMain.handle("tools:install", async (_event, onlyRaw?: unknown) => {
   if (installingProc) {
     return { ok: false, error: "Установка уже идёт" };
   }
+  // Значение уходит в аргумент командной строки движка - допускаем только известные.
+  if (onlyRaw !== undefined && onlyRaw !== null && onlyRaw !== "jdk" && onlyRaw !== "java" && onlyRaw !== "maven") {
+    return { ok: false, error: "Неизвестный инструмент для установки" };
+  }
+  const only = onlyRaw as "jdk" | "java" | "maven" | undefined | null;
   const flag = only ? `--install-tools-json=${only}` : "--install-tools-json";
   let cmd: string, args: string[];
   try {
@@ -1348,7 +1655,7 @@ ipcMain.handle("tools:install", async (_event, only?: "jdk" | "java" | "maven") 
     });
 
     proc.on("close", () => {
-      installingProc = null;
+      if (installingProc === proc) installingProc = null;
       // БАГ-ФИКС v1.7.3: если последняя строка NDJSON не заканчивалась
       // переводом строки (процесс завершился сразу после записи, не успев
       // дописать "\n"), она оставалась в `buf` и никогда не парсилась -
@@ -1364,24 +1671,29 @@ ipcMain.handle("tools:install", async (_event, only?: "jdk" | "java" | "maven") 
     });
 
     proc.on("error", (err) => {
-      installingProc = null;
+      if (installingProc === proc) installingProc = null;
       resolve({ ok: false, error: String(err) });
     });
   });
 });
 
 // НОВОЕ v2.0.0-alpha: Event & Permissions Tree
-ipcMain.handle("plugin:tree", async (_e, jarPath: string) => {
-  return await getPluginTree(jarPath);
+ipcMain.handle("plugin:tree", async (_e, jarPath: unknown) => {
+  if (typeof jarPath !== "string" || !jarPath || jarPath.includes("\0")) return { ok: false, error: "некорректный путь" };
+  return await getPluginTree(path.resolve(expandHome(jarPath)));
 });
 
 // НОВОЕ v2.0.0-alpha: Plugin Diff Viewer
-ipcMain.handle("plugin:compare", async (_e, jarA: string, jarB: string) => {
-  return await compareJars(jarA, jarB);
+ipcMain.handle("plugin:compare", async (_e, jarA: unknown, jarB: unknown) => {
+  if (typeof jarA !== "string" || typeof jarB !== "string" || !jarA || !jarB || jarA.includes("\0") || jarB.includes("\0")) {
+    return { ok: false, error: "некорректные пути" };
+  }
+  return await compareJars(path.resolve(expandHome(jarA)), path.resolve(expandHome(jarB)));
 });
 
 // НОВОЕ v2.0.0-alpha: GitHub Exporter с PAT токеном
-ipcMain.handle("github:export", async (_e, options: any) => {
-  return await exportToGitHub(options);
+ipcMain.handle("github:export", async (_e, options: unknown) => {
+  // Подробная валидация (формат токена, имя репозитория, каталог) - в exportToGitHub.
+  return await exportToGitHub(options as Parameters<typeof exportToGitHub>[0]);
 });
 
