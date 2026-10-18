@@ -33,6 +33,12 @@ file(GLOB ND_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 add_executable(NanoDecompilerCLI ${ND_SOURCES})
 target_include_directories(NanoDecompilerCLI PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+# std::thread / std::async (api.cpp, legitimacy_check.cpp, process_jar.cpp): на
+# glibc < 2.34 без явной линковки с pthread сборка падает при линковке.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+target_link_libraries(NanoDecompilerCLI PRIVATE Threads::Threads)
+
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
   if(MINGW OR (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT APPLE) OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND NOT APPLE))
     target_link_options(NanoDecompilerCLI PRIVATE -s -Wl,--gc-sections)
@@ -115,6 +121,13 @@ if(MINGW)
   # выставлен ВЫШЕ и должен действовать на всю команду линковки целиком -
   # НЕ переключаем режим обратно, просто просим winpthread как обычно.
   target_link_options(NanoDecompilerCLI PRIVATE -lwinpthread)
+  # БАГ-ФИКС: декомпилятор рекурсивен (разбор выражений, структурирование CFG). На Linux
+  # cli_main.cpp поднимает лимит стека до 64 МБ через setrlimit, на macOS это делает
+  # -Wl,-stack_size выше - а на Windows резерв стека оставался стандартным (1 МБ), и глубокая
+  # рекурсия падала STATUS_STACK_OVERFLOW (0xC00000FD) без единой строки в логе: например,
+  # NanoMarket-2.0.0.jar из test_jars аварийно завершался на сборке без оптимизаций, а на
+  # -O2 проходил лишь потому, что кадры стека меньше. Резервируем те же 64 МБ.
+  target_link_options(NanoDecompilerCLI PRIVATE -Wl,--stack,67108864)
   # БАГ-ФИКС: api.cpp использует Winsock (WSAStartup/socket/bind/... для
   # --api-server) под #ifdef _WIN32, но ws2_32 нигде не линковалась - на
   # MinGW линкер не подтягивает системные .lib неявно (в отличие от

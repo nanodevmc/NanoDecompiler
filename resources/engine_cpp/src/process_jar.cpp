@@ -912,6 +912,19 @@ JarProcessResult process_single_class(const std::string& class_path, const std::
     auto last_slash = simple_name.find_last_of('/');
     if (last_slash != std::string::npos) simple_name = simple_name.substr(last_slash + 1);
     if (simple_name.empty()) simple_name = class_stem;
+    // Имя класса приходит из НЕДОВЕРЕННОГО .class: на Windows "..\..\evil" (обратные
+    // слэши) выводил запись за пределы out_dir, а "CON"/"a:b" вообще не создавались.
+    // Прогоняем через тот же санитайзер, что и пути ресурсов jar, берём последний сегмент.
+    {
+        auto safe = sanitize_relative_path(simple_name);
+        if (!safe) safe = sanitize_relative_path(class_stem);
+        if (safe) {
+            auto pos = safe->find_last_of('/');
+            simple_name = pos == std::string::npos ? *safe : safe->substr(pos + 1);
+        } else {
+            simple_name = "DecompiledClass";
+        }
+    }
 
     fs::create_directories(fs::u8path(out_dir), fec);
     std::string dest = (fs::u8path(out_dir) / (simple_name + ".java")).u8string();

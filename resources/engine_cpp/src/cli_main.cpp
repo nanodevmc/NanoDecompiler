@@ -128,7 +128,8 @@ void print_usage() {
         std::cout << "Usage: NanoDecompilerCLI plugin.jar [output_dir] [--lang=en|ru]\n";
         std::cout << "       NanoDecompilerCLI plugin.jar [out_dir] --no-legitimacy-check\n";
         std::cout << "       NanoDecompilerCLI plugin.jar [out_dir] --json-output   (one-shot run, JSON to stdout)\n";
-        std::cout << "       NanoDecompilerCLI --api-server [--host H] [--port 8791]   (HTTP server)\n";
+        std::cout << "       NanoDecompilerCLI --api-server [--host H] [--port 8791]   (HTTP server; a non-loopback host requires env NANO_API_TOKEN)\n";
+        std::cout << "       NanoDecompilerCLI archive.zip [out_dir] --keep-temp   (keep the extracted archive in the temp folder)\n";
         std::cout << "       NanoDecompilerCLI --jar-summary plugin.jar   (JSON summary for GUI)\n";
         std::cout << "       NanoDecompilerCLI --check-update   (Check latest version)\n";
         std::cout << "       NanoDecompilerCLI --update   (Download and apply latest version)\n";
@@ -138,7 +139,8 @@ void print_usage() {
         std::cout << "Использование: NanoDecompilerCLI plugin.jar [output_dir] [--lang=ru|en]\n";
         std::cout << "       NanoDecompilerCLI plugin.jar [out_dir] --no-legitimacy-check\n";
         std::cout << "       NanoDecompilerCLI plugin.jar [out_dir] --json-output   (разовый вызов, JSON в stdout)\n";
-        std::cout << "       NanoDecompilerCLI --api-server [--host H] [--port 8791]   (HTTP-сервер)\n";
+        std::cout << "       NanoDecompilerCLI --api-server [--host H] [--port 8791]   (HTTP-сервер; не-loopback адрес требует переменную NANO_API_TOKEN)\n";
+        std::cout << "       NanoDecompilerCLI archive.zip [out_dir] --keep-temp   (не удалять распакованный архив из временной папки)\n";
         std::cout << "       NanoDecompilerCLI --jar-summary plugin.jar   (JSON-сводка для GUI)\n";
         std::cout << "       NanoDecompilerCLI --check-update   (Check latest version)\n";
         std::cout << "       NanoDecompilerCLI --update   (Download and apply latest version)\n";
@@ -385,10 +387,12 @@ int run_cli(int argc, char** argv) {
             std::error_code ec;
             bool is_reg = fs::is_regular_file(fs::u8path(args[1]), ec);
             if (!is_reg) {
+                // json_escape: путь Windows (C:\Users\...) с обратными слэшами раньше давал
+                // НЕВАЛИДНЫЙ JSON, и GUI не мог прочитать причину ошибки.
                 if (ec && ec == std::errc::permission_denied) {
-                    std::cout << "{\"error\":\"нет прав на чтение файла: " << args[1] << "\"}\n";
+                    std::cout << "{\"error\":\"нет прав на чтение файла: " << json_escape(args[1]) << "\"}\n";
                 } else {
-                    std::cout << "{\"error\":\"файл не найден: " << args[1] << "\"}\n";
+                    std::cout << "{\"error\":\"файл не найден: " << json_escape(args[1]) << "\"}\n";
                 }
                 return 0;
             }
@@ -432,6 +436,7 @@ int run_cli(int argc, char** argv) {
     std::string jar_path = args[0];
     bool skip_legitimacy = false;
     bool json_output = false;
+    bool keep_archive_temp = false;
     std::string explicit_out_dir;
     std::vector<std::string> positional_rest;
     for (size_t i = 1; i < args.size(); ++i) {
@@ -439,6 +444,8 @@ int run_cli(int argc, char** argv) {
             skip_legitimacy = true;
         } else if (args[i] == "--json-output" || args[i] == "--api") {
             json_output = true;
+        } else if (args[i] == "--keep-temp") {
+            keep_archive_temp = true;  // не удалять распакованный архив из временной папки
         } else if ((args[i] == "-o" || args[i] == "--out" || args[i] == "--output") && i + 1 < args.size()) {
             explicit_out_dir = args[++i];
         } else {
@@ -512,6 +519,7 @@ int run_cli(int argc, char** argv) {
             if (!summary.server_cores.empty()) {
                 msg += " (обнаружены серверные ядра Minecraft, которые не декомпилируются как плагины)";
             }
+            if (!keep_archive_temp) nd::remove_archive_temp_dir(summary.temp_dir);
             if (json_output) {
                 std::cout << nd::json_error_response(msg) << "\n";
                 return 1;
@@ -539,6 +547,9 @@ int run_cli(int argc, char** argv) {
                 ret |= run_decompile_console(p.full_path, plugin_out_dir, skip_legitimacy);
             }
         }
+        // Распакованный архив больше не нужен (результат лежит в out_dir). Раньше папка в
+        // %TEMP%/NanoDecompiler/archives оставалась навсегда и копилась с каждым запуском.
+        if (!keep_archive_temp) nd::remove_archive_temp_dir(summary.temp_dir);
         return ret;
     }
 
@@ -648,6 +659,7 @@ int main(int argc, char** argv) {
     bump_stack_limit();
 #endif
     try {
+        nd::cleanup_update_leftovers();
 #ifdef _WIN32
         // Игнорируем ANSI-испорченный argv целиком - берём собственный,
         // честно перекодированный из UTF-16 в UTF-8 (см. get_utf8_argv()).

@@ -14,9 +14,11 @@
 #include <random>
 #include <regex>
 #include <sstream>
+#include <thread>
 #include <unordered_map>  // НОВОЕ v1.9.13: kProbeUrls в check_site()
 
 #include "json_value.hpp"
+#include "proc_util.hpp"
 #include "sha256.hpp"
 #include "toolinstaller.hpp"
 
@@ -84,57 +86,66 @@ PluginYmlFields fields_from_plugin_yml(const std::string& plugin_yml_text) {
 
 namespace {
 
-// БАГ-ФИКС v1.7.3 (найдено сторонним ревью, подтверждено чтением кода):
-// на Windows popen()/system() запускают команду через cmd.exe, а НЕ bash -
-// cmd.exe не понимает одинарные кавычки как ограничитель аргумента (для
-// него это обычный символ, а не quote) и не знает файла "/dev/null"
-// (аналог - "NUL"). Экранирование ниже и синтаксис редиректа теперь
-// зависят от платформы; на POSIX поведение не изменилось ни на символ.
-#ifdef _WIN32
-std::string shell_quote_arg(const std::string& s) {
-    // cmd.exe передаёт аргумент как есть дочернему процессу, а РАЗБОР на
-    // отдельные argv[] делает уже сам curl.exe (стандартный MS CRT parser) -
-    // он понимает \" как экранированную кавычку внутри "..."-аргумента.
-    std::string escaped;
-    for (char c : s) {
-        if (c == '"') escaped += "\\\"";
-        else escaped += c;
-    }
-    return "\"" + escaped + "\"";
+// БЕЗОПАСНОСТЬ. Раньше curl запускался через popen()/std::system() со строкой,
+// в которую подставлялись URL и путь (с самодельным квотированием, которое на
+// Windows cmd.exe не понимал: %VAR%, ^, \"), а адреса приходили из ответов API и из
+// УДАЛЁННОГО конфига legitimacy_sites.json - т.е. кто управляет репозиторием
+// (или перехватывает трафик) мог направить движок на любой хост, включая
+// внутренние (SSRF). Теперь curl запускается без shell (аргументы - массив),
+// только по https, и только на фиксированный список хостов.
+constexpr const char* kUserAgent = "Mozilla/5.0 (NanoDecompiler-LegitimacyCheck/1.1)";
+constexpr size_t kMaxHttpBodyBytes = 8u * 1024u * 1024u;
+// Поддомены этих зон разрешены только для СКАЧИВАНИЯ релизных файлов.
+constexpr const char* kDownloadZoneSuffix = ".githubusercontent.com";
+
+std::string lower_ascii(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
 }
-constexpr const char* kNullRedirect = "NUL";
-#else
-std::string shell_quote_arg(const std::string& s) {
-    std::string escaped;
-    for (char c : s) {
-        if (c == '\'') escaped += "'\\''";
-        else escaped += c;
+
+// Хост из https://host[:port]/...; пусто, если схема не https или есть userinfo.
+std::string https_host_of(const std::string& url) {
+    const std::string scheme = "https://";
+    if (url.size() <= scheme.size() || lower_ascii(url.substr(0, scheme.size())) != scheme) return "";
+    size_t end = url.find_first_of("/?#", scheme.size());
+    std::string authority = url.substr(scheme.size(), end == std::string::npos ? std::string::npos : end - scheme.size());
+    if (authority.empty() || authority.find('@') != std::string::npos) return "";
+    size_t colon = authority.find(':');
+    if (colon != std::string::npos) {
+        if (authority.substr(colon + 1) != "443") return "";
+        authority = authority.substr(0, colon);
     }
-    return "'" + escaped + "'";
+    for (unsigned char c : url) {
+        if (c <= 0x20 || c == 0x7f) return "";
+    }
+    return lower_ascii(authority);
 }
-constexpr const char* kNullRedirect = "/dev/null";
-#endif
+
+bool is_allowed_legitimacy_host(const std::string& host, bool for_download) {
+    static const char* kHosts[] = {"api.github.com", "github.com", "api.modrinth.com", "modrinth.com", "cdn.modrinth.com",
+                                   "api.spiget.org", "spigotmc.org", "www.spigotmc.org", "hangar.papermc.io", "spigotmc.ru",
+                                   "raw.githubusercontent.com"};
+    for (const char* h : kHosts) {
+        if (host == h) return true;
+    }
+    const std::string suffix = kDownloadZoneSuffix;
+    return for_download && host.size() > suffix.size() && host.compare(host.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool is_allowed_legitimacy_url(const std::string& url, bool for_download = false) {
+    std::string host = https_host_of(url);
+    return !host.empty() && is_allowed_legitimacy_host(host, for_download);
+}
 
 // Возвращает std::nullopt на любой ошибке (таймаут/сеть/ненулевой код
 // возврата curl) - зеркалит `except Exception: return None` в оригинале.
 std::optional<std::string> http_get(const std::string& url, double timeout_sec, const std::string& accept) {
-    // url формируется нами же из urlencoded-компонентов (см. вызовы ниже),
-    // так что в норме туда не попадёт ничего опасного, но экранируем в
-    // любом случае, а не доверяем - см. shell_quote_arg() выше.
-    std::ostringstream cmd;
-    cmd << "curl -s -m " << timeout_sec << " -A " << shell_quote_arg("Mozilla/5.0 (NanoDecompiler-LegitimacyCheck/1.1)") << " "
-        << "-H " << shell_quote_arg("Accept: " + accept) << " " << shell_quote_arg(url) << " 2>" << kNullRedirect;
-    FILE* pipe = popen(cmd.str().c_str(), "r");
-    if (!pipe) return std::nullopt;
-    std::string out;
-    std::array<char, 4096> buf{};
-    size_t nread;
-    while ((nread = fread(buf.data(), 1, buf.size(), pipe)) > 0) {
-        out.append(buf.data(), nread);
-    }
-    int rc = pclose(pipe);
-    if (rc != 0) return std::nullopt;
-    return out;
+    if (!is_allowed_legitimacy_url(url)) return std::nullopt;
+    std::vector<std::string> argv = {"curl", "-s", "--proto", "=https", "--max-filesize", std::to_string(kMaxHttpBodyBytes),
+                                     "-m",   std::to_string(timeout_sec), "-A", kUserAgent, "-H", "Accept: " + accept, url};
+    ProcResult r = run_process(argv, ProcOutput::Capture, static_cast<int>(timeout_sec) + 5, kMaxHttpBodyBytes);
+    if (!r.started || r.timed_out || r.truncated || r.exit_code != 0) return std::nullopt;
+    return std::move(r.out);
 }
 
 std::optional<JsonValue> http_get_json(const std::string& url, double timeout_sec) {
@@ -179,18 +190,13 @@ std::string hex_encode(const std::array<uint8_t, 32>& bytes) {
     return out;
 }
 
-std::string random_hex_local(int n) {
-    static std::random_device rd;
-    static std::mt19937_64 gen(rd());
-    std::uniform_int_distribution<int> dist(0, 15);
-    static const char* hexd = "0123456789abcdef";
-    std::string out;
-    for (int i = 0; i < n; ++i) out += hexd[dist(gen)];
-    return out;
-}
-
-std::string sha256_of_file(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
+// u8path: на Windows путь в UTF-8 (например, временная папка пользователя с
+// кириллицей) через голый std::ifstream(std::string) не открывался, а пустое
+// чтение давало хэш пустого файла - то есть ложное "хэш НЕ совпадает".
+// nullopt - файл не прочитан.
+std::optional<std::string> sha256_of_file(const std::string& path) {
+    std::ifstream f(fs::u8path(path), std::ios::binary);
+    if (!f) return std::nullopt;
     std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     return hex_encode(sha256(data));
 }
@@ -201,20 +207,25 @@ std::string sha256_of_file(const std::string& path) {
 // nullopt при любой ошибке (сеть/лимит размера/curl не найден) - как и
 // весь остальной сетевой код здесь, тихо деградирует, а не падает.
 std::optional<std::string> download_and_sha256(const std::string& url, uint64_t max_bytes, double timeout_sec) {
-    std::string tmp = (fs::temp_directory_path() / ("nd_legitimacy_dl_" + random_hex_local(16))).u8string();
-    std::ostringstream cmd;
-    cmd << "curl -sL -m " << timeout_sec << " --max-filesize " << max_bytes << " -A "
-        << shell_quote_arg("Mozilla/5.0 (NanoDecompiler-LegitimacyCheck/1.1)") << " -o " << shell_quote_arg(tmp) << " "
-        << shell_quote_arg(url) << " 2>" << kNullRedirect;
-    int rc = std::system(cmd.str().c_str());
-    std::error_code ec;
-    bool exists = fs::is_regular_file(tmp, ec);
-    if (rc != 0 || !exists) {
-        fs::remove(tmp, ec);
-        return std::nullopt;
+    if (!is_allowed_legitimacy_url(url, /*for_download=*/true)) return std::nullopt;
+    // Приватный каталог со случайным именем (0700): файл в общем /tmp с
+    // предсказуемым именем можно было подменить симлинком, пока curl его пишет.
+    std::string dir = make_private_temp_dir(fs::temp_directory_path().u8string(), "nd_legitimacy_");
+    if (dir.empty()) return std::nullopt;
+    std::string tmp = (fs::u8path(dir) / "download.bin").u8string();
+
+    std::vector<std::string> argv = {"curl", "-sL", "--proto", "=https", "--proto-redir", "=https", "--max-redirs", "5",
+                                     "-m",   std::to_string(timeout_sec), "--max-filesize", std::to_string(max_bytes),
+                                     "-A",   kUserAgent, "-o", tmp, "-w", "%{url_effective}", url};
+    ProcResult r = run_process(argv, ProcOutput::Capture, static_cast<int>(timeout_sec) + 5, 8192);
+    std::optional<std::string> hash;
+    // Адрес ПОСЛЕ редиректов тоже обязан остаться в списке разрешённых.
+    if (r.started && !r.timed_out && r.exit_code == 0 && is_allowed_legitimacy_url(r.out, /*for_download=*/true)) {
+        std::error_code ec;
+        if (fs::is_regular_file(fs::u8path(tmp), ec)) hash = sha256_of_file(tmp);
     }
-    std::string hash = sha256_of_file(tmp);
-    fs::remove(tmp, ec);
+    std::error_code ec;
+    fs::remove_all(fs::u8path(dir), ec);
     return hash;
 }
 
@@ -307,6 +318,11 @@ std::vector<SiteConfig> parse_legitimacy_sites_config(const std::string& json_te
         cfg.query = query->str_v;
         const JsonValue* rq = item.get("release_query");
         if (rq && rq->is_string()) cfg.release_query = rq->str_v;
+        // Конфиг приходит из ИНТЕРНЕТА (raw.githubusercontent.com): шаблоны запросов
+        // обязаны указывать на https и на известные сервисы - иначе движок можно
+        // было направить на любой (в т.ч. внутренний) адрес.
+        if (!is_allowed_legitimacy_url(cfg.query)) continue;
+        if (cfg.release_query.has_value() && !is_allowed_legitimacy_url(*cfg.release_query)) continue;
         out.push_back(std::move(cfg));
     }
     return out;
@@ -587,6 +603,8 @@ LegitimacySourceResult check_site(const SiteConfig& cfg, const std::string& plug
     auto html = http_get(url, timeout_sec, "text/html");
     if (!html.has_value()) return out;
     out.checked = true;
+    // std::regex в libstdc++ рекурсивен: на больших входах переполняет стек - режем HTML.
+    if (html->size() > 262144) html->resize(262144);
     auto links = ruspigot_parse_result_links(*html);
     size_t k = 0;
     for (auto& [href, title_raw] : links) {
@@ -598,7 +616,7 @@ LegitimacySourceResult check_site(const SiteConfig& cfg, const std::string& plug
         if (title.empty()) continue;
         LegitimacyCandidate c;
         c.full_name = title;
-        c.url = (href.rfind("http", 0) == 0) ? href : ("https://" + cfg.site + href);
+        c.url = (href.rfind("https://", 0) == 0 || href.rfind("http://", 0) == 0) ? href : ("https://" + cfg.site + href);
         // HANDOFF_53: хэш НЕ сравнивается для этого источника - см. спеку.
         out.candidates.push_back(std::move(c));
         k += 1;
@@ -717,6 +735,7 @@ LegitimacySourceResult check_ruspigot(const std::string& plugin_name, double tim
     auto html = http_get("https://spigotmc.ru/resources/?q=" + q, timeout_sec, "text/html");
     if (!html.has_value()) return out;
     out.checked = true;
+    if (html->size() > 262144) html->resize(262144);
     auto links = ruspigot_parse_result_links(*html);
     size_t k = 0;
     for (auto& [href, title_raw] : links) {
@@ -729,7 +748,7 @@ LegitimacySourceResult check_ruspigot(const std::string& plugin_name, double tim
         if (title.empty()) continue;
         LegitimacyCandidate c;
         c.full_name = title;
-        c.url = (href.rfind("http", 0) == 0) ? href : ("https://spigotmc.ru" + href);
+        c.url = (href.rfind("https://", 0) == 0 || href.rfind("http://", 0) == 0) ? href : ("https://spigotmc.ru" + href);
         c.stars = 0;
         out.candidates.push_back(std::move(c));
         k += 1;
@@ -750,11 +769,7 @@ LegitimacyCheckResult run_legitimacy_check(const std::string& plugin_name, const
     // остальная проверка (поиск похожих проектов) продолжается как обычно.
     std::string jar_sha256_hex;
     if (!jar_path.empty()) {
-        std::ifstream f(jar_path, std::ios::binary);
-        if (f) {
-            std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            jar_sha256_hex = hex_encode(sha256(data));
-        }
+        if (auto h = sha256_of_file(jar_path)) jar_sha256_hex = *h;
     }
 
     // HANDOFF_53: очистка имени - ОДИН раз на все источники (см. спеку -
@@ -773,24 +788,44 @@ LegitimacyCheckResult run_legitimacy_check(const std::string& plugin_name, const
     // последняя (простое детерминированное поведение, не ошибка).
     std::vector<SiteConfig> sites = load_legitimacy_sites_config();
 
-    std::vector<std::future<std::pair<SiteKind, LegitimacySourceResult>>> futures;
+    // БАГ-ФИКС: std::async(launch::async) возвращает future, деструктор которого БЛОКИРУЕТ
+    // до конца задачи - "общий верхний предел 8с" не работал: после wait_for функция
+    // всё равно ждала все зависшие сетевые задачи при выходе из области видимости
+    // (а у GitHub-ветки может быть до сотни скачиваний). Теперь задачи - отсоединённые
+    // потоки с promise, а ожидание ограничено ОДНИМ общим дедлайном (раньше 8с
+    // отсчитывались заново для каждого источника по очереди).
+    struct Pending {
+        SiteKind kind;
+        std::future<LegitimacySourceResult> fut;
+    };
+    std::vector<Pending> pending;
     for (auto& cfg : sites) {
-        futures.push_back(std::async(std::launch::async, [cfg, cleaned, jar_sha256_hex] {
-            return std::make_pair(cfg.kind, check_site(cfg, cleaned, jar_sha256_hex));
-        }));
+        auto prom = std::make_shared<std::promise<LegitimacySourceResult>>();
+        pending.push_back({cfg.kind, prom->get_future()});
+        std::thread([prom, cfg, cleaned, jar_sha256_hex] {
+            try {
+                prom->set_value(check_site(cfg, cleaned, jar_sha256_hex));
+            } catch (...) {
+                try {
+                    prom->set_exception(std::current_exception());
+                } catch (...) {
+                }
+            }
+        }).detach();
     }
 
-    for (auto& fut : futures) {
-        SiteKind kind;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8000);
+    for (auto& item : pending) {
+        SiteKind kind = item.kind;
         LegitimacySourceResult r;
-        if (fut.wait_for(std::chrono::milliseconds(8000)) == std::future_status::ready) {
+        if (item.fut.wait_until(deadline) == std::future_status::ready) {
             try {
-                std::tie(kind, r) = fut.get();
+                r = item.fut.get();
             } catch (...) {
                 continue;
             }
         } else {
-            continue;  // общий верхний предел 8с на источник, как и в оригинале
+            continue;  // общий верхний предел 8с, как и в оригинале
         }
         switch (kind) {
             case SiteKind::GithubApi:

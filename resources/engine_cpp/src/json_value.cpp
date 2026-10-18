@@ -11,9 +11,25 @@ namespace nd {
 
 namespace {
 
+// Глубина вложенности ограничена: разбор рекурсивный, и ответ вида "[[[[...]]]]" на
+// несколько мегабайт (JSON приходит из сети) раньше переполнял стек и ронял процесс
+// без возможности перехватить исключение.
+constexpr int kMaxJsonDepth = 256;
+
 class Parser {
 public:
     explicit Parser(const std::string& s) : s_(s), i_(0), n_(s.size()) {}
+
+    struct DepthGuard {
+        int& d;
+        explicit DepthGuard(int& depth) : d(depth) {
+            if (++d > kMaxJsonDepth) {
+                --d;
+                throw std::runtime_error("json is nested too deeply");
+            }
+        }
+        ~DepthGuard() { --d; }
+    };
 
     JsonValue parse_value() {
         skip_ws();
@@ -38,6 +54,7 @@ public:
     }
 
     JsonValue parse_object() {
+        DepthGuard guard(depth_);
         JsonValue v;
         v.kind = JsonValue::Kind::Object;
         v.obj_v = std::make_shared<JsonObject>();
@@ -61,6 +78,7 @@ public:
     }
 
     JsonValue parse_array() {
+        DepthGuard guard(depth_);
         JsonValue v;
         v.kind = JsonValue::Kind::Array;
         v.arr_v = std::make_shared<JsonArray>();
@@ -109,11 +127,31 @@ public:
                             else throw std::runtime_error("bad hex digit");
                         }
                         i_ += 4;
-                        // Кодируем как UTF-8 (упрощённо - без обработки суррогатных пар,
-                        // для полей типа названий репозиториев/проектов этого достаточно
-                        // в подавляющем большинстве случаев; полные surrogate-пары вне
-                        // Basic Multilingual Plane - редкость в этих API-ответах).
-                        if (code < 0x80) {
+                        // Суррогатные пары (эмодзи и символы вне BMP в названиях проектов):
+                        // раньше каждая половина кодировалась отдельно в невалидный UTF-8.
+                        if (code >= 0xD800 && code <= 0xDBFF && i_ + 6 < n_ && s_[i_ + 1] == '\\' && s_[i_ + 2] == 'u') {
+                            unsigned low = 0;
+                            bool ok_low = true;
+                            for (int k = 3; k <= 6; ++k) {
+                                char hc = s_[i_ + k];
+                                low <<= 4;
+                                if (hc >= '0' && hc <= '9') low |= (hc - '0');
+                                else if (hc >= 'a' && hc <= 'f') low |= (hc - 'a' + 10);
+                                else if (hc >= 'A' && hc <= 'F') low |= (hc - 'A' + 10);
+                                else { ok_low = false; break; }
+                            }
+                            if (ok_low && low >= 0xDC00 && low <= 0xDFFF) {
+                                code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                                i_ += 6;
+                            }
+                        }
+                        if (code >= 0xD800 && code <= 0xDFFF) code = 0xFFFD;  // одиночная половина пары
+                        if (code >= 0x10000) {
+                            out += static_cast<char>(0xF0 | (code >> 18));
+                            out += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+                            out += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                            out += static_cast<char>(0x80 | (code & 0x3F));
+                        } else if (code < 0x80) {
                             out += static_cast<char>(code);
                         } else if (code < 0x800) {
                             out += static_cast<char>(0xC0 | (code >> 6));
@@ -184,6 +222,7 @@ public:
     const std::string& s_;
     size_t i_;
     size_t n_;
+    int depth_ = 0;
 };
 
 }  // namespace

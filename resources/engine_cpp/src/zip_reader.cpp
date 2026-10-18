@@ -2,9 +2,20 @@
 // конца файла (End Of Central Directory), затем локальные заголовки по
 // смещениям оттуда - стандартный подход (тот же, что использует Python
 // `zipfile`). Распаковка DEFLATE - через системную zlib.
+//
+// БЕЗОПАСНОСТЬ: ВСЕ числа в заголовках (размер каталога, смещения, размеры
+// записей) контролирует автор архива. Раньше они использовались как есть:
+//  - `std::vector cd(cd_size)` / `out(expected_size)` выделяли до 4 ГиБ по
+//    заголовку крошечного файла (отказ по памяти), а inflate_raw ещё и
+//    удваивал буфер без верхней границы (zip-bomb);
+//  - `static_cast<uInt>(out.size())` молча обрезал размеры > 4 ГиБ;
+//  - неудачное чтение (EOF) не проверялось - `uint8_t lh[30]` оставался
+//    неинициализированным и разбирался как заголовок.
+// Теперь размеры сверяются с реальным размером файла и ограничены сверху.
 #include <cstdint>  // БАГ-ФИКС: MinGW/Windows не тянет int64_t транзитивно через другие заголовки, как это молча делает libstdc++ на Linux - см. ошибку сборки Windows-раннера в этой сессии.
 #include "zip_reader.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -20,18 +31,30 @@ namespace nd {
 
 namespace {
 
+// Верхние границы (с большим запасом для реальных jar/плагинов).
+constexpr uint64_t kMaxEntryBytes = 1ull << 30;        // 1 ГиБ распакованной записи
+constexpr uint64_t kMaxCentralDirBytes = 64ull << 20;  // 64 МиБ central directory
+
 uint16_t rd_u16(const uint8_t* p) { return uint16_t(p[0]) | (uint16_t(p[1]) << 8); }
 uint32_t rd_u32(const uint8_t* p) {
     return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
 }
 
 std::vector<uint8_t> inflate_raw(const std::vector<uint8_t>& compressed, uint64_t expected_size) {
-    std::vector<uint8_t> out(expected_size ? expected_size : 1);
+    if (expected_size > kMaxEntryBytes) throw std::runtime_error("zip entry is too large");
+
+    // Deflate не сжимает лучше ~1032:1, поэтому настоящий поток из N байт не
+    // даст больше N*1032 - заявленный в заголовке размер сверх этого - ложь,
+    // и память под него заранее не выделяем.
+    uint64_t plausible = static_cast<uint64_t>(compressed.size()) * 1032u + 64u;
+    uint64_t initial = std::min<uint64_t>({expected_size ? expected_size : 64u, plausible, kMaxEntryBytes});
+    std::vector<uint8_t> out(static_cast<size_t>(std::max<uint64_t>(initial, 1)));
+
     z_stream strm{};
     // -15: сырой DEFLATE без zlib/gzip-обёртки (именно так хранятся данные в ZIP-записях).
     if (inflateInit2(&strm, -15) != Z_OK) throw std::runtime_error("inflateInit2 failed");
     strm.next_in = const_cast<Bytef*>(compressed.data());
-    strm.avail_in = static_cast<uInt>(compressed.size());
+    strm.avail_in = static_cast<uInt>(compressed.size());  // compressed_size ограничен kMaxEntryBytes (< 4 ГиБ)
     strm.next_out = out.data();
     strm.avail_out = static_cast<uInt>(out.size());
     int ret;
@@ -39,7 +62,12 @@ std::vector<uint8_t> inflate_raw(const std::vector<uint8_t>& compressed, uint64_
     do {
         if (strm.avail_out == 0) {
             size_t old = out.size();
-            out.resize(old * 2 + 64);
+            if (old >= kMaxEntryBytes) {
+                inflateEnd(&strm);
+                throw std::runtime_error("zip entry exceeds size limit (possible zip bomb)");
+            }
+            size_t grown = static_cast<size_t>(std::min<uint64_t>(static_cast<uint64_t>(old) * 2 + 64, kMaxEntryBytes));
+            out.resize(grown);
             strm.next_out = out.data() + old;
             strm.avail_out = static_cast<uInt>(out.size() - old);
         }
@@ -71,6 +99,7 @@ ZipReader::ZipReader(const std::string& path) : path_(path) {
     f.seekg(file_size - search_size);
     std::vector<uint8_t> tail(static_cast<size_t>(search_size));
     f.read(reinterpret_cast<char*>(tail.data()), search_size);
+    if (f.gcount() != search_size) throw std::runtime_error("cannot read zip tail");
 
     int64_t eocd_pos = -1;
     for (int64_t i = static_cast<int64_t>(tail.size()) - 22; i >= 0; --i) {
@@ -84,10 +113,17 @@ ZipReader::ZipReader(const std::string& path) : path_(path) {
     uint16_t total_entries = rd_u16(&tail[eocd_pos + 10]);
     uint32_t cd_size = rd_u32(&tail[eocd_pos + 12]);
     uint32_t cd_offset = rd_u32(&tail[eocd_pos + 16]);
+    if (cd_size == 0xFFFFFFFFu || cd_offset == 0xFFFFFFFFu) throw std::runtime_error("ZIP64 is not supported");
+    // Границы central directory: внутри файла и не больше разумного предела.
+    if (cd_size > kMaxCentralDirBytes) throw std::runtime_error("zip central directory is too large");
+    if (static_cast<uint64_t>(cd_offset) + cd_size > static_cast<uint64_t>(file_size)) {
+        throw std::runtime_error("zip central directory is outside of the file");
+    }
 
     std::vector<uint8_t> cd(cd_size);
     f.seekg(cd_offset);
     f.read(reinterpret_cast<char*>(cd.data()), cd_size);
+    if (static_cast<uint64_t>(f.gcount()) != cd_size) throw std::runtime_error("cannot read zip central directory");
 
     size_t pos = 0;
     for (uint16_t i = 0; i < total_entries; ++i) {
@@ -101,6 +137,8 @@ ZipReader::ZipReader(const std::string& path) : path_(path) {
         uint16_t extra_len = rd_u16(&cd[pos + 30]);
         uint16_t comment_len = rd_u16(&cd[pos + 32]);
         uint32_t local_header_offset = rd_u32(&cd[pos + 42]);
+        size_t entry_end = pos + 46 + name_len + extra_len + comment_len;
+        if (entry_end > cd.size()) break;  // запись выходит за каталог - обрезанный/подделанный архив
         std::string name(reinterpret_cast<const char*>(&cd[pos + 46]), name_len);
 
         // Защита от Zip Slip (патологические/вредоносные имена с ../ или абсолютными путями)
@@ -120,7 +158,7 @@ ZipReader::ZipReader(const std::string& path) : path_(path) {
             }
         }
         if (dangerous || clean_name.empty()) {
-            pos += 46 + name_len + extra_len + comment_len;
+            pos = entry_end;
             continue;
         }
 
@@ -138,7 +176,7 @@ ZipReader::ZipReader(const std::string& path) : path_(path) {
             local_header_offset_[name] = local_header_offset;
         }
 
-        pos += 46 + name_len + extra_len + comment_len;
+        pos = entry_end;
     }
 }
 
@@ -155,20 +193,31 @@ std::vector<uint8_t> ZipReader::read(const std::string& name) const {
 
     std::ifstream f(fs::u8path(path_), std::ios::binary);
     if (!f) throw std::runtime_error("cannot open " + path_);
-    f.seekg(local_offset);
-    uint8_t lh[30];
+    f.seekg(0, std::ios::end);
+    uint64_t file_size = static_cast<uint64_t>(f.tellg());
+    if (local_offset + 30 > file_size) throw std::runtime_error("local file header is outside of the file for " + name);
+    f.seekg(static_cast<std::streamoff>(local_offset));
+    uint8_t lh[30] = {0};
     f.read(reinterpret_cast<char*>(lh), 30);
+    if (f.gcount() != 30) throw std::runtime_error("cannot read local file header for " + name);
     if (!(lh[0] == 0x50 && lh[1] == 0x4b && lh[2] == 0x03 && lh[3] == 0x04)) {
         throw std::runtime_error("bad local file header for " + name);
     }
     uint16_t name_len = rd_u16(&lh[26]);
     uint16_t extra_len = rd_u16(&lh[28]);
-    f.seekg(local_offset + 30 + name_len + extra_len);
+    uint64_t data_offset = local_offset + 30 + name_len + extra_len;
 
     const ZipEntryInfo& info = it->second;
     if (info.uncompressed_size == 0) {
         return {};
     }
+    if (info.compressed_size > kMaxEntryBytes || info.uncompressed_size > kMaxEntryBytes) {
+        throw std::runtime_error("zip entry is too large: " + name);
+    }
+    if (data_offset + info.compressed_size > file_size) {
+        throw std::runtime_error("zip entry data is outside of the file for " + name);
+    }
+    f.seekg(static_cast<std::streamoff>(data_offset));
 
     // Размер сжатых данных берём ИЗ ЦЕНТРАЛЬНОГО КАТАЛОГА (info.compressed_size),
     // а НЕ из локального заголовка - когда архиватор писал запись потоково
@@ -177,6 +226,9 @@ std::vector<uint8_t> ZipReader::read(const std::string& name) const {
     // центральном каталоге эти поля всегда достоверны.
     std::vector<uint8_t> raw(info.compressed_size);
     f.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(info.compressed_size));
+    if (static_cast<uint64_t>(f.gcount()) != info.compressed_size) {
+        throw std::runtime_error("truncated zip entry data for " + name);
+    }
 
     if (info.compression_method == 0) {
         return raw;  // STORED
