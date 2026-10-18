@@ -2,5 +2,8 @@
   "botToken": "123456789:AAExampleBotTokenGoesHere",
   "chatId": "123456789",
   "port": 8787,
-  "reportSecret": ""
+  "host": "127.0.0.1",
+  "reportSecret": "",
+  "rateLimitPerHour": 30,
+  "trustProxy": false
 }
