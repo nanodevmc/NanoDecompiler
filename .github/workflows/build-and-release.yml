@@ -35,8 +35,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Принцип наименьших привилегий: сборочные job'ы запускают npm install /
+# компиляцию чужих зависимостей и НЕ должны иметь права записи в репозиторий.
+# Право contents: write выдано только job'у publish-release (см. ниже) -
+# ему оно нужно для softprops/action-gh-release (создать/обновить релиз).
 permissions:
-  contents: write   # нужно softprops/action-gh-release, чтобы создавать/обновлять релиз
+  contents: read
 
 jobs:
   resolve-version:
@@ -618,6 +622,8 @@ jobs:
           if-no-files-found: error
 
   publish-release:
+    permissions:
+      contents: write
     # HANDOFF_54: явно перечислены ВСЕ клиентские, ClApi и Lite job'ы
     needs: [resolve-version, build-client-windows, build-client-linux, build-client-macos, build-clapi-windows, build-clapi-linux, build-clapi-macos, build-lite-gui]
     runs-on: ubuntu-latest

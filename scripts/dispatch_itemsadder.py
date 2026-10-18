@@ -1,17 +1,9 @@
 import requests
-import subprocess
-import re
 import sys
+from _gh_auth import github_headers
 
 def main():
-    headers = {
-        'User-Agent': 'Mozilla/5.0',
-        'Accept': 'application/vnd.github.v3+json'
-    }
-    remote_url = subprocess.check_output(['git', 'config', '--get', 'remote.origin.url'], text=True).strip()
-    m = re.search(r'https://([^@]+)@github\.com', remote_url)
-    if m:
-        headers['Authorization'] = f'token {m.group(1)}'
+    headers = github_headers({'Accept': 'application/vnd.github.v3+json'})
 
     url = 'https://api.github.com/repos/NanoDev1488/NanoDecompiler/actions/workflows/test-itemsadder.yml/dispatches'
     data = {'ref': 'main'}

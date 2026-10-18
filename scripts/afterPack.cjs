@@ -78,10 +78,17 @@ exports.default = async function afterPack(context) {
     for (const item of fs.readdirSync(dir)) {
       const p = path.join(dir, item);
       try {
-        const stat = fs.statSync(p);
-        if (stat.isDirectory()) {
+        // lstat, а не stat: в macOS-бандле полно символических ссылок (Versions/Current -> A и т.п.),
+        // statSync шёл по ним и обходил одни и те же каталоги повторно (а при ссылке на родителя -
+        // бесконечно, пока не падал переполнением стека, который глушился catch'ем ниже).
+        const stat = fs.lstatSync(p);
+        if (stat.isSymbolicLink()) continue;
+        if (item.endsWith(".dSYM")) {
+          // .dSYM - это КАТАЛОГ: unlinkSync на нём падал и молча ничего не удалял
+          fs.rmSync(p, { recursive: true, force: true });
+        } else if (stat.isDirectory()) {
           pruneDebugFiles(p);
-        } else if (item.endsWith(".map") || item.endsWith(".pdb") || item.endsWith(".dSYM")) {
+        } else if (item.endsWith(".map") || item.endsWith(".pdb")) {
           fs.unlinkSync(p);
         }
       } catch (_) {}

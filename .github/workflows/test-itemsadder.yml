@@ -6,6 +6,10 @@ on:
     paths:
       - '.github/workflows/test-itemsadder.yml'
 
+# Тестовому job'у запись в репозиторий не нужна.
+permissions:
+  contents: read
+
 jobs:
   run-itemsadder:
     runs-on: ubuntu-latest

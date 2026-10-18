@@ -2,14 +2,17 @@ use std::env;
 use std::process;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: nanofastscan <path_to_jar> [--json]");
-        process::exit(1);
-    }
-
-    let jar_path = &args[1];
+    let args: Vec<String> = env::args().skip(1).collect();
     let is_json = args.iter().any(|a| a == "--json");
+    // Первый аргумент, не являющийся флагом (раньше путём считался args[1] - при
+    // `nanofastscan --json file.jar` путём становился сам "--json").
+    let jar_path = match args.iter().find(|a| !a.starts_with("--")) {
+        Some(p) => p,
+        None => {
+            eprintln!("Usage: nanofastscan <path_to_jar> [--json]");
+            process::exit(1);
+        }
+    };
 
     match nanodecompiler_fastscan::scan_jar(jar_path) {
         Ok(report) => {
@@ -22,7 +25,13 @@ fn main() {
                 process::exit(78); // Специальный неразмеченный код выхода: защита NanoGuard
             }
             if is_json {
-                println!("{}", serde_json::to_string_pretty(&report).unwrap());
+                match serde_json::to_string_pretty(&report) {
+                    Ok(s) => println!("{}", s),
+                    Err(e) => {
+                        eprintln!("Error serializing report: {}", e);
+                        process::exit(1);
+                    }
+                }
             } else {
                 println!("=== NanoFastScan Report (Rust Core) ===");
                 println!("JAR: {}", report.jar_name);

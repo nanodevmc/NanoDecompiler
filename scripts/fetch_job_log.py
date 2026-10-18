@@ -1,6 +1,8 @@
-import urllib.request
-import subprocess
 import sys
+import urllib.parse
+import urllib.request
+
+from _gh_auth import get_token
 
 if sys.stdout.encoding.lower() != 'utf-8':
     try:
@@ -8,14 +10,18 @@ if sys.stdout.encoding.lower() != 'utf-8':
     except Exception:
         pass
 
+
 def main():
-    out = subprocess.check_output(['git', 'config', 'remote.origin.url'], text=True)
-    token = out.split('@github.com')[0].split('https://')[1]
+    # Токен: GITHUB_TOKEN / GH_TOKEN / `gh auth token` (раньше - регулярка по `git config remote.origin.url`,
+    # то есть токен лежал открытым текстом в .git/config) - см. scripts/_gh_auth.py.
+    token = get_token()
 
     class NoAuthRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
             new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
-            if new_req is not None and "github.com" not in newurl:
+            # Проверка по имени хоста, а не по подстроке "github.com" в URL.
+            host = (urllib.parse.urlparse(newurl).hostname or "").lower()
+            if new_req is not None and host not in ("github.com", "api.github.com"):
                 new_req.headers.pop("Authorization", None)
                 new_req.headers.pop("authorization", None)
             return new_req
@@ -23,10 +29,10 @@ def main():
     opener = urllib.request.build_opener(NoAuthRedirect)
     job_id = sys.argv[1] if len(sys.argv) > 1 else "116696024026"
     url = f"https://api.github.com/repos/NanoDev1488/NanoDecompiler/actions/jobs/{job_id}/logs"
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0",
-        "Authorization": f"Bearer {token}",
-    })
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
 
     with opener.open(req) as resp:
         text = resp.read().decode('utf-8', errors='replace')
@@ -52,6 +58,7 @@ def main():
             for i in range(start_ctx, min(idx + 2, len(lines))):
                 print(f"[{i}] {lines[i]}")
             print("---")
+
 
 if __name__ == "__main__":
     main()

@@ -1,18 +1,9 @@
 import requests
-import subprocess
-import json
-import re
 import sys
+from _gh_auth import github_headers
 
 def main():
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    try:
-        remote_url = subprocess.check_output(['git', 'config', '--get', 'remote.origin.url'], text=True).strip()
-        m = re.search(r'https://([^@]+)@github\.com', remote_url)
-        if m:
-            headers['Authorization'] = f'token {m.group(1)}'
-    except Exception:
-        pass
+    headers = github_headers()
 
     if len(sys.argv) > 1 and sys.argv[1].isdigit():
         run_id = sys.argv[1]

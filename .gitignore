@@ -57,3 +57,11 @@ erybuyer_v3.zip
 artifact_itemsadder/
 artifact_itemsadder_new/
 
+
+# СЕКРЕТЫ: реальный конфиг сервера телеметрии содержит токен Telegram-бота и
+# общий секрет - никогда не коммитить (в репозитории только config.example.json).
+telemetry-server/config.json
+.env
+.env.*
+*.pem
+*.key
