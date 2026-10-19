@@ -1,5 +1,7 @@
-fix(ci,updater): fallback ccache in macos job and verify sha256 checksum for full client update
+chore(release): release v2.0.1 with security hardening, web decompiler and modular OTA
 
-- Fall back to standard cmake build without ccache if brew ccache installation fails in build-clapi-macos.
-- Add strict SHA256 checksum verification from checksums.json before launching client installer in update:installClientAndRestart.
-- Fix cp1251 UnicodeEncodeError in fetch_job_log.py on Windows.
+- Merge PR #1: Security & privacy hardening (telemetry off by default, sha256 checks, proc_util no-shell execution, zip-bomb protection)
+- Implement full client-side JVM bytecode decompiler in docs/web_decompiler.html (Constant Pool, fields, methods, opcode disassembly)
+- Implement modular OTA architecture: code-splitting chunks (mod-editor, mod-plugins, mod-settings, mod-filetree) and OtaManager
+- Synchronize version 2.0.1 across package.json, version.hpp, NanoDecompilerLite.csproj and Cargo.toml
+- Update README.md and documentation with v2.0.1 feature showcase

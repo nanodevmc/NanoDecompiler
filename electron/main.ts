@@ -28,6 +28,9 @@ import {
 } from "./archiveExtractor";
 import { getPluginTree, compareJars, exportToGitHub } from "./pluginTools";
 import { resolveWithinRoot as resolveWithinRootGuarded, isSamePathOrInside, isFilesystemRootOrHome, isRiskyToOpen } from "./pathGuards";
+import { OtaManager } from "./otaManager";
+
+const otaManager = new OtaManager();
 
 // БАГ-ФИКС (реальный, воспроизведён пользователем на AntiX Linux -
 // "Read-only file system"): DEFAULT_SETTINGS.outputDir = "~/NanoDecompiler/out"
@@ -1696,4 +1699,8 @@ ipcMain.handle("github:export", async (_e, options: unknown) => {
   // Подробная валидация (формат токена, имя репозитория, каталог) - в exportToGitHub.
   return await exportToGitHub(options as Parameters<typeof exportToGitHub>[0]);
 });
+
+// НОВОЕ v2.0.1: Модульные OTA-обновления
+otaManager.registerIpc();
+
 

@@ -242,8 +242,10 @@ namespace nd {
 // Plugin Diff Viewer (интерактивное сравнение двух версий JAR плагинов в GUI),
 // Auto NMS-Remapper (автоматический маппинг внутренних версионных пакетов Mojang/Spigot NMS в декомпилированном коде),
 // Прямой экспорт проектов в GitHub с вводом персонального токена PAT в GUI,
-// Web / WASM Edition (docs/web_decompiler.html) с drag-and-drop декомпиляцией прямо в браузере.
-constexpr const char* NANO_DECOMPILER_VERSION = "NanoDecompiler v2.0.0-alpha";
+// НОВОЕ v2.0.1: Security & Privacy Hardening, модульные OTA-обновления,
+// запуск внешних утилит без shell через proc_util, строгая валидация SHA256,
+// ликвидация уязвимостей архивов, полноценный Web-декомпилятор в браузере.
+constexpr const char* NANO_DECOMPILER_VERSION = "NanoDecompiler v2.0.1";
 }
 
 

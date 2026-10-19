@@ -135,6 +135,9 @@ contextBridge.exposeInMainWorld("nano", {
     ipcRenderer.invoke("update:apply", downloadUrl, latestApiVersion),
   installClientAndRestart: (downloadUrl: string): Promise<{ ok: boolean; error?: string; manual?: boolean }> =>
     ipcRenderer.invoke("update:installClientAndRestart", downloadUrl),
+  otaListLocal: (): Promise<string[]> => ipcRenderer.invoke("ota:listLocal"),
+  otaSyncModule: (mod: unknown): Promise<{ ok: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke("ota:syncModule", mod),
   consumeUpdateSuccessFlag: (): Promise<boolean> => ipcRenderer.invoke("update:consumeSuccessFlag"),
   onLog: (cb: (e: LogEvent) => void) => {
     const handler = (_e: unknown, payload: LogEvent) => cb(payload);

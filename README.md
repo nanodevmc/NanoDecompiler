@@ -4,7 +4,7 @@
 
 **Декомпилятор Minecraft-плагинов и модов с честной эвристикой вместо красивого вранья.**
 
-[![Version](https://img.shields.io/badge/version-2.0.0--alpha-b6ff3c?style=for-the-badge&logo=codeforces&logoColor=000)](https://github.com/NanoDev1488/NanoDecompiler)
+[![Version](https://img.shields.io/badge/version-2.0.1-b6ff3c?style=for-the-badge&logo=codeforces&logoColor=000)](https://github.com/NanoDev1488/NanoDecompiler)
 [![Engine](https://img.shields.io/badge/Engine-C%2B%2B17%20Native-38bdf8?style=for-the-badge&logo=c%2B%2B&logoColor=white)](https://github.com/NanoDev1488/NanoDecompiler)
 [![Lite GUI](https://img.shields.io/badge/Lite%20GUI-C%23%20Avalonia-a855f7?style=for-the-badge&logo=dotnet&logoColor=white)](https://github.com/NanoDev1488/NanoDecompiler)
 [![Telemetry](https://img.shields.io/badge/Telemetry-opt--in%20(off%20by%20default)-4ade80?style=for-the-badge&logo=shield&logoColor=white)](https://github.com/NanoDev1488/NanoDecompiler)
@@ -111,8 +111,9 @@ NanoDecompiler берёт `.jar` скомпилированного плагин
 - Карточка плагина с деталями: статистика декомпиляции, найденные
   библиотеки, конфликты импортов, находки малварь-скана — без необходимости
   листать терминал в поисках того, что уже загружено.
-- Палитра команд (`Ctrl+K`), автообновление, кроссплатформенная сборка
-  (Windows/macOS/Linux).
+- Палитра команд (`Ctrl+K`), кроссплатформенная сборка (Windows/macOS/Linux).
+- **Модульные OTA-обновления**: дифференциальная доставка обновлений (микро-модули интерфейса и ядра) без необходимости перекачивать 100 МБ инсталлятор при каждом патче.
+- **Web / WASM Edition (`docs/web_decompiler.html`)**: полноценная клиентская декомпиляция в браузере (на ПК и смартфонах) с декодированием постоянного пула, разбором байткод-инструкций и детекцией NanoGuard без отправки файлов на сторонние серверы.
 
 ## Как это выглядит
 

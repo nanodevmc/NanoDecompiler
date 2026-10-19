@@ -1,6 +1,6 @@
 [package]
 name = "nanodecompiler-fastscan"
-version = "1.9.164"
+version = "2.0.1"
 edition = "2021"
 authors = ["NanoDev <nonames>"]
 description = "High-performance parallel JAR indexer, entropy analyzer and malware scanner for NanoDecompiler"

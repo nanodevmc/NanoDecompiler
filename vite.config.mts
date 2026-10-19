@@ -34,5 +34,28 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            if (id.includes("lucide-react")) return "mod-icons";
+            if (id.includes("react")) return "mod-react-vendor";
+            return "mod-vendor";
+          }
+          if (id.includes("/src/components/SettingsModal") || id.includes("/src/components/SetupWizard")) {
+            return "mod-settings";
+          }
+          if (id.includes("/src/components/PluginDetailsModal") || id.includes("/src/components/ProjectSearchModal")) {
+            return "mod-plugins";
+          }
+          if (id.includes("/src/components/CodeView") || id.includes("/src/components/FindBar")) {
+            return "mod-editor";
+          }
+          if (id.includes("/src/components/FileTree")) {
+            return "mod-filetree";
+          }
+        },
+      },
+    },
   },
 });
