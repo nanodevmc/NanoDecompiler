@@ -196,12 +196,14 @@ std::string hex_encode(const std::array<uint8_t, 32>& bytes) {
 // кириллицей) через голый std::ifstream(std::string) не открывался, а пустое
 // чтение давало хэш пустого файла - то есть ложное "хэш НЕ совпадает".
 // nullopt - файл не прочитан.
+} // namespace
 std::optional<std::string> sha256_of_file(const std::string& path) {
     std::ifstream f(fs::u8path(path), std::ios::binary);
     if (!f) return std::nullopt;
     std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     return hex_encode(sha256(data));
 }
+namespace {
 
 // Скачивает url во временный файл (лимит через curl --max-filesize) и
 // хэширует - используется ТОЛЬКО для GitHub-ассетов (см. спеку - у

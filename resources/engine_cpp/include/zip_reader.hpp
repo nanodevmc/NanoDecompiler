@@ -30,6 +30,7 @@ public:
     // Имена файлов в порядке центрального каталога (аналог ZipFile.namelist()).
     const std::vector<std::string>& namelist() const { return order_; }
     const ZipEntryInfo* getinfo(const std::string& name) const;
+    bool has_file(const std::string& name) const { return entries_.find(name) != entries_.end(); }
 
     // Бросает std::runtime_error на ошибке чтения/распаковки (аналог
     // исключения при ZipFile.read()).

@@ -4,6 +4,7 @@
 // вспомогательных функций отчётов из main.py (HANDOFF_43).
 #include "process_jar.hpp"
 #include "aegis_deobf.hpp"
+#include "legitimacy_check.hpp"
 #include "sha512.hpp"
 
 #include <cstdio>

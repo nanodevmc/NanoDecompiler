@@ -1,3 +1,4 @@
+#include <cstring>
 #include "aegis_deobf.hpp"
 #include <iostream>
 #include <fstream>

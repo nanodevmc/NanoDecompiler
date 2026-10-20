@@ -41,6 +41,8 @@
 
 namespace nd {
 
+std::optional<std::string> sha256_of_file(const std::string& path);
+
 struct PluginYmlFields {
     std::optional<std::string> website;
     std::vector<std::string> authors;
