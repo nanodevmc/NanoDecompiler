@@ -63,6 +63,8 @@ struct JarProcessResult {
     // серверный плагин) - разные ситуации, одно общее поле отказа.
     bool rejected = false;
     std::optional<std::string> rejected_reason;
+    bool is_nanoguard = false;
+    std::string nanoguard_detail;
 };
 
 extern const char* g_crash_class_name;

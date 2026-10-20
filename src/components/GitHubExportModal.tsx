@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Lock, Globe, CheckCircle2, AlertCircle, Loader2, X } from "lucide-react";
+import { Lock, Globe, CheckCircle2, AlertCircle, Loader2, X, Eye, EyeOff } from "lucide-react";
 import { useEngine } from "../state/engine";
 
 function GithubIcon({ size = 16, className }: { size?: number; className?: string }) {
@@ -29,6 +29,7 @@ export function GitHubExportModal({
   defaultRepoName: string;
 }) {
   const [token, setToken] = useState("");
+  const [showToken, setShowToken] = useState(false);
   const [repoName, setRepoName] = useState(defaultRepoName.replace(/[^a-zA-Z0-9._-]/g, "-"));
   const [isPrivate, setIsPrivate] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -131,13 +132,23 @@ export function GitHubExportModal({
                     Создать токен (scope: repo) ↗
                   </a>
                 </div>
-                <input
-                  type="password"
-                  value={token}
-                  onChange={(e) => setToken(e.target.value)}
-                  placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                  className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-ink outline-none focus:border-acid transition-colors font-mono text-[11px]"
-                />
+                <div className="relative flex items-center">
+                  <input
+                    type={showToken ? "text" : "password"}
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    className="w-full rounded-lg border border-line bg-raised pl-3 pr-9 py-2 text-ink outline-none focus:border-acid transition-colors font-mono text-[11px]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowToken(v => !v)}
+                    className="absolute right-2 text-faint hover:text-ink transition-colors p-1"
+                    title={showToken ? "Скрыть токен" : "Показать токен"}
+                  >
+                    {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
                 <span className="text-[10px] text-faint mt-1 block">
                   Токен используется только для этой операции и нигде не сохраняется на диске.
                 </span>

@@ -3,6 +3,8 @@
 // process_jar.cpp - см. process_jar.hpp. Порт process_jar_with_stats() и
 // вспомогательных функций отчётов из main.py (HANDOFF_43).
 #include "process_jar.hpp"
+#include "aegis_deobf.hpp"
+#include "sha512.hpp"
 
 #include <cstdio>
 #include <filesystem>
@@ -334,18 +336,11 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         }
     }
 
-    // --- 1. Сканирование на подозрительное содержимое (см. HANDOFF_31) ---
-    print_stage("scanning");
-    jr.malware_findings = scan_jar(jar_path);
-
-    std::string src_dir = (fs::u8path(out_dir) / "src" / "main" / "java").u8string();
-    fs::create_directories(fs::u8path(src_dir));
-
+    // --- 0.1. Мгновенная комплексная проверка защиты NanoGuard (ДО всех тяжёлых этапов)
+    // Выполняется сразу при открытии ZIP, чтобы не тратить CPU и память на сканирование вредоносов и распаковку.
     ZipReader zr(jar_path);
     std::vector<std::string> all_names = zr.namelist();
 
-    // --- 1.1. Комплексная многоуровневая проверка защиты NanoGuard (25 этапов проверки)
-    // Предотвращает обход защиты удалением маркера NANOGUARD.INF или подменой заголовков.
     bool nanoguard_detected = false;
     std::string nanoguard_stage_info;
 
@@ -423,9 +418,18 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
 
     if (nanoguard_detected) {
         jr.rejected = true;
+        jr.is_nanoguard = true;
+        jr.nanoguard_detail = nanoguard_stage_info;
         jr.rejected_reason = "Файл защищен NanoGuard (этап защиты: " + nanoguard_stage_info + "), декомпиляция невозможна!";
         return jr;
     }
+
+    // --- 1. Сканирование на подозрительное содержимое (см. HANDOFF_31) ---
+    print_stage("scanning");
+    jr.malware_findings = scan_jar(jar_path);
+
+    std::string src_dir = (fs::u8path(out_dir) / "src" / "main" / "java").u8string();
+    fs::create_directories(fs::u8path(src_dir));
 
     // --- 1.2. Проверка реального содержимого - хотя бы один .class файл.
     // Валидный ZIP с посторонним содержимым (текст, картинки, что угодно
@@ -547,6 +551,27 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         skip_res_prefixes.push_back(dotted_to_path_prefix(prefix));
     }
     std::string res_dir = (fs::u8path(out_dir) / "src" / "main" / "resources").u8string();
+
+    // --- 5.1. Автоматическая 100% деобфускация Aegis Forge (.aeg файлов) ---
+    if (is_aegis_archive(all_names)) {
+        print_stage("aegis_deobf");
+        auto aeg_res = deobfuscate_aegis_files(zr, out_dir, res_dir);
+        if (aeg_res.success) {
+            std::cout << "[AegisDeobf] 100% расшифровано защищённых ресурсов: " << aeg_res.decrypted_files << "\n";
+        }
+    }
+
+    // --- 5.2. Контрольная точка и оценка байткода .nano_inf ---
+    std::string jar_hash;
+    if (auto h = sha256_of_file(jar_path)) jar_hash = *h;
+    auto struct_est = estimate_clean_structure(class_names, zr);
+    NanoInfState nano_state;
+    nano_state.jar_sha256 = jar_hash;
+    nano_state.total_classes = static_cast<int>(class_files.size());
+    nano_state.expected_clean_classes = struct_est.expected_classes;
+    nano_state.expected_clean_methods = struct_est.expected_methods;
+    nano_state.expected_clean_lines = struct_est.expected_lines;
+    save_nano_inf(out_dir, nano_state);
     static const std::regex maven_meta_re(R"(META-INF/maven/([^/]+)/([^/]+)/)");
     // БАГ-ФИКС: MANIFEST.MF и файлы подписи из META-INF копировались как
     // обычные ресурсы. MANIFEST.MF - это манифест ИСХОДНОГО jar (Main-Class,
@@ -831,6 +856,9 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
                                ? (fs::u8path(src_dir) / *clean_class_rel).u8string()
                                : (fs::u8path(src_dir) / (new_internal + ".java")).u8string();
         write_text_file(dest, text);
+        // Обновляем контрольную точку декомпиляции в .nano_inf
+        nano_state.decompiled_classes++;
+        nano_state.last_processed_class = new_internal;
         // БАГ-ФИКС v1.8.4 (реальная жалоба - "не везде где неполная
         // декомпиляция ставит значок"): раньше проверялась ТОЛЬКО подстрока
         // "не удалось безопасно" - она покрывает fallback тела метода
@@ -892,6 +920,8 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     jr.decrypted_strings_count = str_decrypt_get_decrypted_count();
 
     // --- 14. Отчёты. ---
+    nano_state.is_completed = true;
+    save_nano_inf(out_dir, nano_state);
     write_mapping_report(out_dir, renamer);
     int total_methods = 0, total_fields = 0;
     for (auto& [internal, cf] : class_files) {

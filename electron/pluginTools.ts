@@ -120,7 +120,7 @@ export async function getPluginTree(jarPath: string) {
           else if (trimmed.startsWith("api-version:")) manifest.api_version = trimmed.slice(12).trim().replace(/^['"]|['"]$/g, "");
           else if (trimmed.startsWith("author:")) manifest.author = trimmed.slice(7).trim().replace(/^['"]|['"]$/g, "");
           else if (trimmed.startsWith("commands:")) currentSection = "commands";
-          else if (trimmed.startsWith("permissions:")) currentSection = "permissions";
+          else if (trimmed.startsWith("permissions:") || trimmed.startsWith("permission:")) currentSection = "permissions";
           else currentSection = "root";
           currentItem = null;
           continue;

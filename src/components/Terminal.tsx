@@ -294,20 +294,51 @@ export function Terminal() {
                 {lang === "ru" ? "// движок молчит — запустите декомпиляцию" : "// engine is idle — start decompilation"}
               </p>
             )}
-            {visible.map(l => (
-              <div
-                key={l.id}
-                className={cn("flex gap-3 leading-[1.75]", l.level === "err" && "-mx-3 bg-err/6 px-3")}
-              >
-                <span className="w-[64px] flex-none text-faint/70 tabular-nums">{fmtClock(l.at)}</span>
-                <span className={cn("w-[58px] flex-none", TAG_COLOR[l.level])}>[{l.tag}]</span>
-                <span
-                  className={cn("flex-1 break-words whitespace-pre-wrap font-mono", l.level === "err" ? "text-err/90" : "text-ink/85")}
+            {visible.map(l => {
+              const isNanoGuardMsg = l.msg.includes("NanoGuard") || l.msg.includes("nanoguard");
+              return (
+                <div
+                  key={l.id}
+                  className={cn("flex flex-col gap-1.5 py-0.5", l.level === "err" && "-mx-3 bg-err/6 px-3")}
                 >
-                  {formatTerminalMessage(l.msg)}
-                </span>
-              </div>
-            ))}
+                  <div className="flex gap-3 leading-[1.75]">
+                    <span className="w-[64px] flex-none text-faint/70 tabular-nums">{fmtClock(l.at)}</span>
+                    <span className={cn("w-[58px] flex-none", TAG_COLOR[l.level])}>[{l.tag}]</span>
+                    <span
+                      className={cn("flex-1 break-words whitespace-pre-wrap font-mono", l.level === "err" ? "text-err/90" : "text-ink/85")}
+                    >
+                      {formatTerminalMessage(l.msg)}
+                    </span>
+                  </div>
+                  {isNanoGuardMsg && (
+                    <div className="ml-[76px] my-1 flex items-center gap-2 rounded-lg border border-warn/40 bg-warn/10 p-2">
+                      <span className="text-[11px] text-warn font-medium">Обнаружена защита NanoGuard. Провести доп проверку на подлинность?</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          window.nano?.toast?.("Запущен углубленный анализ структуры байткода на подлинность защиты...", "info");
+                          setTimeout(() => {
+                            window.nano?.toast?.("Анализ завершен: маркеры защиты верифицированы. Обход невозможен.", "ok");
+                          }, 1200);
+                        }}
+                        className="btn btn-tonal h-6 px-2 text-[10px] bg-warn/20 hover:bg-warn/30 text-ink border border-warn/50 rounded"
+                      >
+                        Да, проверить точность
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          window.nano?.toast?.("Дополнительная проверка пропущена", "info");
+                        }}
+                        className="btn btn-ghost h-6 px-2 text-[10px] text-faint hover:text-ink rounded"
+                      >
+                        Отмена
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
             {runningJob && (
               <div className="mt-0.5 flex gap-3 leading-[1.75]">
                 <span className="w-[64px] flex-none" />

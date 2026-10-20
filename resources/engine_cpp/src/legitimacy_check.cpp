@@ -141,9 +141,11 @@ bool is_allowed_legitimacy_url(const std::string& url, bool for_download = false
 // возврата curl) - зеркалит `except Exception: return None` в оригинале.
 std::optional<std::string> http_get(const std::string& url, double timeout_sec, const std::string& accept) {
     if (!is_allowed_legitimacy_url(url)) return std::nullopt;
-    std::vector<std::string> argv = {"curl", "-s", "--proto", "=https", "--max-filesize", std::to_string(kMaxHttpBodyBytes),
-                                     "-m",   std::to_string(timeout_sec), "-A", kUserAgent, "-H", "Accept: " + accept, url};
-    ProcResult r = run_process(argv, ProcOutput::Capture, static_cast<int>(timeout_sec) + 5, kMaxHttpBodyBytes);
+    double effective_timeout = std::min(timeout_sec, 2.5);
+    std::vector<std::string> argv = {"curl", "-s", "--proto", "=https", "--connect-timeout", "2",
+                                     "--max-filesize", std::to_string(kMaxHttpBodyBytes),
+                                     "-m",   std::to_string(effective_timeout), "-A", kUserAgent, "-H", "Accept: " + accept, url};
+    ProcResult r = run_process(argv, ProcOutput::Capture, static_cast<int>(effective_timeout) + 2, kMaxHttpBodyBytes);
     if (!r.started || r.timed_out || r.truncated || r.exit_code != 0) return std::nullopt;
     return std::move(r.out);
 }
@@ -814,7 +816,7 @@ LegitimacyCheckResult run_legitimacy_check(const std::string& plugin_name, const
         }).detach();
     }
 
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8000);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
     for (auto& item : pending) {
         SiteKind kind = item.kind;
         LegitimacySourceResult r;

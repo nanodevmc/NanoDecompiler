@@ -68,6 +68,10 @@ std::string sanitize_subpath(const std::string& raw) {
             seg.pop_back();
         }
         if (seg.empty() || seg == "." || seg == "..") continue;
+        // Снятие блокировки архивов: игнорируем служебные файлы .*_archive_lock
+        if (seg.find("_archive_lock") != std::string::npos) {
+            return "";
+        }
         for (char& c : seg) {
             if (c == '<' || c == '>' || c == ':' || c == '"' || c == '|' || c == '?' || c == '*' || static_cast<unsigned char>(c) < 32) {
                 c = '_';

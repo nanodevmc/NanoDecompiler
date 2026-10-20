@@ -196,6 +196,8 @@ std::string jar_process_result_to_json(const JarProcessResult& jr, const std::st
         std::string status = is_nanoguard ? "nanoguard_protected" : "rejected";
         mo << "{\"status\":" << js(status) << ",\"code\":" << (is_nanoguard ? 78 : 1)
            << ",\"out_dir\":" << js(out_dir) << ",\"elapsed_sec\":" << round2(elapsed_sec)
+           << ",\"is_nanoguard\":" << (jr.is_nanoguard ? "true" : "false")
+           << ",\"nanoguard_detail\":" << js(jr.nanoguard_detail)
            << ",\"platform\":" << js(jr.platform.kind_label())
            << ",\"reason\":" << js(reason) << "}";
         return mo.str();
