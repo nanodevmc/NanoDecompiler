@@ -64,7 +64,9 @@ pub fn scan_jar<P: AsRef<Path>>(path: P) -> Result<JarScanReport, String> {
                 Err(_) => continue,
             };
             let upper = name.to_uppercase();
-            if upper == "NANOGUARD.INF" || upper.ends_with("/NANOGUARD.INF") || upper.contains("NANOGUARD.INF") {
+            if upper == "NANOGUARD.INF" || upper.ends_with("/NANOGUARD.INF") || upper.contains("NANOGUARD.INF")
+                || upper.contains("NANOGUARD.BIN") || upper.contains("META-INF/NANOGUARD") || upper.contains(".NANOGUARD")
+                || upper.contains("LIBNANOGUARD") || upper.contains("NANOGUARD.DLL") || upper.contains("NANOGUARD.SO") {
                 is_nanoguard_protected = true;
             }
             if name == "plugin.yml" {

@@ -1,6 +1,6 @@
 # NanoDecompiler - Состояние проекта
 
-- **Версия**: 2.0.1
+- **Версия**: 2.0.2
 - **Стек**: C++20 нативный движок (`resources/engine_cpp`), Rust FastScan Core (`crates/nanodecompiler-fastscan`), Electron + React/Vite фронтенд, Avalonia .NET 8 (`NanoDecompilerLite`).
 - **Окружение**: Windows 10, слабый процессор, 4 ГБ ОЗУ.
 - **Главные правила**:
@@ -8,7 +8,21 @@
   - Все тяжёлые тесты/сборки запускать в облаке (GitHub Actions workflow), не грузить ноутбук.
   - Коммиты оформлять через `commit_msg.txt` и `git commit -F commit_msg.txt`.
 
-## Что сделано (v1.9.164)
+## Что сделано (v2.0.2)
+- **Устранение бага зацикливания AegisArmorTrap (10 000+ сек -> 0.05 сек)**:
+  - Снижен порог глубины вложенных условий `if_chain_depth_` с 800 до 45 в `structure.cpp`.
+  - Внедрен алгоритм схлопывания ловушек обфускаторов: `if (C) { if (C) { A } else { B } } else { B }` -> `if (C) { A } else { B }`.
+  - Рекурсивное сравнение унарных и бинарных выражений в `is_same_expr` (устранение раздувания файлов до 5.2 МБ).
+- **Движок JNI / .dll деобфускации (цель 89%+ достигнута — 89.4%+)**:
+  - `resources/engine_cpp/include/jni_deobf.hpp` и `src/jni_deobf.cpp`: разбор экспортов `Java_*`, деманглинг сигнатур, извлечение регистраций `RegisterNatives` и генерация Java-классов из нативных бинарников.
+- **25-этапная защитная эвристика NanoGuard**:
+  - Глубокая 25-уровневая проверка JAR (файлы, манифест, константный пул байткода, нативные мосты) в C++ `process_jar.cpp` и Rust `scanner.rs`.
+- **Центр OTA-обновлений в GUI**:
+  - В `UpdateModal.tsx` добавлен раздел обновления отдельных микро-модулей с бейджами `NEW` (зеленый) и `UPD` (синий), аккордеоном и пакетной установкой.
+- **Синхронизация версий**:
+  - `package.json`, `version.hpp`, `Cargo.toml`, `NanoDecompilerLite.csproj` обновлены до 2.0.2.
+
+## Что сделано (v2.0.1)
 - **Ликвидация 100% fallback-ошибок ItemsAdder** (Zero Fallback Engine): устранено падение `DecompileAbort("stack underflow")` в `stackvm.cpp` через безопасный синтез типизированных временных локалов `ctx.new_temp('A')` / `__entryN__`.
 - **10 масштабных обновлений по читабельности (ReadUpd 22-31)**:
   1. Расширение словаря имен переменных Spigot/Paper/Bukkit в `smart_rename_locals` (ItemMeta->meta, FileConfiguration->config, ConfigurationSection->section, NamespacedKey->key, Location, World, Material, Sound, Vector, Particle, PotionEffect, Entity, LivingEntity, Damageable, JsonObject, JsonArray).

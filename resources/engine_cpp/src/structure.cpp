@@ -872,7 +872,8 @@ std::optional<int64_t> Structurer::find_forward_merge(int64_t true_t, int64_t fa
 std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_if(int64_t pc, ExprPtr cond, int64_t true_t, int64_t false_t,
                                                                    const std::set<int64_t>& stop_addrs) {
     if_chain_depth_ += 1;
-    if (if_chain_depth_ > 800) {
+    // Ограничение глубины вложенности guard-цепочек для предотвращения анти-декомпиляторных ловушек (как в AegisArmorTrap)
+    if (if_chain_depth_ > 45) {
         if_chain_depth_ -= 1;
         auto then_stmt = std::make_shared<GotoStmt>("block_" + std::to_string(true_t));
         auto else_stmt = std::make_shared<GotoStmt>("block_" + std::to_string(false_t));
@@ -1275,6 +1276,16 @@ static bool is_same_expr(const ExprPtr& a, const ExprPtr& b) {
         auto* c1 = static_cast<Cast*>(a.get());
         auto* c2 = static_cast<Cast*>(b.get());
         return c1->type == c2->type && is_same_expr(c1->expr, c2->expr);
+    }
+    if (a->kind == ExprKind::UnOp) {
+        auto* u1 = static_cast<UnOp*>(a.get());
+        auto* u2 = static_cast<UnOp*>(b.get());
+        return u1->op == u2->op && is_same_expr(u1->expr, u2->expr);
+    }
+    if (a->kind == ExprKind::BinOp) {
+        auto* b1 = static_cast<BinOp*>(a.get());
+        auto* b2 = static_cast<BinOp*>(b.get());
+        return b1->op == b2->op && is_same_expr(b1->left, b2->left) && is_same_expr(b1->right, b2->right);
     }
     return false;
 }
@@ -2486,15 +2497,42 @@ std::vector<StmtPtr> collapse_nested_if_conditions(std::vector<StmtPtr> stmts) {
         for (auto& s : stmts) {
             if (s && s->kind == StmtKind::IfStmt) {
                 auto* i = static_cast<IfStmt*>(s.get());
+                // Схлопывание if (c1) { if (c2) { ... } } без else в if (c1 && c2)
                 if (!i->else_body.has_value() && i->then_body.size() == 1 && i->then_body[0] && i->then_body[0]->kind == StmtKind::IfStmt) {
                     auto inner_holder = i->then_body[0];
                     auto* inner = static_cast<IfStmt*>(inner_holder.get());
                     if (!inner->else_body.has_value() && inner->cond) {
                         auto new_then = inner->then_body;
-                        i->cond = std::make_shared<BinOp>("&&", i->cond, inner->cond, "boolean");
+                        // Если условие идентично, не дублируем (избегаем C && C && C...)
+                        if (!is_same_expr(i->cond, inner->cond)) {
+                            i->cond = std::make_shared<BinOp>("&&", i->cond, inner->cond, "boolean");
+                        }
                         i->then_body = std::move(new_then);
                         changed = true;
                         break;
+                    }
+                }
+                // Схлопывание анти-декомпиляторных ловушек (AegisArmorTrap):
+                // if (C) { if (C) { A } else { B } } else { B } => if (C) { A } else { B }
+                if (i->else_body.has_value() && i->then_body.size() == 1 && i->then_body[0] && i->then_body[0]->kind == StmtKind::IfStmt) {
+                    auto inner_holder = i->then_body[0];
+                    auto* inner = static_cast<IfStmt*>(inner_holder.get());
+                    if (inner->else_body.has_value() && is_same_expr(i->cond, inner->cond)) {
+                        bool else_matches = false;
+                        if (i->else_body->size() == inner->else_body->size()) {
+                            else_matches = true;
+                            for (size_t b_idx = 0; b_idx < i->else_body->size(); ++b_idx) {
+                                if (!is_same_stmt((*i->else_body)[b_idx], (*inner->else_body)[b_idx])) {
+                                    else_matches = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (else_matches) {
+                            i->then_body = inner->then_body;
+                            changed = true;
+                            break;
+                        }
                     }
                 }
             }

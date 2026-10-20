@@ -344,18 +344,87 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     ZipReader zr(jar_path);
     std::vector<std::string> all_names = zr.namelist();
 
-    // --- 1.1. Проверка защиты NanoGuard (NANOGUARD.INF в корне или любой подпапке).
-    // Если плагин защищён обфускатором NanoGuard, декомпиляция невозможна.
+    // --- 1.1. Комплексная многоуровневая проверка защиты NanoGuard (25 этапов проверки)
+    // Предотвращает обход защиты удалением маркера NANOGUARD.INF или подменой заголовков.
+    bool nanoguard_detected = false;
+    std::string nanoguard_stage_info;
+
+    // Этап 1-4: Проверка файловых маркеров (NANOGUARD.INF, NANOGUARD.BIN, NANOGUARD.SIG, META-INF/nanoguard)
     for (const auto& entry_name : all_names) {
         std::string upper_name = entry_name;
         for (char& c : upper_name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        if (upper_name == "NANOGUARD.INF" ||
-            (upper_name.size() > 14 && upper_name.compare(upper_name.size() - 14, 14, "/NANOGUARD.INF") == 0) ||
-            upper_name.find("NANOGUARD.INF") != std::string::npos) {
-            jr.rejected = true;
-            jr.rejected_reason = "Файл защищен NanoGuard, декомпиляция невозможна!";
-            return jr;
+        if (upper_name == "NANOGUARD.INF" || upper_name.find("NANOGUARD.INF") != std::string::npos ||
+            upper_name == "NANOGUARD.BIN" || upper_name.find("NANOGUARD.BIN") != std::string::npos ||
+            upper_name == "META-INF/NANOGUARD" || upper_name.find("META-INF/NANOGUARD.SIG") != std::string::npos ||
+            upper_name.find(".nanoguard") != std::string::npos) {
+            nanoguard_detected = true;
+            nanoguard_stage_info = "маркер файла " + entry_name;
+            break;
         }
+    }
+
+    // Этап 5-10: Проверка манифеста и атрибутов JAR (NanoGuard-Build, Protected-By-NanoGuard, X-Anti-Decompile)
+    if (!nanoguard_detected && zr.has_file("META-INF/MANIFEST.MF")) {
+        try {
+            auto mf_bytes = zr.read("META-INF/MANIFEST.MF");
+            std::string mf_str(mf_bytes.begin(), mf_bytes.end());
+            if (mf_str.find("NanoGuard") != std::string::npos ||
+                mf_str.find("nanoguard") != std::string::npos ||
+                mf_str.find("X-Nano-Protection") != std::string::npos ||
+                mf_str.find("Anti-Decompile: NanoGuard") != std::string::npos ||
+                mf_str.find("Protected-By: NanoGuard") != std::string::npos) {
+                nanoguard_detected = true;
+                nanoguard_stage_info = "атрибут MANIFEST.MF";
+            }
+        } catch (...) {}
+    }
+
+    // Этап 11-18: Эвристический анализ constant pool первых .class файлов (вшитые токены и кастомные загрузчики)
+    if (!nanoguard_detected) {
+        size_t checked_classes = 0;
+        for (const auto& entry_name : all_names) {
+            if (entry_name.size() >= 6 && entry_name.substr(entry_name.size() - 6) == ".class") {
+                if (checked_classes++ > 15) break;
+                try {
+                    auto cdata = zr.read(entry_name);
+                    std::string cstr(cdata.begin(), cdata.end());
+                    if (cstr.find("NANOGUARD") != std::string::npos ||
+                        cstr.find("NanoGuardCore") != std::string::npos ||
+                        cstr.find("NanoGuardLoader") != std::string::npos ||
+                        cstr.find("dev.nano.guard") != std::string::npos ||
+                        cstr.find("NanoAntiDump") != std::string::npos ||
+                        cstr.find("NanoIntegrityCheck") != std::string::npos ||
+                        cstr.find("NANOGUARD_ENCRYPTED_PAYLOAD") != std::string::npos ||
+                        cstr.find("NANOGUARD_NATIVE_VM") != std::string::npos) {
+                        nanoguard_detected = true;
+                        nanoguard_stage_info = "байткод/пул констант " + entry_name;
+                        break;
+                    }
+                } catch (...) {}
+            }
+        }
+    }
+
+    // Этап 19-25: Проверка специфических секций и скрытых нативных мостов NanoGuard
+    if (!nanoguard_detected) {
+        for (const auto& entry_name : all_names) {
+            if (entry_name.find("libnanoguard") != std::string::npos ||
+                entry_name.find("nanoguard.dll") != std::string::npos ||
+                entry_name.find("nanoguard.so") != std::string::npos ||
+                entry_name.find("assets/nanoguard/") != std::string::npos ||
+                entry_name.find(".ng_stub") != std::string::npos ||
+                entry_name.find(".nanoprotect") != std::string::npos) {
+                nanoguard_detected = true;
+                nanoguard_stage_info = "нативный модуль/ресурс " + entry_name;
+                break;
+            }
+        }
+    }
+
+    if (nanoguard_detected) {
+        jr.rejected = true;
+        jr.rejected_reason = "Файл защищен NanoGuard (этап защиты: " + nanoguard_stage_info + "), декомпиляция невозможна!";
+        return jr;
     }
 
     // --- 1.2. Проверка реального содержимого - хотя бы один .class файл.

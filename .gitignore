@@ -65,3 +65,6 @@ telemetry-server/config.json
 .env.*
 *.pem
 *.key
+ 
+crates/**/target 
+*.exe

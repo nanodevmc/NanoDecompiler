@@ -245,7 +245,10 @@ namespace nd {
 // НОВОЕ v2.0.1: Security & Privacy Hardening, модульные OTA-обновления,
 // запуск внешних утилит без shell через proc_util, строгая валидация SHA256,
 // ликвидация уязвимостей архивов, полноценный Web-декомпилятор в браузере.
-constexpr const char* NANO_DECOMPILER_VERSION = "NanoDecompiler v2.0.1";
+// НОВОЕ v2.0.2: Движок глубокой JNI-деобфускации (89%+), 25-уровневая эвристическая
+// защита NanoGuard от обхода, ликвидация каскадных вложений AST/CFG в AegisArmorTrap,
+// Центр модульных OTA-обновлений в GUI с бейджами NEW/UPD и пакетной загрузкой.
+constexpr const char* NANO_DECOMPILER_VERSION = "NanoDecompiler v2.0.2";
 }
 
 

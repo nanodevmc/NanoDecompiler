@@ -13,6 +13,10 @@
 #include "stackvm.hpp"
 #include "structure.hpp"
 
+namespace nd {
+const char* g_crash_pass_name = nullptr;
+}
+
 using namespace nd;
 
 int main(int argc, char** argv) {
