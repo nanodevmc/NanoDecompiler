@@ -519,11 +519,19 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     auto sig_prefixes = signature_relocated_prefixes(all_names);
     relocated_prefixes.insert(relocated_prefixes.end(), sig_prefixes.begin(), sig_prefixes.end());
     // --- 5. Известные библиотеки - убираем из class_files (см. HANDOFF_40). ---
+    std::string main_class_pkg;
+    if (jr.platform.main_class.has_value()) {
+        std::string mc = *jr.platform.main_class;
+        for (char& c : mc) if (c == '.') c = '/';
+        auto slash = mc.rfind('/');
+        if (slash != std::string::npos) main_class_pkg = mc.substr(0, slash);
+    }
     std::vector<std::string> library_internal_names;
     std::set<std::string> library_hit_labels;
     for (auto it = class_files.begin(); it != class_files.end();) {
+        bool is_own_plugin_pkg = (!main_class_pkg.empty() && it->first.rfind(main_class_pkg, 0) == 0);
         auto hit = known_library_coords(it->first, relocated_prefixes);
-        if (hit.has_value()) {
+        if (hit.has_value() && !is_own_plugin_pkg) {
             library_internal_names.push_back(it->first);
             library_hit_labels.insert(hit->second.group + ":" + hit->second.artifact);
             it = class_files.erase(it);
@@ -724,6 +732,8 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     {
         std::set<std::string> seen;
         for (auto& [internal, cf] : class_files) {
+        std::cerr << "[Render] " << internal << std::endl;
+
             for (auto& [idx, entry] : cf.pool) {
                 (void)idx;
                 if (entry.tag == CpTag::Class) {
@@ -789,6 +799,8 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         for (auto& [k, v] : hints_bukkit.method_hints) renamer.method_name_hints[k] = v;
     }
     for (auto& [internal, cf] : class_files) {
+        std::cerr << "[Render] " << internal << std::endl;
+
         renamer.friendly_class(internal);
         for (auto& f : cf.fields) renamer.friendly_field(internal, f.name, f.descriptor);
         for (auto& m : cf.methods) renamer.friendly_method(internal, m.name, m.descriptor);
@@ -797,6 +809,8 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     // --- 11. enum_ordinals. ---
     std::map<std::string, std::vector<std::string>> enum_ordinals;
     for (auto& [internal, cf] : class_files) {
+        std::cerr << "[Render] " << internal << std::endl;
+
         if (!(cf.access & 0x4000)) continue;
         std::string own_desc = "L" + internal + ";";
         std::vector<std::string> names;
@@ -831,6 +845,8 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     const int kProgressBarWidth = 20;
 
     for (auto& [internal, cf] : class_files) {
+        std::cerr << "[Render] " << internal << std::endl;
+
         if (synthetic_switchmap_classes.count(internal)) continue;
         g_crash_class_name = internal.c_str();
         std::string text;
@@ -926,6 +942,8 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     write_mapping_report(out_dir, renamer);
     int total_methods = 0, total_fields = 0;
     for (auto& [internal, cf] : class_files) {
+        std::cerr << "[Render] " << internal << std::endl;
+
         (void)internal;
         total_methods += static_cast<int>(cf.methods.size());
         total_fields += static_cast<int>(cf.fields.size());

@@ -44,7 +44,8 @@ const MAX_LOG_LINES = 800;
    показывались в мини-просмотрщике (не то что не открывались - их не было
    в дереве файлов вовсе). Теперь читаемые текстовые форматы, которые
    реально встречаются в выводе движка, показываются тоже. */
-const VIEWABLE_EXT = /\.(java|ya?ml|xml|properties|json|md|txt|gitignore|gitattributes)$/i;
+const KNOWN_BINARY_EXT = /\.(png|jpe?g|gif|webp|ico|bmp|zip|jar|tar|gz|7z|rar|class|exe|dll|so|dylib|bin|dat|db|sqlite|sqlite3|ogg|mp3|wav|ttf|otf|woff2?)$/i;
+const VIEWABLE_EXT = /\.(java|ya?ml|xml|properties|json|md|txt|gitignore|gitattributes|cfg|conf|ini|toml|gradle|kts|env|sh|bat|cmd|aeg)$/i;
 // БАГ-ФИКС v1.8.4 (реальная жалоба - "почему бинарные ресурсы не
 // показываются в дереве файлов?"): VIEWABLE_EXT был не просто списком
 // "что подсвечивать особо" - он был WHITELIST'ом того, что вообще
@@ -101,7 +102,7 @@ async function collectSourceFiles(outDir: string, relDir = ""): Promise<SourceFi
         name: item.name,
         relPath: rel,
         loc: 0,
-        isBinary: !VIEWABLE_EXT.test(item.name),
+        isBinary: KNOWN_BINARY_EXT.test(item.name),
         isDecompilerArtifact,
       });
     }

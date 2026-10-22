@@ -26,7 +26,7 @@ import {
   archivesRootDir,
   sweepStaleArchiveTemps,
 } from "./archiveExtractor";
-import { getPluginTree, compareJars, exportToGitHub } from "./pluginTools";
+import { getPluginTree, compareJars, diffClassBetweenJars, exportToGitHub } from "./pluginTools";
 import { resolveWithinRoot as resolveWithinRootGuarded, isSamePathOrInside, isFilesystemRootOrHome, isRiskyToOpen } from "./pathGuards";
 import { OtaManager } from "./otaManager";
 
@@ -67,7 +67,12 @@ let appLogIdSeq = 0;
 const APP_LOG_MAX = 1000; // не даём буферу расти бесконечно за долгую сессию
 
 function pushAppLog(kind: string, msg: string) {
-  const entry: AppLogEntry = { id: ++appLogIdSeq, ts: Date.now(), kind, msg };
+  const entry: AppLogEntry = {
+    id: ++appLogIdSeq,
+    ts: Date.now(),
+    kind, msg
+  };
+
   appLogBuffer.push(entry);
   if (appLogBuffer.length > APP_LOG_MAX) appLogBuffer.splice(0, appLogBuffer.length - APP_LOG_MAX);
   for (const w of [mainWindow, logWindow]) {
@@ -112,25 +117,20 @@ type Settings = {
   // та зашивается в бинарник electron-builder'ом на этапе СБОРКИ и в
   // рантайме поменяться не может ни при каких обстоятельствах (ограничение
   // ОС, не наше) - честно объяснено в UI, не только здесь в комментарии.
-  appIcon: "terminal" | "layers";
+  
+  // appIcon: "terminal";
+  // v2.0.2: убрана иконка Layers (она мне больше не нравится)
+
   // Мастер первого запуска (EULA + приветствие) - показывается один раз,
-  // пока false. По просьбе пользователя - лицензия на английском
-  // (LICENSE_EULA.txt в корне проекта), автор NanoDev, t.me/NanoDev_mc.
+  // пока false.
   setupCompleted: boolean;
   // НОВОЕ v1.8.4: язык интерфейса.
   language: "ru" | "en";
   // НОВОЕ v1.8.4 (телеметрия - "сбор ошибок + отправка на сервер"): адрес
   // мини-бэкенда (см. telemetry-server/) и переключатель.
   //
-  // ПРИВАТНОСТЬ (исправлено в 2.0.0-alpha): по умолчанию ВЫКЛЮЧЕНО. Раньше
-  // здесь стояло true, а комментарий утверждал обратное - из-за этого отчёт с
-  // декомпилированным кодом ЧУЖОГО плагина уходил на сервер без ведома
-  // пользователя, при том что README обещал "нулевую телеметрию". Теперь:
-  //  - пока пользователь сам не включил переключатель, не отправляется НИЧЕГО;
-  //  - автоматический отчёт (после job'а с байткод-откатами) содержит ТОЛЬКО
-  //    статистику и короткие фрагменты вокруг мест отката; полные исходники
-  //    файлов (heavy_files) уходят исключительно по ручной кнопке отправки
-  //    в карточке плагина (см. sendErrorReport в state/engine.tsx).
+  // Поменял чтобы по дефолту было включенно (на пару версий оставлю,
+  // потом выключу + пользователь сам может отключить)
   disableVsCodeLogs: boolean;
   telemetryEnabled: boolean;
   telemetryUrl: string;
@@ -143,12 +143,12 @@ type Settings = {
 const DEFAULT_SETTINGS: Settings = {
   legitimacyCheck: false,
   autoUpdateCheck: true,
-  appIcon: "terminal",
+  // appIcon: "terminal",
   setupCompleted: false,
   language: "ru",
   disableVsCodeLogs: false,
-  telemetryEnabled: false,
-  telemetryUrl: "http://195.179.231.14:15015/report",
+  telemetryEnabled: true,
+  telemetryUrl: "http://195.179.231.14:15015/report", //просьба не ебать сервак :)
 };
 
 function settingsPath(): string {
@@ -162,7 +162,8 @@ function effectiveTelemetryUrl(): string {
   if (fromEnv) {
     try {
       const u = new URL(fromEnv);
-      if (u.protocol === "https:" || u.protocol === "http:") return u.toString();
+      return u.toString();
+      // v2.0.2: убрал ненужную проверку (if..)
     } catch {
       // некорректный адрес в окружении - игнорируем, берём значение по умолчанию
     }
@@ -181,7 +182,8 @@ function normalizeSettings(parsed: unknown): Settings {
   return {
     legitimacyCheck: bool(p.legitimacyCheck, DEFAULT_SETTINGS.legitimacyCheck),
     autoUpdateCheck: bool(p.autoUpdateCheck, DEFAULT_SETTINGS.autoUpdateCheck),
-    appIcon: p.appIcon === "terminal" || p.appIcon === "layers" ? p.appIcon : DEFAULT_SETTINGS.appIcon,
+    // appIcon: p.appIcon === "terminal" ? p.appIcon : DEFAULT_SETTINGS.appIcon,
+    // v2.0.2: убрана иконка Layers 
     setupCompleted: bool(p.setupCompleted, DEFAULT_SETTINGS.setupCompleted),
     language: p.language === "ru" || p.language === "en" ? p.language : DEFAULT_SETTINGS.language,
     disableVsCodeLogs: bool(p.disableVsCodeLogs, DEFAULT_SETTINGS.disableVsCodeLogs),
@@ -189,7 +191,7 @@ function normalizeSettings(parsed: unknown): Settings {
     // БАГ-ФИКС v1.9.12 (жалоба "новый IP не работает"): telemetryUrl
     // ВСЕГДА берётся из кода, сохранённое значение из settings.json на
     // диске ИГНОРИРУЕТСЯ. Причина: ввод URL был убран из UI ещё несколько
-    // волн назад (поле больше не показывается, не редактируется) - значит
+    // версий назад (не редактируется через GUI) - значит
     // пользователь ЗАВЕДОМО не контролирует его вручную. У пользователей со
     // старым IP в settings.json отчёты летели на несуществующий сервер.
     telemetryUrl: effectiveTelemetryUrl(),
@@ -215,7 +217,7 @@ function sanitizeSettingsPatch(partial: unknown): Partial<Settings> {
   for (const key of Object.keys(defaults) as (keyof Settings)[]) {
     if (key === "telemetryUrl") continue; // адрес менять нельзя
     if (!(key in p)) continue;
-    // normalizeSettings подставил дефолт при неверном типе - берём только "родные" значения
+    // normalizeSettings подставил дефолт при неверном типе
     const given = p[key];
     if (typeof given === typeof defaults[key] && given === full[key]) (out as Record<string, unknown>)[key] = given;
   }
@@ -232,62 +234,50 @@ function saveSettings(s: Settings): void {
   fs.renameSync(tmp, target);
 }
 
-// БАГ-ФИКС/фича: выбор иконки приложения (см. Settings.appIcon выше).
-// iconsDir() зеркалит engineDir() - dev режим читает прямо из resources/,
-// упакованный - из resourcesPath (electron-builder кладёт extraResources
-// туда же).
+// v2.0.2:
+// убрал выбор иконки и оставил только иконку terminal (она мне больше понравилась)
 function iconsDir(): string {
   return isDev ? path.join(__dirname, "..", "resources", "icons") : path.join(process.resourcesPath, "icons");
 }
 
-function iconPathFor(choice: Settings["appIcon"]): string {
-  const name = choice === "layers" ? "icon-e-layers.png" : "icon-b-terminal.png";
+function iconPath(): string {
+  const name = "icon-b-terminal.png";
   return path.join(iconsDir(), name);
 }
 
-// Применяет выбранную иконку к окну/панели задач ЖИВЬЁМ, без перезапуска -
-// работает на Windows/Linux (Electron setIcon() поддерживается там), на
-// macOS дока-иконку так поменять нельзя (ограничение самой ОС - dock icon
-// определяется Info.plist упакованного .app) - см. честную подпись в UI
-// (SettingsModal), а не молчаливое "не сработало". Сам .exe/.app остаётся
-// с той иконкой, что была на момент сборки - это отдельный,
-// непреодолимый в рантайме случай, см. комментарий у Settings.appIcon.
-function applyAppIcon(choice: Settings["appIcon"]): void {
-  if (process.platform === "darwin") return;
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  try {
-    mainWindow.setIcon(iconPathFor(choice));
-  } catch {
-    // молча игнорируем - косметика, не должна ронять приложение
+function engineCheckExist(): string | null {
+  const devPath = path.join(__dirname, "..", "resources", "engine");
+  const prodPath = path.join(process.resourcesPath, "engine");
+
+  const candidates = isDev ? [devPath, prodPath] : [prodPath, devPath];
+
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
   }
+  return null; // так и передадим офицеру engineInvocation 
 }
 
 function engineDir(): string {
-  return isDev
-    ? path.join(__dirname, "..", "resources", "engine")
-    : path.join(process.resourcesPath, "engine");
+  const p = engineCheckExist();
+  if (p === null) {
+    throw new Error("Движок не найден! Попробуйте переустановить движок либо обновить приложение/модуль");
+  }
+  return p;
 }
 
-// HANDOFF_46: python-фолбэк убран полностью (main.py удалён из проекта -
-// движок теперь ТОЛЬКО C++, resources/engine_cpp/src/cli_main.cpp).
-// Раньше (HANDOFF_7/8/9/45) здесь был путь через python3/python как
-// основной или запасной вариант - см. историю в этих хэндоффах, если
-// понадобится контекст. Если бинарника рядом нет (например, CI ещё не
-// пересобрал extraResources/engine после этого коммита) - функция бросает
-// понятную ошибку, а НЕ падает молча/не пытается угадать питон.
 function engineInvocation(scriptArgs: string[]): { cmd: string; args: string[] } {
-  const binName = process.platform === "win32" ? "NanoDecompilerCLI.exe" : "NanoDecompilerCLI";
-  const binPath = path.join(engineDir(), binName);
-  if (!fs.existsSync(binPath)) {
+  const enginePath = engineCheckExist();
+  if (enginePath === null) {
     throw new Error(
-      `Движок не найден: ${binPath}. Убедитесь, что resources/engine_cpp собран (см. ` +
-        `resources/engine_cpp/CMakeLists.txt) и бинарник NanoDecompilerCLI${
-          process.platform === "win32" ? ".exe" : ""
-        } скопирован в resources/engine/ (см. .github/workflows/build-and-release.yml).`,
+      "Движок не найден! Попробуй обновить движок/запустить инсталлер приложения."
     );
   }
-  // Бинарник уже "содержит в себе" весь движок - путь к скрипту не
-  // передаём, только сами позиционные аргументы/флаги.
+
+  const binName = process.platform === "win32"
+    ? "NanoDecompilerCLI.exe"
+    : "NanoDecompilerCLI";
+  const binPath = path.join(enginePath, binName);
+
   return { cmd: binPath, args: scriptArgs };
 }
 
@@ -324,18 +314,46 @@ function isAppNavigationUrl(rawUrl: string): boolean {
     return false;
   }
 }
-
+// v2.0.2: добавил больше защиты в окно
 function hardenWindow(win: BrowserWindow): void {
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+  const wc = win.webContents;
+
+  const openExternalIfSafe = (url: string): void => {
+    try {
+      const u = new URL(url);
+      if (u.protocol === "https:") {
+        void shell.openExternal(url).catch(() => {});
+      }
+    } catch {
+      // невалидный URL — ничего не открываем 
+    }
+  };
+
+  // 1. window.open / target="_blank" — новые окна запрещены,
+  //    внешние https уходят в системный браузер.
+  wc.setWindowOpenHandler(({ url }) => {
+    openExternalIfSafe(url);
     return { action: "deny" };
   });
-  win.webContents.on("will-navigate", (event, url) => {
+
+  // 2. Навигация окна: will-navigate + will-redirect (серверные 30x).
+  const handleNavigation = (event: Electron.Event, url: string): void => {
     if (isAppNavigationUrl(url)) return;
     event.preventDefault();
-    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    openExternalIfSafe(url);
+  };
+
+  wc.on("will-navigate", handleNavigation);
+  wc.on("will-redirect", handleNavigation);
+
+  // 3. Субфреймы: чужие iframe'ы блокируем.
+  wc.on("will-frame-navigate", (event) => {
+    if (isAppNavigationUrl(event.url)) return;
+    event.preventDefault();
   });
-  win.webContents.on("will-attach-webview", (event) => event.preventDefault());
+
+  // 4. <webview> запрещён полностью.
+  wc.on("will-attach-webview", (event) => event.preventDefault());
 }
 
 function createWindow() {
@@ -349,9 +367,9 @@ function createWindow() {
     // реальный --color-surface там #0c100d, не #0a0d0b - несовпадение
     // давало едва заметную вспышку неверного фона на долю секунды перед
     // отрисовкой контента.
-    backgroundColor: "#0c100d", // --color-surface из index.css
+    backgroundColor: "#226332", // --color-surface из index.css
     autoHideMenuBar: true,
-    // БАГ-ФИКС (реальный, воспроизведён пользователем - "х2 кнопок"):
+    // БАГ-ФИКС "х2 кнопок":
     // frame не был задан вообще -> ОС рисовала СВОИ системные кнопки
     // (свернуть/развернуть/закрыть) НАД кастомным Titlebar.tsx, у которого
     // были СВОИ, но фиктивные React-кнопки (только показывали toast,
@@ -360,7 +378,7 @@ function createWindow() {
     // - кастомные кнопки внизу теперь единственные и реально подключены
     // (см. window:minimize/maximize/close ниже).
     frame: false,
-    icon: iconPathFor(loadSettings().appIcon),
+    icon: iconPath(),
     webPreferences: secureWebPreferences(),
   });
 
@@ -415,10 +433,10 @@ function openLogWindow() {
     height: 560,
     minWidth: 480,
     minHeight: 320,
-    backgroundColor: "#0c100d",
+    backgroundColor: "226332",
     autoHideMenuBar: true,
     frame: false,
-    icon: iconPathFor(loadSettings().appIcon),
+    icon: iconPath(),
     webPreferences: secureWebPreferences(),
   });
   hardenWindow(logWindow);
@@ -469,7 +487,6 @@ ipcMain.handle("settings:set", async (_e, rawPartial: unknown): Promise<Settings
     // тихо откатывалась при следующем запуске без единого предупреждения.
     return { ...loadSettings(), ok: false, error: String(e) };
   }
-  if (partial.appIcon) applyAppIcon(merged.appIcon);
   return { ...merged, ok: true };
 });
 
@@ -880,7 +897,7 @@ ipcMain.handle("run:decompile", async (event, jarPathRaw: unknown, outDirRaw: un
     // detached не создаёт process group так же, но там дерево убивается
     // через `taskkill /T` (см. run:cancel ниже).
     const proc = spawn(cmd, args, {
-      cwd: engineDir(),
+      cwd: engineCheckExist() ?? undefined,
       env: { ...process.env },
       detached: process.platform !== "win32",
     });
@@ -1692,6 +1709,19 @@ ipcMain.handle("plugin:compare", async (_e, jarA: unknown, jarB: unknown) => {
     return { ok: false, error: "некорректные пути" };
   }
   return await compareJars(path.resolve(expandHome(jarA)), path.resolve(expandHome(jarB)));
+});
+
+ipcMain.handle("plugin:diffClass", async (_e, jarA: unknown, jarB: unknown, classRelPath: unknown) => {
+  if (typeof jarA !== "string" || typeof jarB !== "string" || typeof classRelPath !== "string" || !jarA || !jarB || !classRelPath) {
+    return { ok: false, error: "некорректные параметры" };
+  }
+  const invocation = engineInvocation([]);
+  return await diffClassBetweenJars(
+    path.resolve(expandHome(jarA)),
+    path.resolve(expandHome(jarB)),
+    classRelPath,
+    invocation.cmd
+  );
 });
 
 // НОВОЕ v2.0.0-alpha: GitHub Exporter с PAT токеном

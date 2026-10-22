@@ -1,19 +1,11 @@
-release(v2.0.2): Aegis .aeg 100% deobfuscation, .nano_inf checkpoints, early NanoGuard verification, network acceleration and UI actions
+fix: ликвидация крашей и зависаний C++ ядра, Java Diff в PluginDiffModal и фикс UI
 
-- Aegis Forge (.aeg) 100% deobfuscation engine:
-  * Implemented aegis_deobf.hpp / aegis_deobf.cpp: butterfly permutation key assembler and AES-GCM recovery
-  * Unpacks protected resources: defaults/*.yml.aeg, locale/**/*.yml.aeg, opmap.aeg, blobs/*.aeg
-  * Replaces synthetic traps with clean decompiled Java sources
-- Archive unlock defense:
-  * Automatically unblock archives and ignore .*_archive_lock files in sanitize_subpath
-- Resumable decompilation & bytecode structure estimation (.nano_inf):
-  * Saves jar SHA-256 and progress state in out_dir/.nano_inf to prevent starting over upon interruption
-  * Calculates expected clean classes, methods, and lines (excluding libraries and synthetic trap classes)
-- Engine performance & network acceleration:
-  * NanoGuard 25-stage check moved to step 0 before any heavy malware scanning or extraction
-  * Network timeouts in legitimacy_check reduced from 8s/30s to 2.5s connect-timeout
-- Interactive NanoGuard verification in Terminal chat:
-  * Added action buttons in Terminal when NanoGuard is detected to run verification analysis
-- HANDOFF fixes:
-  * Added token visibility toggle (eye button) in GitHubExportModal
-  * Supported both singular 'permission:' and plural 'permissions:' in pluginTools.ts
+- C++ Core:
+  - structure.cpp: устранена взаимная рекурсия simplify_stmt -> simplify_stmts (краш 0xC0000005 на ElemKits.<init>), лимит глубины в Structurer::region;
+  - emit.cpp: защита s_emitting_nodes от циклических узлов AST, отсечка глубины выражений и отступов (память снижена с 1.27 ГБ до 84 МБ);
+  - engine.cpp: линейный алгоритм O(N) вместо O(N^2) для has_escaping_local_decl_check, collect_all_escaping_names и hoist_escaping_locals без копирования срезов векторов; защита depth > 50 в обходчиках AST. Результат: 100.0% методов ElemKits.jar декомпилировано без зависаний;
+- Frontend & Electron:
+  - PluginDiffModal.tsx: добавлен просмотр декомпилированного Java Diff с цветовой подсветкой +/-;
+  - electron/pluginTools.ts: реализован computeLineDiff и IPC plugin:diffClass;
+  - Terminal.tsx: кнопки NanoGuard переведены на React Context toast, устранены повторные предупреждения;
+  - engine.tsx: расширен список открываемых текстовых ресурсов (.aeg, .toml, .ini, .cfg, .conf и др.).

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { GitCompare, FolderOpen, ArrowRight, CheckCircle2, AlertTriangle, FileCode, Plus, Minus, RefreshCw, X, Loader2 } from "lucide-react";
+import { GitCompare, FolderOpen, ArrowRight, ArrowLeft, CheckCircle2, AlertTriangle, FileCode, Plus, Minus, RefreshCw, X, Loader2, Code2 } from "lucide-react";
 
 export interface PluginDiffReport {
   jar_a: string;
@@ -36,6 +36,23 @@ export function PluginDiffModal({
   const [diff, setDiff] = useState<PluginDiffReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"modified" | "added" | "removed">("modified");
+  const [selectedClass, setSelectedClass] = useState<string | null>(null);
+  const [classDiff, setClassDiff] = useState<any | null>(null);
+  const [loadingClassDiff, setLoadingClassDiff] = useState(false);
+
+  async function openClassDiff(className: string) {
+    setSelectedClass(className);
+    setLoadingClassDiff(true);
+    setClassDiff(null);
+    try {
+      const res = await (window.nano as any).diffClass(jarA, jarB, className);
+      setClassDiff(res);
+    } catch (e: any) {
+      setClassDiff({ ok: false, error: e?.message || String(e), className, codeA: "", codeB: "", diffLines: [] });
+    } finally {
+      setLoadingClassDiff(false);
+    }
+  }
 
   if (!open) return null;
 
@@ -60,6 +77,7 @@ export function PluginDiffModal({
       const res = await (window.nano as any).compareJars(jarA, jarB);
       if (res.ok && res.diff) {
         setDiff(res.diff);
+        setSelectedClass(null);
       } else {
         setError(res.error || "Не удалось сравнить плагины");
       }
@@ -143,7 +161,73 @@ export function PluginDiffModal({
 
         {/* Результаты */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
-          {diff ? (
+          {selectedClass ? (
+            <div className="flex flex-col h-full space-y-3">
+              <div className="flex items-center justify-between border-b border-line pb-2.5 flex-none">
+                <button
+                  onClick={() => setSelectedClass(null)}
+                  className="btn btn-tonal text-xs inline-flex items-center gap-1.5"
+                >
+                  <ArrowLeft size={13} />
+                  <span>Назад к списку классов</span>
+                </button>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[11px] font-semibold text-ink">{selectedClass}</span>
+                  {classDiff?.diffLines && (
+                    <div className="flex items-center gap-1.5 text-[10px]">
+                      <span className="px-1.5 py-0.5 rounded bg-acid/15 text-acid font-medium">
+                        +{classDiff.diffLines.filter((l: any) => l.type === "add").length}
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-err/15 text-err font-medium">
+                        -{classDiff.diffLines.filter((l: any) => l.type === "remove").length}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {loadingClassDiff ? (
+                <div className="flex-1 flex flex-col items-center justify-center py-20 space-y-2 text-faint">
+                  <Loader2 size={24} className="animate-spin text-acid" />
+                  <span className="text-xs">Точечная декомпиляция версий класса и расчёт Java Diff...</span>
+                </div>
+              ) : classDiff?.error ? (
+                <div className="p-4 rounded-lg border border-err/30 bg-err/10 text-err text-xs">
+                  {classDiff.error}
+                </div>
+              ) : classDiff?.diffLines ? (
+                <div className="flex-1 min-h-[300px] overflow-auto rounded-lg border border-line bg-black/40 font-mono text-[11px] p-2 leading-relaxed">
+                  {classDiff.diffLines.map((line: any, idx: number) => {
+                    const isAdd = line.type === "add";
+                    const isRem = line.type === "remove";
+                    return (
+                      <div
+                        key={idx}
+                        className={`flex items-start px-2 py-0.5 rounded-sm ${
+                          isAdd
+                            ? "bg-acid/15 text-acid font-medium"
+                            : isRem
+                            ? "bg-err/15 text-err font-medium"
+                            : "text-ink/80 hover:bg-raised/20"
+                        }`}
+                      >
+                        <span className="w-10 text-right pr-2 text-faint select-none text-[10px] tabular-nums">
+                          {line.lineA ?? ""}
+                        </span>
+                        <span className="w-10 text-right pr-2 text-faint select-none text-[10px] tabular-nums">
+                          {line.lineB ?? ""}
+                        </span>
+                        <span className="w-5 text-center font-bold select-none text-[11px]">
+                          {isAdd ? "+" : isRem ? "-" : " "}
+                        </span>
+                        <span className="flex-1 whitespace-pre-wrap break-all pl-1">{line.text || " "}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ) : diff ? (
             <>
               {/* Метрики */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -207,11 +291,24 @@ export function PluginDiffModal({
                     <div className="text-center text-faint py-8">Нет модифицированных классов</div>
                   ) : (
                     diff.modified.map((m, i) => (
-                      <div key={i} className="p-2.5 rounded-lg border border-line bg-raised/30 flex items-center justify-between">
-                        <span className="text-ink/90">{m.class}</span>
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${m.size_diff >= 0 ? "text-acid bg-acid/10" : "text-err bg-err/10"}`}>
-                          {m.size_diff >= 0 ? `+${m.size_diff}` : m.size_diff} Б
-                        </span>
+                      <div
+                        key={i}
+                        onClick={() => openClassDiff(m.class)}
+                        className="p-2.5 rounded-lg border border-line bg-raised/30 hover:bg-raised/60 cursor-pointer transition-colors flex items-center justify-between group"
+                      >
+                        <div className="flex items-center gap-2 truncate">
+                          <Code2 size={13} className="text-acid flex-none opacity-70 group-hover:opacity-100" />
+                          <span className="text-ink/90 group-hover:text-acid transition-colors truncate">{m.class}</span>
+                        </div>
+                        <div className="flex items-center gap-2 flex-none">
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded ${m.size_diff >= 0 ? "text-acid bg-acid/10" : "text-err bg-err/10"}`}>
+                            {m.size_diff >= 0 ? `+${m.size_diff}` : m.size_diff} Б
+                          </span>
+                          <span className="text-[10px] text-faint group-hover:text-ink transition-colors flex items-center gap-0.5">
+                            <span>Java Diff</span>
+                            <ArrowRight size={11} />
+                          </span>
+                        </div>
                       </div>
                     ))
                   )
@@ -222,8 +319,17 @@ export function PluginDiffModal({
                     <div className="text-center text-faint py-8">Нет добавленных классов</div>
                   ) : (
                     diff.added.map((a, i) => (
-                      <div key={i} className="p-2.5 rounded-lg border border-acid/20 bg-acid/5 text-acid flex items-center gap-2">
-                        <Plus size={12} /> <span>{a}</span>
+                      <div
+                        key={i}
+                        onClick={() => openClassDiff(a)}
+                        className="p-2.5 rounded-lg border border-acid/20 bg-acid/5 hover:bg-acid/10 cursor-pointer text-acid flex items-center justify-between transition-colors group"
+                      >
+                        <div className="flex items-center gap-2 truncate">
+                          <Plus size={12} /> <span className="truncate">{a}</span>
+                        </div>
+                        <span className="text-[10px] text-acid/70 group-hover:text-acid flex items-center gap-0.5 flex-none">
+                          <span>Просмотр</span> <ArrowRight size={11} />
+                        </span>
                       </div>
                     ))
                   )
@@ -234,8 +340,17 @@ export function PluginDiffModal({
                     <div className="text-center text-faint py-8">Нет удалённых классов</div>
                   ) : (
                     diff.removed.map((r, i) => (
-                      <div key={i} className="p-2.5 rounded-lg border border-err/20 bg-err/5 text-err flex items-center gap-2">
-                        <Minus size={12} /> <span>{r}</span>
+                      <div
+                        key={i}
+                        onClick={() => openClassDiff(r)}
+                        className="p-2.5 rounded-lg border border-err/20 bg-err/5 hover:bg-err/10 cursor-pointer text-err flex items-center justify-between transition-colors group"
+                      >
+                        <div className="flex items-center gap-2 truncate">
+                          <Minus size={12} /> <span className="truncate">{r}</span>
+                        </div>
+                        <span className="text-[10px] text-err/70 group-hover:text-err flex items-center gap-0.5 flex-none">
+                          <span>Просмотр</span> <ArrowRight size={11} />
+                        </span>
                       </div>
                     ))
                   )

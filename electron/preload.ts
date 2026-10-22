@@ -200,6 +200,7 @@ contextBridge.exposeInMainWorld("nano", {
   getPluginTree: (jarPath: string): Promise<any> => ipcRenderer.invoke("plugin:tree", jarPath),
   // НОВОЕ v2.0.0-alpha: Plugin Diff Viewer
   compareJars: (jarA: string, jarB: string): Promise<any> => ipcRenderer.invoke("plugin:compare", jarA, jarB),
+  diffClass: (jarA: string, jarB: string, classRelPath: string): Promise<any> => ipcRenderer.invoke("plugin:diffClass", jarA, jarB, classRelPath),
   // НОВОЕ v2.0.0-alpha: GitHub Exporter с PAT токеном
   exportToGitHub: (options: any): Promise<any> => ipcRenderer.invoke("github:export", options),
 });

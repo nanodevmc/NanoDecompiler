@@ -1,3 +1,4 @@
+#include <iostream>
 // structure.cpp - см. structure.hpp. 1:1 порт structure.py.
 #include <cstdint>  // БАГ-ФИКС: MinGW/Windows не тянет int64_t транзитивно через другие заголовки, как это молча делает libstdc++ на Linux - см. ошибку сборки Windows-раннера в этой сессии.
 #include "structure.hpp"
@@ -617,6 +618,14 @@ void Structurer::check_full_coverage(int64_t entry_pc, std::vector<StmtPtr>& stm
 std::vector<StmtPtr> Structurer::region(std::optional<int64_t> pc_opt, const std::set<int64_t>& stop_addrs) {
     std::vector<StmtPtr> out;
     std::set<int64_t> seen_here;
+    static thread_local int s_region_call_depth = 0;
+    s_region_call_depth++;
+    if (s_region_call_depth > 500) {
+        s_region_call_depth--;
+        if (pc_opt) return {std::make_shared<GotoStmt>("block_" + std::to_string(*pc_opt))};
+        return {};
+    }
+    struct DepthGuard { ~DepthGuard() { s_region_call_depth--; } } dguard;
     while (true) {
         guard_ += 1;
         if (guard_ > 200000) break;
@@ -2376,8 +2385,20 @@ StmtPtr simplify_while_true(const std::shared_ptr<WhileStmt>& s) {
     return s;
 }
 
-StmtPtr simplify_stmt(StmtPtr s) {
-    if (!s) return s;
+static StmtPtr simplify_stmt(StmtPtr s, int depth);
+
+static std::vector<StmtPtr> simplify_stmt_list(const std::vector<StmtPtr>& stmts, int depth = 0) {
+    if (depth > 60) return stmts;
+    std::vector<StmtPtr> res;
+    res.reserve(stmts.size());
+    for (auto& s : stmts) {
+        if (s) res.push_back(simplify_stmt(s, depth));
+    }
+    return res;
+}
+
+static StmtPtr simplify_stmt(StmtPtr s, int depth) {
+    if (!s || depth > 60) return s;
     if (s->kind == StmtKind::ExprStmt) {
         auto* es = static_cast<ExprStmtNode*>(s.get());
         if (es->expr) es->expr = simplify_expr(es->expr);
@@ -2401,7 +2422,7 @@ StmtPtr simplify_stmt(StmtPtr s) {
     if (s->kind == StmtKind::WhileStmt) {
         auto w = std::static_pointer_cast<WhileStmt>(s);
         if (w->cond) w->cond = simplify_expr(w->cond);
-        w->body = simplify_stmts(w->body);
+        w->body = simplify_stmt_list(w->body, depth + 1);
         while (!w->body.empty() && is_plain_continue(w->body.back())) w->body.pop_back();
         if (w->cond && w->cond->kind == ExprKind::Const && static_cast<Const*>(w->cond.get())->literal == "true") {
             return simplify_while_true(w);
@@ -2415,7 +2436,7 @@ StmtPtr simplify_stmt(StmtPtr s) {
     if (s->kind == StmtKind::DoWhileStmt) {
         auto* w = static_cast<DoWhileStmt*>(s.get());
         if (w->cond) w->cond = simplify_expr(w->cond);
-        w->body = simplify_stmts(w->body);
+        w->body = simplify_stmt_list(w->body, depth + 1);
         while (!w->body.empty() && is_plain_continue(w->body.back())) w->body.pop_back();
         if (w->cond && w->cond->kind == ExprKind::Const && static_cast<Const*>(w->cond.get())->literal == "false" && (!w->label.has_value() || w->label->empty())) {
             bool has_break = false;
@@ -2441,15 +2462,15 @@ StmtPtr simplify_stmt(StmtPtr s) {
             auto* es = static_cast<ExprStmtNode*>(f->update.get());
             if (es->expr) es->expr = simplify_expr(es->expr);
         }
-        f->body = simplify_stmts(f->body);
+        f->body = simplify_stmt_list(f->body, depth + 1);
         while (!f->body.empty() && is_plain_continue(f->body.back())) f->body.pop_back();
         return s;
     }
     if (s->kind == StmtKind::IfStmt) {
         auto* i = static_cast<IfStmt*>(s.get());
         if (i->cond) i->cond = simplify_expr(i->cond);
-        if (!i->then_body.empty()) i->then_body = simplify_stmts(i->then_body);
-        if (i->else_body.has_value() && !i->else_body->empty()) i->else_body = simplify_stmts(*i->else_body);
+        if (!i->then_body.empty()) i->then_body = simplify_stmt_list(i->then_body, depth + 1);
+        if (i->else_body.has_value() && !i->else_body->empty()) i->else_body = simplify_stmt_list(*i->else_body, depth + 1);
         if (i->then_body.empty() && i->else_body.has_value() && !i->else_body->empty()) {
             i->cond = negate(i->cond);
             i->then_body = *i->else_body;
@@ -2459,26 +2480,25 @@ StmtPtr simplify_stmt(StmtPtr s) {
     }
     if (s->kind == StmtKind::TryStmt) {
         auto* t = static_cast<TryStmt*>(s.get());
-        t->body = simplify_stmts(t->body);
-        for (auto& c : t->catches) c.body = simplify_stmts(c.body);
-        if (t->finally_body.has_value()) t->finally_body = simplify_stmts(*t->finally_body);
+        t->body = simplify_stmt_list(t->body, depth + 1);
+        for (auto& c : t->catches) c.body = simplify_stmt_list(c.body, depth + 1);
+        if (t->finally_body.has_value()) t->finally_body = simplify_stmt_list(*t->finally_body, depth + 1);
         return s;
     }
     if (s->kind == StmtKind::SwitchStmt) {
         auto* sw = static_cast<SwitchStmt*>(s.get());
         if (sw->selector) sw->selector = simplify_expr(sw->selector);
-        for (auto& c : sw->cases) c.body = simplify_stmts(c.body);
+        for (auto& c : sw->cases) c.body = simplify_stmt_list(c.body, depth + 1);
         return s;
     }
     if (s->kind == StmtKind::SyncStmt) {
         auto* sy = static_cast<SyncStmt*>(s.get());
         if (sy->expr) sy->expr = simplify_expr(sy->expr);
-        sy->body = simplify_stmts(sy->body);
+        sy->body = simplify_stmt_list(sy->body, depth + 1);
         return s;
     }
     return s;
 }
-
 
 static bool is_same_stmt(const StmtPtr& a, const StmtPtr& b) {
     if (!a && !b) return true;
@@ -3965,10 +3985,7 @@ std::vector<StmtPtr> prune_dead_code_pass(std::vector<StmtPtr> stmts) {
 
 std::vector<StmtPtr> simplify_stmts(const std::vector<StmtPtr>& stmts) {
     nd::g_crash_pass_name = "simplify_stmt_initial";
-    std::vector<StmtPtr> out;
-    for (auto& s : stmts) {
-        if (s) out.push_back(simplify_stmt(s));
-    }
+    std::vector<StmtPtr> out = simplify_stmt_list(stmts, 0);
     for (int iter = 0; iter < 4; ++iter) {
         nd::g_crash_pass_name = "fold_boolean_materialization";
         out = fold_boolean_materialization(out);
@@ -4024,4 +4041,3 @@ std::vector<StmtPtr> simplify_stmts(const std::vector<StmtPtr>& stmts) {
 }
 
 }  // namespace nd
-

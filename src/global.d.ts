@@ -154,6 +154,12 @@ declare global {
       isArchive: (filePath: string) => Promise<boolean>;
       cleanupTempArchive: (tempDir: string) => Promise<boolean>;
       onArchiveProgress: (cb: (progress: import("./lib/model").ArchiveProgressInfo & { archivePath: string }) => void) => () => void;
+      compareJars: (jarA: string, jarB: string) => Promise<any>;
+      diffClass: (jarA: string, jarB: string, classRelPath: string) => Promise<any>;
+      getPluginTree: (jarPath: string) => Promise<any>;
+      exportToGitHub: (options: unknown) => Promise<any>;
+      otaSyncModule?: (mod: { name: string; sha256?: string; url: string }) => Promise<{ ok: boolean; path?: string; error?: string }>;
+      otaGetStatus?: () => Promise<any>;
     };
   }
 }

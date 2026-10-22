@@ -356,3 +356,198 @@ export async function exportToGitHub(options: {
     return { ok: false, error: base + hint };
   }
 }
+
+
+function computeCrc32(buf: Buffer): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    crc ^= buf[i];
+    for (let j = 0; j < 8; j++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function createSingleFileZip(name: string, data: Buffer): Buffer {
+  const nameBuf = Buffer.from(name.replace(/\\/g, "/"), "utf-8");
+  const crc = computeCrc32(data);
+  const lh = Buffer.alloc(30);
+  lh.writeUInt32LE(0x04034b50, 0);
+  lh.writeUInt16LE(20, 4);
+  lh.writeUInt16LE(0, 6);
+  lh.writeUInt16LE(0, 8);
+  lh.writeUInt16LE(0, 10);
+  lh.writeUInt16LE(0, 12);
+  lh.writeUInt32LE(crc, 14);
+  lh.writeUInt32LE(data.length, 18);
+  lh.writeUInt32LE(data.length, 22);
+  lh.writeUInt16LE(nameBuf.length, 26);
+  lh.writeUInt16LE(0, 28);
+
+  const cdh = Buffer.alloc(46);
+  cdh.writeUInt32LE(0x02014b50, 0);
+  cdh.writeUInt16LE(20, 4);
+  cdh.writeUInt16LE(20, 6);
+  cdh.writeUInt16LE(0, 8);
+  cdh.writeUInt16LE(0, 10);
+  cdh.writeUInt16LE(0, 12);
+  cdh.writeUInt16LE(0, 14);
+  cdh.writeUInt32LE(crc, 16);
+  cdh.writeUInt32LE(data.length, 20);
+  cdh.writeUInt32LE(data.length, 24);
+  cdh.writeUInt16LE(nameBuf.length, 28);
+  cdh.writeUInt16LE(0, 30);
+  cdh.writeUInt16LE(0, 32);
+  cdh.writeUInt16LE(0, 34);
+  cdh.writeUInt16LE(0, 36);
+  cdh.writeUInt32LE(0, 38);
+  cdh.writeUInt32LE(0, 42);
+
+  const cdOffset = lh.length + nameBuf.length + data.length;
+  const cdSize = cdh.length + nameBuf.length;
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(1, 8);
+  eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(cdSize, 12);
+  eocd.writeUInt32LE(cdOffset, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  return Buffer.concat([lh, nameBuf, data, cdh, nameBuf, eocd]);
+}
+
+export function computeLineDiff(linesA: string[], linesB: string[]) {
+  const n = linesA.length;
+  const m = linesB.length;
+  if (n * m <= 2500000) {
+    const dp: number[][] = Array.from({ length: n + 1 }, () => new Int32Array(m + 1) as any);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < m; j++) {
+        if (linesA[i] === linesB[j]) {
+          dp[i + 1][j + 1] = dp[i][j] + 1;
+        } else {
+          dp[i + 1][j + 1] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+    }
+    const diff: Array<{ type: "same" | "add" | "remove"; text: string; lineA?: number; lineB?: number }> = [];
+    let i = n, j = m;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && linesA[i - 1] === linesB[j - 1]) {
+        diff.push({ type: "same", text: linesA[i - 1], lineA: i, lineB: j });
+        i--;
+        j--;
+      } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+        diff.push({ type: "add", text: linesB[j - 1], lineB: j });
+        j--;
+      } else if (i > 0 && (j === 0 || dp[i][j - 1] < dp[i - 1][j])) {
+        diff.push({ type: "remove", text: linesA[i - 1], lineA: i });
+        i--;
+      }
+    }
+    return diff.reverse();
+  }
+
+  const diff: Array<{ type: "same" | "add" | "remove"; text: string; lineA?: number; lineB?: number }> = [];
+  const max = Math.max(n, m);
+  for (let k = 0; k < max; k++) {
+    if (k < n && k < m) {
+      if (linesA[k] === linesB[k]) {
+        diff.push({ type: "same", text: linesA[k], lineA: k + 1, lineB: k + 1 });
+      } else {
+        diff.push({ type: "remove", text: linesA[k], lineA: k + 1 });
+        diff.push({ type: "add", text: linesB[k], lineB: k + 1 });
+      }
+    } else if (k < n) {
+      diff.push({ type: "remove", text: linesA[k], lineA: k + 1 });
+    } else if (k < m) {
+      diff.push({ type: "add", text: linesB[k], lineB: k + 1 });
+    }
+  }
+  return diff;
+}
+
+async function decompileClassBytecode(
+  classRelPath: string,
+  bytecode: Buffer,
+  engineBin: string,
+  tempPrefix: string
+): Promise<string> {
+  const tmpDir = path.join(os.tmpdir(), `nd_diff_${tempPrefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`);
+  const jarFile = path.join(tmpDir, "single.jar");
+  const outDir = path.join(tmpDir, "out");
+  await fs.promises.mkdir(tmpDir, { recursive: true });
+  try {
+    const jarBuf = createSingleFileZip(classRelPath, bytecode);
+    await fs.promises.writeFile(jarFile, jarBuf);
+    await execFileAsync(engineBin, [jarFile, outDir, "--no-legitimacy-check", "--json-output"], { timeout: 20000 });
+    const javaRel = classRelPath.replace(/\.class$/i, ".java");
+    const candidatePath = path.join(outDir, "src", "main", "java", javaRel);
+    if (fs.existsSync(candidatePath)) {
+      return await fs.promises.readFile(candidatePath, "utf-8");
+    }
+    const findJava = async (dir: string): Promise<string | null> => {
+      if (!fs.existsSync(dir)) return null;
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      for (const e of entries) {
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          const res = await findJava(full);
+          if (res) return res;
+        } else if (e.isFile() && e.name.endsWith(".java")) {
+          return await fs.promises.readFile(full, "utf-8");
+        }
+      }
+      return null;
+    };
+    const found = await findJava(outDir);
+    return found || "// Не удалось декомпилировать байткод класса";
+  } finally {
+    try {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
+export async function diffClassBetweenJars(
+  jarA: string,
+  jarB: string,
+  classRelPath: string,
+  engineBin: string
+) {
+  try {
+    const [entriesA, entriesB] = await Promise.all([listZipEntries(jarA), listZipEntries(jarB)]);
+    const entryA = entriesA.find(e => e.name === classRelPath);
+    const entryB = entriesB.find(e => e.name === classRelPath);
+
+    let codeA = "";
+    let codeB = "";
+
+    if (entryA) {
+      const bufA = await readZipEntry(jarA, entryA);
+      codeA = await decompileClassBytecode(classRelPath, bufA, engineBin, "a");
+    }
+    if (entryB) {
+      const bufB = await readZipEntry(jarB, entryB);
+      codeB = await decompileClassBytecode(classRelPath, bufB, engineBin, "b");
+    }
+
+    const linesA = codeA ? codeA.split("\n") : [];
+    const linesB = codeB ? codeB.split("\n") : [];
+    const diffLines = computeLineDiff(linesA, linesB);
+
+    return {
+      ok: true,
+      className: classRelPath,
+      codeA,
+      codeB,
+      diffLines,
+    };
+  } catch (e: any) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}

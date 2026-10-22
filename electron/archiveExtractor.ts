@@ -17,7 +17,7 @@ const sevenBin = require("7zip-bin");
 
 // Лимиты на распаковку НЕДОВЕРЕННЫХ архивов (zip/tar-bomb): без них архив в
 // несколько килобайт мог развернуться в сотни гигабайт и забить диск.
-const MAX_EXTRACT_TOTAL_BYTES = 8 * 1024 * 1024 * 1024; // 8 ГиБ суммарно
+const MAX_EXTRACT_TOTAL_BYTES = 4 * 1024 * 1024 * 1024; // 8 ГиБ суммарно
 const MAX_EXTRACT_ENTRIES = 200000;
 // Старые временные папки распаковки (после падения приложения/закрытия без
 // очистки) подчищаем при старте - иначе они копились бесконечно.
@@ -186,13 +186,13 @@ function get7zaPath(): string | null {
 
   // Проверяем bundled в extraResources и кэш приложения
   const candidates = [
-    path.join(process.resourcesPath || "", "app.asar.unpacked", "node_modules", "7zip-bin", process.platform, process.arch, binName),
-    path.join(process.env.LOCALAPPDATA || "", "Programs", "NanoDecompiler", "resources", "app.asar.unpacked", "node_modules", "7zip-bin", process.platform, process.arch, binName),
-    path.join(process.env.LOCALAPPDATA || "", "Programs", "nano-decompiler-gui", "resources", "app.asar.unpacked", "node_modules", "7zip-bin", process.platform, process.arch, binName),
-    path.join(userBinDir(), binName),
-    path.join(process.resourcesPath || "", "engine", "bin", binName),
-    path.join(process.resourcesPath || "", "engine", binName),
-    path.join(__dirname, "..", "node_modules", "7zip-bin", process.platform, process.arch, binName),
+    path.join(process.resourcesPath || "", "app.asar.unpacked", "node_modules", "7zip-bin", process.platform, process.arch, binName)
+    // path.join(process.env.LOCALAPPDATA || "", "Programs", "NanoDecompiler", "resources", "app.asar.unpacked", "node_modules", "7zip-bin", process.platform, process.arch, binName),
+    // path.join(process.env.LOCALAPPDATA || "", "Programs", "nano-decompiler-gui", "resources", "app.asar.unpacked", "node_modules", "7zip-bin", process.platform, process.arch, binName),
+    // path.join(userBinDir(), binName),
+    // path.join(process.resourcesPath || "", "engine", "bin", binName),
+    // path.join(process.resourcesPath || "", "engine", binName),
+    // path.join(__dirname, "..", "node_modules", "7zip-bin", process.platform, process.arch, binName),
   ];
 
   for (const c of candidates) {
@@ -213,7 +213,7 @@ async function extractZipFallback(
   onProgress({
     archivePath,
     percent: 30,
-    currentFile: "Распаковка через системный распаковщик ZIP...",
+    currentFile: "Распаковка для анализа...",
     extractedFiles: 1,
     totalFiles: 10,
     etaSeconds: 2,
@@ -221,7 +221,7 @@ async function extractZipFallback(
     tempDir: targetDir,
   });
 
-  // БЕЗ shell: раньше команда собиралась строкой (`unzip -o "${archivePath}"`) и
+  // убрал shell: раньше команда собиралась строкой (`unzip -o "${archivePath}"`) и
   // исполнялась через /bin/sh - имя архива вида x$(cmd).zip или x"; cmd; ".zip
   // выполнялось как команда. execFile передаёт аргументы массивом, минуя shell.
   // Таймаут 10 минут (было 60 с и execSync - блокировал весь main-процесс).
@@ -235,19 +235,23 @@ async function extractZipFallback(
     });
   } else {
     try {
-      await execFileAsync("unzip", ["-o", "--", archivePath, "-d", targetDir], { timeout: FALLBACK_TIMEOUT_MS });
+      await execFileAsync("unzip", ["-o", "--", archivePath, "-d", targetDir], {
+        timeout: FALLBACK_TIMEOUT_MS
+      });
     } catch {
-      await execFileAsync("tar", ["-xf", archivePath, "-C", targetDir], { timeout: FALLBACK_TIMEOUT_MS });
+      await execFileAsync("tar", ["-xf", archivePath, "-C", targetDir], {
+        timeout: FALLBACK_TIMEOUT_MS
+      });
     }
   }
   if (await dirSizeExceeds(targetDir, MAX_EXTRACT_TOTAL_BYTES)) {
-    throw new Error("распакованное содержимое превышает допустимый лимит размера");
+    throw new Error(".JAR файл либо ваш разархиватор сломан! пожалуйста отпишите владельцу для решения проблемы :) (t.me/radoqi)");
   }
 
   onProgress({
     archivePath,
     percent: 90,
-    currentFile: "Распаковка ZIP завершена",
+    currentFile: "Распаковка файла завершена",
     extractedFiles: 10,
     totalFiles: 10,
     etaSeconds: 0,

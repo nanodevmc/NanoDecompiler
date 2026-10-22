@@ -1,3 +1,4 @@
+#include <iostream>
 #include <cstdlib>
 // render_class.cpp - см. render_class.hpp. Порт render_class()/
 // format_type_dotted()/_format_annotation()/_format_annotation_value()/
@@ -534,6 +535,8 @@ std::pair<std::string, OrderedImports> render_class(
         bool ctor_needs_args = false;
         std::vector<std::string> ctor_param_types;  // без неявных name/ordinal
         for (auto& m : cf.methods) {
+        std::cerr << "   [Method] " << m.name << m.descriptor << std::endl;
+
             if (m.name == "<init>") {
                 auto [ret, params] = ([&]() -> std::pair<std::string, std::vector<std::string>> {
                     try {
@@ -709,6 +712,8 @@ std::pair<std::string, OrderedImports> render_class(
     bool interface_clinit_complex = false;
     if (is_interface && !is_enum) {
         for (auto& m : cf.methods) {
+        std::cerr << "   [Method] " << m.name << m.descriptor << std::endl;
+
             if (m.name == "<clinit>" && m.has_code) {
                 interface_clinit_complex = true;
                 break;
@@ -851,6 +856,8 @@ std::pair<std::string, OrderedImports> render_class(
         std::string values_desc = "()[" + own_field_type_desc;
         std::string value_of_desc = "(Ljava/lang/String;)" + own_field_type_desc;
         for (auto& m : cf.methods) {
+        std::cerr << "   [Method] " << m.name << m.descriptor << std::endl;
+
             if (m.name == "values" && m.descriptor == values_desc) skip_methods.insert(&m);
             else if (m.name == "valueOf" && m.descriptor == value_of_desc) skip_methods.insert(&m);
             else if (m.name == "$values" && (m.access & 0x1000)) skip_methods.insert(&m);
@@ -858,6 +865,8 @@ std::pair<std::string, OrderedImports> render_class(
     }
 
     for (auto& m : cf.methods) {
+        std::cerr << "   [Method] " << m.name << m.descriptor << std::endl;
+
         if (skip_methods.count(&m)) continue;
         // Пропускаем синтетические методы реализации lambda (lambda$...),
         // switch-таблицы ($SWITCH_TABLE$...) и мосты доступа (access$...),
@@ -930,7 +939,9 @@ std::pair<std::string, OrderedImports> render_class(
         std::optional<MethodDecompileResult> result;
         if (m.has_code) {
             stats.total_methods += 1;
+            std::cerr << "      [DecompileMethodBody Start]" << std::endl;
             result = decompile_method_body(cf, m, renamer, known_internal_by_dotted, internal, 2, enum_ordinals, switchmap_tables, all_classes);
+            std::cerr << "      [DecompileMethodBody Done]" << std::endl;
             stats.junk_catches_removed += result->junk_catches_removed;
         }
 

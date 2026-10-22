@@ -61,6 +61,10 @@ void clear_shadow_context() { g_shadowed_names.clear(); }
 
 std::string emit_expr(const ExprPtr& e) {
     if (!e) return "/* ? NoneType */";
+    static thread_local int s_expr_depth = 0;
+    s_expr_depth++;
+    struct ExprDepthGuard { ~ExprDepthGuard() { s_expr_depth--; } } edguard;
+    if (s_expr_depth > 60) return "/* (превышена глубина выражения) */";
     switch (e->kind) {
         case ExprKind::Const: {
             const auto* c = static_cast<const Const*>(e.get());
@@ -220,8 +224,8 @@ std::string emit_expr(const ExprPtr& e) {
     return "/* ? unknown expr */";
 }
 
-static bool is_label_used_in_stmt(const StmtPtr& s, const std::string& lbl) {
-    if (!s) return false;
+static bool is_label_used_in_stmt(const StmtPtr& s, const std::string& lbl, int depth = 0) {
+    if (!s || depth > 40) return false;
     if (s->kind == StmtKind::BreakStmt) {
         auto* b = static_cast<const BreakStmt*>(s.get());
         return b->label.has_value() && *b->label == lbl;
@@ -233,62 +237,62 @@ static bool is_label_used_in_stmt(const StmtPtr& s, const std::string& lbl) {
     if (s->kind == StmtKind::BlockStmt) {
         auto* bl = static_cast<const BlockStmt*>(s.get());
         for (const auto& child : bl->stmts) {
-            if (is_label_used_in_stmt(child, lbl)) return true;
+            if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
         }
     }
     if (s->kind == StmtKind::IfStmt) {
         auto* i = static_cast<const IfStmt*>(s.get());
         for (const auto& child : i->then_body) {
-            if (is_label_used_in_stmt(child, lbl)) return true;
+            if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
         }
         if (i->else_body.has_value()) {
             for (const auto& child : *i->else_body) {
-                if (is_label_used_in_stmt(child, lbl)) return true;
+                if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
             }
         }
     }
     if (s->kind == StmtKind::WhileStmt) {
         auto* w = static_cast<const WhileStmt*>(s.get());
         for (const auto& child : w->body) {
-            if (is_label_used_in_stmt(child, lbl)) return true;
+            if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
         }
     }
     if (s->kind == StmtKind::DoWhileStmt) {
         auto* dw = static_cast<const DoWhileStmt*>(s.get());
         for (const auto& child : dw->body) {
-            if (is_label_used_in_stmt(child, lbl)) return true;
+            if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
         }
     }
     if (s->kind == StmtKind::ForStmt) {
         auto* f = static_cast<const ForStmt*>(s.get());
         for (const auto& child : f->body) {
-            if (is_label_used_in_stmt(child, lbl)) return true;
+            if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
         }
     }
     if (s->kind == StmtKind::SwitchStmt) {
         auto* sw = static_cast<const SwitchStmt*>(s.get());
         for (const auto& c : sw->cases) {
             for (const auto& child : c.body) {
-                if (is_label_used_in_stmt(child, lbl)) return true;
+                if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
             }
         }
     }
     if (s->kind == StmtKind::TryStmt) {
         auto* tc = static_cast<const TryStmt*>(s.get());
         for (const auto& child : tc->resources) {
-            if (is_label_used_in_stmt(child, lbl)) return true;
+            if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
         }
         for (const auto& child : tc->body) {
-            if (is_label_used_in_stmt(child, lbl)) return true;
+            if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
         }
         for (const auto& c : tc->catches) {
             for (const auto& child : c.body) {
-                if (is_label_used_in_stmt(child, lbl)) return true;
+                if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
             }
         }
         if (tc->finally_body.has_value()) {
             for (const auto& child : *tc->finally_body) {
-                if (is_label_used_in_stmt(child, lbl)) return true;
+                if (is_label_used_in_stmt(child, lbl, depth + 1)) return true;
             }
         }
     }
@@ -304,7 +308,26 @@ std::vector<std::string> emit_stmts(const std::vector<StmtPtr>& stmts, int inden
     return lines;
 }
 
+static thread_local std::set<const Stmt*> s_emitting_nodes;
+
 std::vector<std::string> emit_stmt(const StmtPtr& s, int indent) {
+    if (!s) return {"/* ? NoneType */"};
+    if (indent > 45) {
+        std::string pad;
+        for (int i = 0; i < std::min(indent, 25); ++i) pad += IND;
+        return {pad + "/* ... (глубина вложенности AST превысила 45 уровней) */"};
+    }
+    if (s_emitting_nodes.count(s.get())) {
+        std::string pad;
+        for (int i = 0; i < std::min(indent, 25); ++i) pad += IND;
+        return {pad + "/* ... (обнаружен циклический узел в AST) */"};
+    }
+    s_emitting_nodes.insert(s.get());
+    struct NodeGuard {
+        const Stmt* ptr;
+        ~NodeGuard() { s_emitting_nodes.erase(ptr); }
+    } guard{s.get()};
+
     std::string pad;
     for (int i = 0; i < indent; ++i) pad += IND;
 

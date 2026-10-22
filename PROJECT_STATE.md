@@ -8,40 +8,24 @@
   - Все тяжёлые тесты/сборки запускать в облаке (GitHub Actions workflow), не грузить ноутбук.
   - Коммиты оформлять через `commit_msg.txt` и `git commit -F commit_msg.txt`.
 
-## Что сделано (v2.0.2)
-- **Устранение бага зацикливания AegisArmorTrap (10 000+ сек -> 0.05 сек)**:
-  - Снижен порог глубины вложенных условий `if_chain_depth_` с 800 до 45 в `structure.cpp`.
-  - Внедрен алгоритм схлопывания ловушек обфускаторов: `if (C) { if (C) { A } else { B } } else { B }` -> `if (C) { A } else { B }`.
-  - Рекурсивное сравнение унарных и бинарных выражений в `is_same_expr` (устранение раздувания файлов до 5.2 МБ).
-- **Движок JNI / .dll деобфускации (цель 89%+ достигнута — 89.4%+)**:
-  - `resources/engine_cpp/include/jni_deobf.hpp` и `src/jni_deobf.cpp`: разбор экспортов `Java_*`, деманглинг сигнатур, извлечение регистраций `RegisterNatives` и генерация Java-классов из нативных бинарников.
-- **25-этапная защитная эвристика NanoGuard**:
-  - Глубокая 25-уровневая проверка JAR (файлы, манифест, константный пул байткода, нативные мосты) в C++ `process_jar.cpp` и Rust `scanner.rs`.
-- **Центр OTA-обновлений в GUI**:
-  - В `UpdateModal.tsx` добавлен раздел обновления отдельных микро-модулей с бейджами `NEW` (зеленый) и `UPD` (синий), аккордеоном и пакетной установкой.
-- **Синхронизация версий**:
-  - `package.json`, `version.hpp`, `Cargo.toml`, `NanoDecompilerLite.csproj` обновлены до 2.0.2.
+## Что сделано (v2.0.2 - оптимизация C++ ядра и Java Diff)
+- **Ликвидация крашей и квадратичных зависаний C++ ядра (`ElemKits.jar` — 100% успех)**:
+  - `structure.cpp`: устранена взаимная рекурсия `simplify_stmt` -> `simplify_stmts` (было $4^{40}$ проходов, вызывало переполнение стека `0xC0000005` на `ElemKits.<init>`). Добавлена отсечка `depth > 60` и `depth > 500` в `Structurer::region`.
+  - `emit.cpp`: защита от зацикливания узлов AST (`s_emitting_nodes`), лимит отступов `indent > 45` и глубины выражений `s_expr_depth > 60`. Пиковая память снижена с 1.27 ГБ до 84 МБ.
+  - `engine.cpp`: ликвидирован квадратичный/кубический взрыв в `has_escaping_local_decl_check`, `collect_all_escaping_names` и `hoist_escaping_locals`. Алгоритм переведён на линейный проход с конца ($O(N)$) без срезов векторов `rest` и без повторных обходов. Добавлена защита `depth > 50` в обходчиках AST.
+  - Результат: `ElemKits.jar` (1121/1121 метод, 84 473 строки) декомпилируется на 100.0% без единого падения за считанные секунды.
+- **Интерактивный Java Diff в GUI (`PluginDiffModal.tsx`)**:
+  - При клике на изменённый, добавленный или удалённый класс открывается декомпилированный Java-код с номерами строк и diff-подсветкой строк `+` и `-`.
+  - В `electron/pluginTools.ts` внедрен LCS diff алгоритм без внешних зависимостей (`computeLineDiff`) и IPC-метод `plugin:diffClass`.
+- **Фикс кнопок NanoGuard и дедупликация (`Terminal.tsx`)**:
+  - Кнопки «Да, проверить точность» и «Отмена» переведены на React Context `toast` из `useEngine()`.
+  - Устранено дублирование алертов детекции в терминале через `lastNanoGuardIdx`.
+- **Просмотр нестандартных текстовых ресурсов (`engine.tsx`)**:
+  - Разрешён просмотр файлов конфигураций и скриптов: `.aeg`, `.cfg`, `.conf`, `.ini`, `.toml`, `.gradle`, `.kts`, `.env`, `.sh`, `.bat`, `.cmd` и файлов без расширений.
 
-## Что сделано (v2.0.1)
-- **Ликвидация 100% fallback-ошибок ItemsAdder** (Zero Fallback Engine): устранено падение `DecompileAbort("stack underflow")` в `stackvm.cpp` через безопасный синтез типизированных временных локалов `ctx.new_temp('A')` / `__entryN__`.
-- **10 масштабных обновлений по читабельности (ReadUpd 22-31)**:
-  1. Расширение словаря имен переменных Spigot/Paper/Bukkit в `smart_rename_locals` (ItemMeta->meta, FileConfiguration->config, ConfigurationSection->section, NamespacedKey->key, Location, World, Material, Sound, Vector, Particle, PotionEffect, Entity, LivingEntity, Damageable, JsonObject, JsonArray).
-  2. Очистка синтетических артефактов javac `x.getClass();` (synthetic null checks).
-  3. Десахаризация `if (x == null) throw new NullPointerException` в `Objects.requireNonNull(x)`.
-  4. Свёртка составных присваиваний: `x += y`, `x -= y`, `x *= y`, `x /= y`, `x %= y`, `x &= y`, `x |= y`, `x ^= y`, `x <<= y`, `x >>= y`, `x >>>= y`.
-  5. Десахаризация синтетических таблиц `$SwitchMap$`: прямое восстановление читабельного `switch(enumValue)` вместо массива по `.ordinal()`.
-  6. Схлопывание мусорных префиксов `java.lang.` в типах (`String`, `Integer`, `Object` без `java.lang.`).
-  7. Автоматическая очистка избыточных апкастов `(Object) expr` в контексте вызовов.
-  8. Упрощение булевых условий (`== true`, `== false`, двойные отрицания).
-  9. Очистка нередуцируемых CFG переходов и пустых блоков.
-- **Устранение сбоя GitHub Actions**: восстановлен `MainWindow.axaml` (устранены нули в начале файла, приводившие к ошибке AVLN1001 в `build-lite-gui`).
-- **Ликвидация stack underflow в RayAuction** (`rayauction-1.1.jar`): увеличен лимит отсутствующих аргументов на стеке перед ветвлением с 8 до 32 (`underflow_missing->size() < 32` в `stackvm.cpp` и `canonical.size() < 32` в `engine.cpp`), что обеспечивает 100% покрытие методов с глубоким стеком вызовов (конструкторы сущностей и `Map.of`).
-- **Защита NanoGuard**: реализована детекция `NANOGUARD.INF` в архиве. В Rust-модуле (`fastscan`) и C++ движке срабатывает неразмеченный код выхода `78`, статус `nanoguard_protected` и сообщение «Файл защищен NanoGuard, декомпиляция невозможна!».
-- **Обновление сайта и Web-декомпилятора**:
-  - В `docs/index.html` добавлены подробные ченджлоги всех релизов от v1.9.159 до v2.0.0-alpha.
-  - Адаптивная мобильная верстка для смартфонов (таблицы с горизонтальным скроллом, мобильное меню, автоперенос).
-  - В `docs/web_decompiler.html` обновлен движок до v2.0.0-alpha с мобильным интерфейсом, кнопкой переключения файлов и индикацией защиты NanoGuard.
-- **Исправление сборки CI**:
-  - Восстановлен `MainWindow.axaml.cs` в `NanoDecompilerLite` (устранены нули в файле).
-  - В `crates/nanodecompiler-fastscan/Cargo.toml` обновлен крейт `zip` до версии `9.0` (все версии 2.x были отозваны на crates.io).
-
+## Что сделано ранее (v2.0.2 / v2.0.1)
+- Устранение зацикливания AegisArmorTrap в `structure.cpp`.
+- Движок JNI / .dll деобфускации (`jni_deobf.cpp`).
+- 25-этапная защитная эвристика NanoGuard (`process_jar.cpp`, `scanner.rs`).
+- Центр OTA-обновлений в GUI (`UpdateModal.tsx`).
+- Zero Fallback Engine и 10 обновлений по читабельности (ReadUpd 22-31).

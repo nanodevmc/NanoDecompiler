@@ -1,14 +1,16 @@
 {
   "name": "NanoDecompiler-client",
   "version": "2.0.2",
-  "description": "Мощный майнкрафт декомпилер для удобства и повседневного использования для разработчиков/копипастеров",
+  "description": "Декомпилятор для Java-майнкрафт подобных файлов (.jar моды/плагины)",
   "main": "dist-electron/main.js",
+  "author": "NanoDev1488",
   "scripts": {
     "dev": "vite",
-    "build:renderer": "vite build --emptyOutDir",
+    "build:renderer": "vite build",
     "build:electron": "node ./node_modules/typescript/bin/tsc -p electron/tsconfig.json",
     "build": "npm run build:renderer && npm run build:electron",
-    "start": "npm run build && electron .",
+    "all": "npm run dist",
+    "start": "npm run all && electron .",
     "dist": "npm run build && electron-builder --publish=never"
   },
   "devDependencies": {

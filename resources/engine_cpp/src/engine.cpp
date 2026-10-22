@@ -1,3 +1,4 @@
+#include <iostream>
 // engine.cpp - см. engine.hpp. 1:1 порт engine.py.
 #include <cstdint>  // БАГ-ФИКС: MinGW/Windows не тянет int64_t транзитивно через другие заголовки, как это молча делает libstdc++ на Linux - см. ошибку сборки Windows-раннера в этой сессии.
 #include "engine.hpp"
@@ -82,40 +83,41 @@ void walk_expr_children(const ExprPtr& e, const std::function<void(const ExprPtr
 
 // ---------------- _collect_declared_names ----------------
 
-void collect_declared_names_walk(const std::vector<StmtPtr>& lst, std::set<std::string>& names) {
+void collect_declared_names_walk(const std::vector<StmtPtr>& lst, std::set<std::string>& names, int depth = 0) {
+    if (depth > 50) return;
     for (auto& s : lst) {
         if (!s) continue;
         if (s->kind == StmtKind::LocalDecl) names.insert(static_cast<LocalDecl*>(s.get())->name);
         switch (s->kind) {
             case StmtKind::IfStmt: {
                 auto* i = static_cast<IfStmt*>(s.get());
-                collect_declared_names_walk(i->then_body, names);
-                if (i->else_body.has_value()) collect_declared_names_walk(*i->else_body, names);
+                collect_declared_names_walk(i->then_body, names, depth + 1);
+                if (i->else_body.has_value()) collect_declared_names_walk(*i->else_body, names, depth + 1);
                 break;
             }
             case StmtKind::WhileStmt:
-                collect_declared_names_walk(static_cast<WhileStmt*>(s.get())->body, names);
+                collect_declared_names_walk(static_cast<WhileStmt*>(s.get())->body, names, depth + 1);
                 break;
             case StmtKind::DoWhileStmt:
-                collect_declared_names_walk(static_cast<DoWhileStmt*>(s.get())->body, names);
+                collect_declared_names_walk(static_cast<DoWhileStmt*>(s.get())->body, names, depth + 1);
                 break;
             case StmtKind::ForStmt:
-                collect_declared_names_walk(static_cast<ForStmt*>(s.get())->body, names);
+                collect_declared_names_walk(static_cast<ForStmt*>(s.get())->body, names, depth + 1);
                 break;
             case StmtKind::SyncStmt:
-                collect_declared_names_walk(static_cast<SyncStmt*>(s.get())->body, names);
+                collect_declared_names_walk(static_cast<SyncStmt*>(s.get())->body, names, depth + 1);
                 break;
             case StmtKind::BlockStmt:
-                collect_declared_names_walk(static_cast<BlockStmt*>(s.get())->stmts, names);
+                collect_declared_names_walk(static_cast<BlockStmt*>(s.get())->stmts, names, depth + 1);
                 break;
             case StmtKind::SwitchStmt:
-                for (auto& c : static_cast<SwitchStmt*>(s.get())->cases) collect_declared_names_walk(c.body, names);
+                for (auto& c : static_cast<SwitchStmt*>(s.get())->cases) collect_declared_names_walk(c.body, names, depth + 1);
                 break;
             case StmtKind::TryStmt: {
                 auto* t = static_cast<TryStmt*>(s.get());
-                collect_declared_names_walk(t->body, names);
-                for (auto& c : t->catches) collect_declared_names_walk(c.body, names);
-                if (t->finally_body.has_value()) collect_declared_names_walk(*t->finally_body, names);
+                collect_declared_names_walk(t->body, names, depth + 1);
+                for (auto& c : t->catches) collect_declared_names_walk(c.body, names, depth + 1);
+                if (t->finally_body.has_value()) collect_declared_names_walk(*t->finally_body, names, depth + 1);
                 break;
             }
             default:
@@ -132,81 +134,88 @@ std::set<std::string> collect_declared_names(const std::vector<StmtPtr>& stmts) 
 
 // ---------------- _collect_referenced_names ----------------
 
-void collect_referenced_names_walk_expr(const ExprPtr& e, std::set<std::string>& names) {
-    if (!e) return;
+void collect_referenced_names_walk_expr(const ExprPtr& e, std::set<std::string>& names, int depth = 0) {
+    if (!e || depth > 50) return;
     if (e->kind == ExprKind::Local) {
         names.insert(static_cast<Local*>(e.get())->name);
         return;
     }
-    walk_expr_children(e, [&](const ExprPtr& c) { collect_referenced_names_walk_expr(c, names); });
+    walk_expr_children(e, [&](const ExprPtr& c) { collect_referenced_names_walk_expr(c, names, depth + 1); });
 }
 
-void collect_referenced_names_walk(const std::vector<StmtPtr>& lst, std::set<std::string>& names) {
+void collect_referenced_names_walk_stmt(const StmtPtr& s, std::set<std::string>& names, int depth);
+
+void collect_referenced_names_walk(const std::vector<StmtPtr>& lst, std::set<std::string>& names, int depth = 0) {
+    if (depth > 50) return;
     for (auto& s : lst) {
-        if (!s) continue;
-        switch (s->kind) {
-            case StmtKind::LocalDecl:
-                collect_referenced_names_walk_expr(static_cast<LocalDecl*>(s.get())->init, names);
-                break;
-            case StmtKind::ExprStmt:
-                collect_referenced_names_walk_expr(static_cast<ExprStmtNode*>(s.get())->expr, names);
-                break;
-            case StmtKind::ReturnStmt:
-                collect_referenced_names_walk_expr(static_cast<ReturnStmt*>(s.get())->expr, names);
-                break;
-            case StmtKind::ThrowStmt:
-                collect_referenced_names_walk_expr(static_cast<ThrowStmt*>(s.get())->expr, names);
-                break;
-            case StmtKind::IfStmt: {
-                auto* i = static_cast<IfStmt*>(s.get());
-                collect_referenced_names_walk_expr(i->cond, names);
-                collect_referenced_names_walk(i->then_body, names);
-                if (i->else_body.has_value()) collect_referenced_names_walk(*i->else_body, names);
-                break;
-            }
-            case StmtKind::WhileStmt: {
-                auto* w = static_cast<WhileStmt*>(s.get());
-                collect_referenced_names_walk_expr(w->cond, names);
-                collect_referenced_names_walk(w->body, names);
-                break;
-            }
-            case StmtKind::DoWhileStmt: {
-                auto* w = static_cast<DoWhileStmt*>(s.get());
-                collect_referenced_names_walk_expr(w->cond, names);
-                collect_referenced_names_walk(w->body, names);
-                break;
-            }
-            case StmtKind::ForStmt: {
-                auto* f = static_cast<ForStmt*>(s.get());
-                collect_referenced_names_walk_expr(f->cond, names);
-                collect_referenced_names_walk(f->body, names);
-                break;
-            }
-            case StmtKind::SyncStmt: {
-                auto* sy = static_cast<SyncStmt*>(s.get());
-                collect_referenced_names_walk_expr(sy->expr, names);
-                collect_referenced_names_walk(sy->body, names);
-                break;
-            }
-            case StmtKind::BlockStmt:
-                collect_referenced_names_walk(static_cast<BlockStmt*>(s.get())->stmts, names);
-                break;
-            case StmtKind::SwitchStmt: {
-                auto* sw = static_cast<SwitchStmt*>(s.get());
-                collect_referenced_names_walk_expr(sw->selector, names);
-                for (auto& c : sw->cases) collect_referenced_names_walk(c.body, names);
-                break;
-            }
-            case StmtKind::TryStmt: {
-                auto* t = static_cast<TryStmt*>(s.get());
-                collect_referenced_names_walk(t->body, names);
-                for (auto& c : t->catches) collect_referenced_names_walk(c.body, names);
-                if (t->finally_body.has_value()) collect_referenced_names_walk(*t->finally_body, names);
-                break;
-            }
-            default:
-                break;
+        collect_referenced_names_walk_stmt(s, names, depth);
+    }
+}
+
+void collect_referenced_names_walk_stmt(const StmtPtr& s, std::set<std::string>& names, int depth = 0) {
+    if (!s || depth > 50) return;
+    switch (s->kind) {
+        case StmtKind::LocalDecl:
+            collect_referenced_names_walk_expr(static_cast<LocalDecl*>(s.get())->init, names);
+            break;
+        case StmtKind::ExprStmt:
+            collect_referenced_names_walk_expr(static_cast<ExprStmtNode*>(s.get())->expr, names);
+            break;
+        case StmtKind::ReturnStmt:
+            collect_referenced_names_walk_expr(static_cast<ReturnStmt*>(s.get())->expr, names);
+            break;
+        case StmtKind::ThrowStmt:
+            collect_referenced_names_walk_expr(static_cast<ThrowStmt*>(s.get())->expr, names);
+            break;
+        case StmtKind::IfStmt: {
+            auto* i = static_cast<IfStmt*>(s.get());
+            collect_referenced_names_walk_expr(i->cond, names);
+            collect_referenced_names_walk(i->then_body, names, depth + 1);
+            if (i->else_body.has_value()) collect_referenced_names_walk(*i->else_body, names, depth + 1);
+            break;
         }
+        case StmtKind::WhileStmt: {
+            auto* w = static_cast<WhileStmt*>(s.get());
+            collect_referenced_names_walk_expr(w->cond, names);
+            collect_referenced_names_walk(w->body, names, depth + 1);
+            break;
+        }
+        case StmtKind::DoWhileStmt: {
+            auto* w = static_cast<DoWhileStmt*>(s.get());
+            collect_referenced_names_walk_expr(w->cond, names);
+            collect_referenced_names_walk(w->body, names, depth + 1);
+            break;
+        }
+        case StmtKind::ForStmt: {
+            auto* f = static_cast<ForStmt*>(s.get());
+            collect_referenced_names_walk_expr(f->cond, names);
+            collect_referenced_names_walk(f->body, names, depth + 1);
+            break;
+        }
+        case StmtKind::SyncStmt: {
+            auto* sy = static_cast<SyncStmt*>(s.get());
+            collect_referenced_names_walk_expr(sy->expr, names);
+            collect_referenced_names_walk(sy->body, names, depth + 1);
+            break;
+        }
+        case StmtKind::BlockStmt:
+            collect_referenced_names_walk(static_cast<BlockStmt*>(s.get())->stmts, names, depth + 1);
+            break;
+        case StmtKind::SwitchStmt: {
+            auto* sw = static_cast<SwitchStmt*>(s.get());
+            collect_referenced_names_walk_expr(sw->selector, names);
+            for (auto& c : sw->cases) collect_referenced_names_walk(c.body, names, depth + 1);
+            break;
+        }
+        case StmtKind::TryStmt: {
+            auto* t = static_cast<TryStmt*>(s.get());
+            collect_referenced_names_walk(t->body, names, depth + 1);
+            for (auto& c : t->catches) collect_referenced_names_walk(c.body, names, depth + 1);
+            if (t->finally_body.has_value()) collect_referenced_names_walk(*t->finally_body, names, depth + 1);
+            break;
+        }
+        default:
+            break;
     }
 }
 
@@ -220,101 +229,7 @@ void collect_referenced_names_walk(const std::vector<StmtPtr>& lst, std::set<std
 
 std::set<std::string> collect_shallow_referenced_names(const std::vector<StmtPtr>& stmts) {
     std::set<std::string> names;
-    for (auto& s : stmts) {
-        if (!s) continue;
-        switch (s->kind) {
-            case StmtKind::LocalDecl:
-                collect_referenced_names_walk_expr(static_cast<LocalDecl*>(s.get())->init, names);
-                break;
-            case StmtKind::ExprStmt:
-                collect_referenced_names_walk_expr(static_cast<ExprStmtNode*>(s.get())->expr, names);
-                break;
-            case StmtKind::ReturnStmt:
-                collect_referenced_names_walk_expr(static_cast<ReturnStmt*>(s.get())->expr, names);
-                break;
-            case StmtKind::ThrowStmt:
-                collect_referenced_names_walk_expr(static_cast<ThrowStmt*>(s.get())->expr, names);
-                break;
-            case StmtKind::IfStmt: {
-                // БАГ-ФИКС (см. HANDOFF_49, "реальный баг"): раньше здесь
-                // смотрелось ТОЛЬКО cond, тела then/else игнорировались -
-                // если escaping-переменная упоминалась исключительно внутри
-                // then/else более позднего if, hoist_escaping_locals() её не
-                // видел и не поднимал объявление наружу -> компилятор потом
-                // не находил символ (переменная объявлена в чужой области
-                // видимости). Теперь заходим и в тела веток тоже.
-                auto* i = static_cast<IfStmt*>(s.get());
-                collect_referenced_names_walk_expr(i->cond, names);
-                auto sub_then = collect_shallow_referenced_names(i->then_body);
-                names.insert(sub_then.begin(), sub_then.end());
-                if (i->else_body.has_value()) {
-                    auto sub_else = collect_shallow_referenced_names(*i->else_body);
-                    names.insert(sub_else.begin(), sub_else.end());
-                }
-                break;
-            }
-            case StmtKind::WhileStmt: {
-                auto* w = static_cast<WhileStmt*>(s.get());
-                collect_referenced_names_walk_expr(w->cond, names);
-                auto sub = collect_shallow_referenced_names(w->body);
-                names.insert(sub.begin(), sub.end());
-                break;
-            }
-            case StmtKind::DoWhileStmt: {
-                auto* w = static_cast<DoWhileStmt*>(s.get());
-                collect_referenced_names_walk_expr(w->cond, names);
-                auto sub = collect_shallow_referenced_names(w->body);
-                names.insert(sub.begin(), sub.end());
-                break;
-            }
-            case StmtKind::ForStmt: {
-                auto* f = static_cast<ForStmt*>(s.get());
-                collect_referenced_names_walk_expr(f->cond, names);
-                auto sub = collect_shallow_referenced_names(f->body);
-                names.insert(sub.begin(), sub.end());
-                break;
-            }
-            case StmtKind::SyncStmt: {
-                auto* sy = static_cast<SyncStmt*>(s.get());
-                collect_referenced_names_walk_expr(sy->expr, names);
-                auto sub = collect_shallow_referenced_names(sy->body);
-                names.insert(sub.begin(), sub.end());
-                break;
-            }
-            case StmtKind::SwitchStmt: {
-                auto* sw = static_cast<SwitchStmt*>(s.get());
-                collect_referenced_names_walk_expr(sw->selector, names);
-                for (auto& c : sw->cases) {
-                    auto sub = collect_shallow_referenced_names(c.body);
-                    names.insert(sub.begin(), sub.end());
-                }
-                break;
-            }
-            case StmtKind::BlockStmt: {
-                auto sub = collect_shallow_referenced_names(static_cast<BlockStmt*>(s.get())->stmts);
-                names.insert(sub.begin(), sub.end());
-                break;
-            }
-            case StmtKind::TryStmt: {
-                // Раньше только body - catch/finally тоже игнорировались,
-                // та же категория бага, что и с if/while/for/switch выше.
-                auto* t = static_cast<TryStmt*>(s.get());
-                auto sub = collect_shallow_referenced_names(t->body);
-                names.insert(sub.begin(), sub.end());
-                for (auto& c : t->catches) {
-                    auto sub_c = collect_shallow_referenced_names(c.body);
-                    names.insert(sub_c.begin(), sub_c.end());
-                }
-                if (t->finally_body.has_value()) {
-                    auto sub_f = collect_shallow_referenced_names(*t->finally_body);
-                    names.insert(sub_f.begin(), sub_f.end());
-                }
-                break;
-            }
-            default:
-                break;
-        }
-    }
+    collect_referenced_names_walk(stmts, names);
     return names;
 }
 
@@ -1107,55 +1022,56 @@ void collapse_sb_in_stmts(std::vector<StmtPtr>& stmts) {
 
 // ---------------- _hoist_escaping_locals ----------------
 
-std::vector<StmtPtr> hoist_escaping_locals(const std::vector<StmtPtr>& stmts, std::set<std::string>& declared_so_far) {
+std::vector<StmtPtr> hoist_escaping_locals(const std::vector<StmtPtr>& stmts, std::set<std::string>& declared_so_far, int depth = 0) {
+    if (depth > 40) return stmts;
     std::vector<StmtPtr> fixed;
     for (auto s : stmts) {
         if (!s) continue;
         if (s->kind == StmtKind::IfStmt) {
             auto* i = static_cast<IfStmt*>(s.get());
             auto branch_declared = declared_so_far;
-            i->then_body = hoist_escaping_locals(i->then_body, branch_declared);
+            i->then_body = hoist_escaping_locals(i->then_body, branch_declared, depth + 1);
             if (i->else_body.has_value()) {
                 auto else_declared = declared_so_far;
-                i->else_body = hoist_escaping_locals(*i->else_body, else_declared);
+                i->else_body = hoist_escaping_locals(*i->else_body, else_declared, depth + 1);
             }
         } else if (s->kind == StmtKind::WhileStmt) {
             auto* w = static_cast<WhileStmt*>(s.get());
             auto branch_declared = declared_so_far;
-            w->body = hoist_escaping_locals(w->body, branch_declared);
+            w->body = hoist_escaping_locals(w->body, branch_declared, depth + 1);
         } else if (s->kind == StmtKind::DoWhileStmt) {
             auto* w = static_cast<DoWhileStmt*>(s.get());
             auto branch_declared = declared_so_far;
-            w->body = hoist_escaping_locals(w->body, branch_declared);
+            w->body = hoist_escaping_locals(w->body, branch_declared, depth + 1);
         } else if (s->kind == StmtKind::ForStmt) {
             auto* f = static_cast<ForStmt*>(s.get());
             auto branch_declared = declared_so_far;
-            f->body = hoist_escaping_locals(f->body, branch_declared);
+            f->body = hoist_escaping_locals(f->body, branch_declared, depth + 1);
         } else if (s->kind == StmtKind::SyncStmt) {
             auto* sy = static_cast<SyncStmt*>(s.get());
             auto branch_declared = declared_so_far;
-            sy->body = hoist_escaping_locals(sy->body, branch_declared);
+            sy->body = hoist_escaping_locals(sy->body, branch_declared, depth + 1);
         } else if (s->kind == StmtKind::BlockStmt) {
             auto* b = static_cast<BlockStmt*>(s.get());
             auto branch_declared = declared_so_far;
-            b->stmts = hoist_escaping_locals(b->stmts, branch_declared);
+            b->stmts = hoist_escaping_locals(b->stmts, branch_declared, depth + 1);
         } else if (s->kind == StmtKind::SwitchStmt) {
             auto* sw = static_cast<SwitchStmt*>(s.get());
             for (auto& c : sw->cases) {
                 auto branch_declared = declared_so_far;
-                c.body = hoist_escaping_locals(c.body, branch_declared);
+                c.body = hoist_escaping_locals(c.body, branch_declared, depth + 1);
             }
         } else if (s->kind == StmtKind::TryStmt) {
             auto* t = static_cast<TryStmt*>(s.get());
             auto try_declared = declared_so_far;
-            t->body = hoist_escaping_locals(t->body, try_declared);
+            t->body = hoist_escaping_locals(t->body, try_declared, depth + 1);
             for (auto& c : t->catches) {
                 auto catch_declared = declared_so_far;
-                c.body = hoist_escaping_locals(c.body, catch_declared);
+                c.body = hoist_escaping_locals(c.body, catch_declared, depth + 1);
             }
             if (t->finally_body.has_value()) {
                 auto fin_declared = declared_so_far;
-                t->finally_body = hoist_escaping_locals(*t->finally_body, fin_declared);
+                t->finally_body = hoist_escaping_locals(*t->finally_body, fin_declared, depth + 1);
             }
         }
         fixed.push_back(s);
@@ -1163,6 +1079,14 @@ std::vector<StmtPtr> hoist_escaping_locals(const std::vector<StmtPtr>& stmts, st
 
     std::vector<StmtPtr> out;
     size_t n = fixed.size();
+    std::vector<std::set<std::string>> later_refs_at(n);
+    std::set<std::string> running_refs;
+    for (int i = (int)n - 1; i >= 0; --i) {
+        later_refs_at[i] = running_refs;
+        if (fixed[i]) {
+            collect_referenced_names_walk_stmt(fixed[i], running_refs);
+        }
+    }
     for (size_t idx = 0; idx < n; ++idx) {
         StmtPtr s = fixed[idx];
         if (!s) continue;
@@ -1174,10 +1098,10 @@ std::vector<StmtPtr> hoist_escaping_locals(const std::vector<StmtPtr>& stmts, st
             auto declared = collect_declared_names(*inner);
             std::set<std::string> escaping;
             if (!declared.empty()) {
-                std::vector<StmtPtr> rest(fixed.begin() + idx + 1, fixed.end());
-                auto later_refs = collect_shallow_referenced_names(rest);
-                std::set_intersection(declared.begin(), declared.end(), later_refs.begin(), later_refs.end(),
-                                       std::inserter(escaping, escaping.begin()));
+                const auto& later_refs = later_refs_at[idx];
+                for (auto& d : declared) {
+                    if (later_refs.count(d)) escaping.insert(d);
+                }
             }
             if (!escaping.empty()) {
                 std::map<std::string, std::string> types;
@@ -1229,44 +1153,48 @@ std::vector<StmtPtr> hoist_escaping_locals(const std::vector<StmtPtr>& stmts, st
 
 // ---------------- _has_escaping_local_decl ----------------
 
-bool has_escaping_local_decl_check(const std::vector<StmtPtr>& lst) {
-    for (size_t i = 0; i < lst.size(); ++i) {
+bool has_escaping_local_decl_check(const std::vector<StmtPtr>& lst, int depth = 0) {
+    if (lst.empty() || depth > 50) return false;
+    std::set<std::string> later_refs;
+    for (int i = (int)lst.size() - 1; i >= 0; --i) {
         StmtPtr s = lst[i];
         if (!s) continue;
         auto inner = inner_body_of(s);
         if (inner.has_value() && !inner->empty()) {
             auto declared = collect_declared_names(*inner);
-            std::vector<StmtPtr> rest(lst.begin() + i + 1, lst.end());
-            auto later = collect_shallow_referenced_names(rest);
             for (auto& d : declared) {
-                if (later.count(d)) return true;
+                if (later_refs.count(d)) return true;
             }
         }
+        collect_referenced_names_walk_stmt(s, later_refs);
+    }
+    for (auto& s : lst) {
+        if (!s) continue;
         if (s->kind == StmtKind::IfStmt) {
             auto* ifs = static_cast<IfStmt*>(s.get());
-            if (has_escaping_local_decl_check(ifs->then_body)) return true;
-            if (ifs->else_body.has_value() && has_escaping_local_decl_check(*ifs->else_body)) return true;
+            if (has_escaping_local_decl_check(ifs->then_body, depth + 1)) return true;
+            if (ifs->else_body.has_value() && has_escaping_local_decl_check(*ifs->else_body, depth + 1)) return true;
         } else if (s->kind == StmtKind::WhileStmt) {
-            if (has_escaping_local_decl_check(static_cast<WhileStmt*>(s.get())->body)) return true;
+            if (has_escaping_local_decl_check(static_cast<WhileStmt*>(s.get())->body, depth + 1)) return true;
         } else if (s->kind == StmtKind::DoWhileStmt) {
-            if (has_escaping_local_decl_check(static_cast<DoWhileStmt*>(s.get())->body)) return true;
+            if (has_escaping_local_decl_check(static_cast<DoWhileStmt*>(s.get())->body, depth + 1)) return true;
         } else if (s->kind == StmtKind::ForStmt) {
-            if (has_escaping_local_decl_check(static_cast<ForStmt*>(s.get())->body)) return true;
+            if (has_escaping_local_decl_check(static_cast<ForStmt*>(s.get())->body, depth + 1)) return true;
         } else if (s->kind == StmtKind::SyncStmt) {
-            if (has_escaping_local_decl_check(static_cast<SyncStmt*>(s.get())->body)) return true;
+            if (has_escaping_local_decl_check(static_cast<SyncStmt*>(s.get())->body, depth + 1)) return true;
         } else if (s->kind == StmtKind::BlockStmt) {
-            if (has_escaping_local_decl_check(static_cast<BlockStmt*>(s.get())->stmts)) return true;
+            if (has_escaping_local_decl_check(static_cast<BlockStmt*>(s.get())->stmts, depth + 1)) return true;
         } else if (s->kind == StmtKind::SwitchStmt) {
             for (auto& c : static_cast<SwitchStmt*>(s.get())->cases) {
-                if (has_escaping_local_decl_check(c.body)) return true;
+                if (has_escaping_local_decl_check(c.body, depth + 1)) return true;
             }
         } else if (s->kind == StmtKind::TryStmt) {
             auto* t = static_cast<TryStmt*>(s.get());
-            if (has_escaping_local_decl_check(t->body)) return true;
+            if (has_escaping_local_decl_check(t->body, depth + 1)) return true;
             for (auto& c : t->catches) {
-                if (has_escaping_local_decl_check(c.body)) return true;
+                if (has_escaping_local_decl_check(c.body, depth + 1)) return true;
             }
-            if (t->finally_body.has_value() && has_escaping_local_decl_check(*t->finally_body)) return true;
+            if (t->finally_body.has_value() && has_escaping_local_decl_check(*t->finally_body, depth + 1)) return true;
         }
     }
     return false;
@@ -1276,58 +1204,62 @@ bool has_escaping_local_decl(const std::vector<StmtPtr>& stmts) { return has_esc
 
 // ---------------- _collect_all_escaping_names & _hoist_all_escaping_to_root ----------------
 
-std::set<std::string> collect_all_escaping_names(const std::vector<StmtPtr>& lst) {
+std::set<std::string> collect_all_escaping_names(const std::vector<StmtPtr>& lst, int depth = 0) {
     std::set<std::string> escaping;
-    for (size_t i = 0; i < lst.size(); ++i) {
+    if (lst.empty() || depth > 50) return escaping;
+    std::set<std::string> later_refs;
+    for (int i = (int)lst.size() - 1; i >= 0; --i) {
         StmtPtr s = lst[i];
         if (!s) continue;
         auto inner = inner_body_of(s);
         if (inner.has_value() && !inner->empty()) {
             auto declared = collect_declared_names(*inner);
-            std::vector<StmtPtr> rest(lst.begin() + i + 1, lst.end());
-            auto later = collect_shallow_referenced_names(rest);
             for (auto& d : declared) {
-                if (later.count(d)) escaping.insert(d);
+                if (later_refs.count(d)) escaping.insert(d);
             }
         }
+        collect_referenced_names_walk_stmt(s, later_refs);
+    }
+    for (auto& s : lst) {
+        if (!s) continue;
         if (s->kind == StmtKind::IfStmt) {
             auto* ifs = static_cast<IfStmt*>(s.get());
-            auto sub = collect_all_escaping_names(ifs->then_body);
+            auto sub = collect_all_escaping_names(ifs->then_body, depth + 1);
             escaping.insert(sub.begin(), sub.end());
             if (ifs->else_body.has_value()) {
-                sub = collect_all_escaping_names(*ifs->else_body);
+                sub = collect_all_escaping_names(*ifs->else_body, depth + 1);
                 escaping.insert(sub.begin(), sub.end());
             }
         } else if (s->kind == StmtKind::WhileStmt) {
-            auto sub = collect_all_escaping_names(static_cast<WhileStmt*>(s.get())->body);
+            auto sub = collect_all_escaping_names(static_cast<WhileStmt*>(s.get())->body, depth + 1);
             escaping.insert(sub.begin(), sub.end());
         } else if (s->kind == StmtKind::DoWhileStmt) {
-            auto sub = collect_all_escaping_names(static_cast<DoWhileStmt*>(s.get())->body);
+            auto sub = collect_all_escaping_names(static_cast<DoWhileStmt*>(s.get())->body, depth + 1);
             escaping.insert(sub.begin(), sub.end());
         } else if (s->kind == StmtKind::ForStmt) {
-            auto sub = collect_all_escaping_names(static_cast<ForStmt*>(s.get())->body);
+            auto sub = collect_all_escaping_names(static_cast<ForStmt*>(s.get())->body, depth + 1);
             escaping.insert(sub.begin(), sub.end());
         } else if (s->kind == StmtKind::SyncStmt) {
-            auto sub = collect_all_escaping_names(static_cast<SyncStmt*>(s.get())->body);
+            auto sub = collect_all_escaping_names(static_cast<SyncStmt*>(s.get())->body, depth + 1);
             escaping.insert(sub.begin(), sub.end());
         } else if (s->kind == StmtKind::BlockStmt) {
-            auto sub = collect_all_escaping_names(static_cast<BlockStmt*>(s.get())->stmts);
+            auto sub = collect_all_escaping_names(static_cast<BlockStmt*>(s.get())->stmts, depth + 1);
             escaping.insert(sub.begin(), sub.end());
         } else if (s->kind == StmtKind::SwitchStmt) {
             for (auto& c : static_cast<SwitchStmt*>(s.get())->cases) {
-                auto sub = collect_all_escaping_names(c.body);
+                auto sub = collect_all_escaping_names(c.body, depth + 1);
                 escaping.insert(sub.begin(), sub.end());
             }
         } else if (s->kind == StmtKind::TryStmt) {
             auto* t = static_cast<TryStmt*>(s.get());
-            auto sub = collect_all_escaping_names(t->body);
+            auto sub = collect_all_escaping_names(t->body, depth + 1);
             escaping.insert(sub.begin(), sub.end());
             for (auto& c : t->catches) {
-                sub = collect_all_escaping_names(c.body);
+                sub = collect_all_escaping_names(c.body, depth + 1);
                 escaping.insert(sub.begin(), sub.end());
             }
             if (t->finally_body.has_value()) {
-                sub = collect_all_escaping_names(*t->finally_body);
+                sub = collect_all_escaping_names(*t->finally_body, depth + 1);
                 escaping.insert(sub.begin(), sub.end());
             }
         }
@@ -2158,33 +2090,34 @@ std::vector<StmtPtr> fold_array_literals_pass(const std::vector<StmtPtr>& lst) {
     return out;
 }
 
-std::vector<StmtPtr> walk_stmt_lists(std::vector<StmtPtr> stmts, const std::function<std::vector<StmtPtr>(const std::vector<StmtPtr>&)>& fn) {
+std::vector<StmtPtr> walk_stmt_lists(std::vector<StmtPtr> stmts, const std::function<std::vector<StmtPtr>(const std::vector<StmtPtr>&)>& fn, int depth = 0) {
+    if (depth > 40) return stmts;
     stmts = fn(stmts);
     for (auto& s : stmts) {
         if (s->kind == StmtKind::IfStmt) {
             auto* i = static_cast<IfStmt*>(s.get());
-            if (!i->then_body.empty()) i->then_body = walk_stmt_lists(i->then_body, fn);
-            if (i->else_body.has_value() && !i->else_body->empty()) i->else_body = walk_stmt_lists(*i->else_body, fn);
+            if (!i->then_body.empty()) i->then_body = walk_stmt_lists(i->then_body, fn, depth + 1);
+            if (i->else_body.has_value() && !i->else_body->empty()) i->else_body = walk_stmt_lists(*i->else_body, fn, depth + 1);
         } else if (s->kind == StmtKind::WhileStmt) {
             auto* w = static_cast<WhileStmt*>(s.get());
-            w->body = walk_stmt_lists(w->body, fn);
+            w->body = walk_stmt_lists(w->body, fn, depth + 1);
         } else if (s->kind == StmtKind::DoWhileStmt) {
             auto* w = static_cast<DoWhileStmt*>(s.get());
-            w->body = walk_stmt_lists(w->body, fn);
+            w->body = walk_stmt_lists(w->body, fn, depth + 1);
         } else if (s->kind == StmtKind::ForStmt) {
             auto* f = static_cast<ForStmt*>(s.get());
-            f->body = walk_stmt_lists(f->body, fn);
+            f->body = walk_stmt_lists(f->body, fn, depth + 1);
         } else if (s->kind == StmtKind::SyncStmt) {
             auto* sy = static_cast<SyncStmt*>(s.get());
-            sy->body = walk_stmt_lists(sy->body, fn);
+            sy->body = walk_stmt_lists(sy->body, fn, depth + 1);
         } else if (s->kind == StmtKind::SwitchStmt) {
             auto* sw = static_cast<SwitchStmt*>(s.get());
-            for (auto& c : sw->cases) c.body = walk_stmt_lists(c.body, fn);
+            for (auto& c : sw->cases) c.body = walk_stmt_lists(c.body, fn, depth + 1);
         } else if (s->kind == StmtKind::TryStmt) {
             auto* t = static_cast<TryStmt*>(s.get());
-            t->body = walk_stmt_lists(t->body, fn);
-            for (auto& c : t->catches) c.body = walk_stmt_lists(c.body, fn);
-            if (t->finally_body.has_value()) t->finally_body = walk_stmt_lists(*t->finally_body, fn);
+            t->body = walk_stmt_lists(t->body, fn, depth + 1);
+            for (auto& c : t->catches) c.body = walk_stmt_lists(c.body, fn, depth + 1);
+            if (t->finally_body.has_value()) t->finally_body = walk_stmt_lists(*t->finally_body, fn, depth + 1);
         }
     }
     return stmts;
@@ -2670,9 +2603,11 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
 
     try {
         g_crash_method_name = method.name.c_str();
+        std::cerr << "         [Decode Method]" << std::endl;
         DecodedMethod dm = decode_method(method.code);
         result.n_instructions = static_cast<int>(dm.order.size());
         auto [filtered_exceptions, junk_removed] = filter_junk_catches(method);
+        std::cerr << "         [CFG Build]" << std::endl;
         CFG cfg(dm.instrs, dm.order, filtered_exceptions);
         result.n_blocks = static_cast<int>(cfg.blocks.size());
         result.junk_catches_removed = junk_removed;
@@ -2685,6 +2620,7 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
 
         std::map<int64_t, BlockResult> results;
         std::map<int64_t, size_t> underflow_starts;
+        std::cerr << "         [Simulate Blocks Start]" << std::endl;
         for (auto& [start, blk] : cfg.blocks) {
             std::vector<ExprPtr> seed = seeds.count(start) ? seeds[start] : std::vector<ExprPtr>{};
             std::vector<ExprPtr> flag;
@@ -2778,9 +2714,12 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
                     results.at(p).exit_stack.clear();
                 }
                 for (size_t j = 0; j < canonical.size(); ++j) {
-                    auto* tmp = static_cast<Local*>(canonical[j].get());
+                    auto* tmp = dynamic_cast<Local*>(canonical[j].get());
+                    std::string tname = tmp ? tmp->name : ctx.new_temp('A');
+                    std::string ttype = tmp ? tmp->type : "Object";
+                    ExprPtr o = (j < own.size() && own[j]) ? own[j] : std::make_shared<Local>(ctx.new_temp('A'), "Object");
                     results.at(p).stmts.push_back(std::make_shared<ExprStmtNode>(
-                        std::make_shared<Assign>(std::make_shared<Local>(tmp->name, tmp->type), own[j])));
+                        std::make_shared<Assign>(std::make_shared<Local>(tname, ttype), o)));
                 }
             }
             std::vector<ExprPtr> seed(canonical.rbegin(), canonical.rend());
@@ -2801,9 +2740,12 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
                         results.at(p).exit_stack.clear();
                     }
                     for (size_t j = 0; j < more_canonical.size(); ++j) {
-                        auto* tmp = static_cast<Local*>(more_canonical[j].get());
+                        auto* tmp = dynamic_cast<Local*>(more_canonical[j].get());
+                        std::string tname = tmp ? tmp->name : ctx.new_temp('A');
+                        std::string ttype = tmp ? tmp->type : "Object";
+                        ExprPtr o = (j < own.size() && own[j]) ? own[j] : std::make_shared<Local>(ctx.new_temp('A'), "Object");
                         results.at(p).stmts.push_back(std::make_shared<ExprStmtNode>(
-                            std::make_shared<Assign>(std::make_shared<Local>(tmp->name, tmp->type), own[j])));
+                            std::make_shared<Assign>(std::make_shared<Local>(tname, ttype), o)));
                     }
                 }
                 canonical.insert(canonical.begin(), more_canonical.begin(), more_canonical.end());
@@ -2822,6 +2764,7 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
             return {};
         };
 
+        std::cerr << "         [Ensure Depth Underflow]" << std::endl;
         for (auto& [cpc, k] : underflow_starts) ensure_depth(cpc, k, {});
 
         for (auto& [start, res] : results) {
@@ -2839,49 +2782,62 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
             }
         }
 
+        std::cerr << "         [Structurer Init]" << std::endl;
         Structurer structurer(cfg, results, filtered_exceptions, ctx);
+        std::cerr << "         [Structurer Build Run]" << std::endl;
         auto stmts = structurer.build(*cfg.entry);
+        std::cerr << "         [Structurer Build Done]" << std::endl;
         stmts = fold_sync_blocks(stmts);
+        std::cerr << "         [Fold Sync Done]" << std::endl;
         stmts = simplify_stmts(stmts);
+        std::cerr << "         [Simplify Done]" << std::endl;
         if (method.name == "<init>") stmts = reorder_ctor_call_to_front(stmts);
+        std::cerr << "         [Reorder Ctor Done]" << std::endl;
         stmts = inline_single_use_crossing_temps(stmts, ctx);
+        std::cerr << "         [Fold Array Literals]" << std::endl;
+        std::cerr << "         [Inline Temps Done]" << std::endl;
+        std::cerr << "         [Step: fold_array_literals]" << std::endl;
         stmts = fold_array_literals(stmts);
+        std::cerr << "         [Step: desugar_enum_switches]" << std::endl;
         if (!enum_ordinals.empty() || !switchmap_tables.empty()) {
             stmts = desugar_enum_switches(stmts, enum_ordinals, ctx, switchmap_tables);
         }
         if (!stmts.empty() && stmts.back()->kind == StmtKind::ReturnStmt && !static_cast<ReturnStmt*>(stmts.back().get())->expr) {
             stmts.pop_back();
         }
+        std::cerr << "         [Step: refresh_crossing_temp_types]" << std::endl;
         refresh_crossing_temp_types(stmts, ctx);
 
         std::map<std::string, std::string> declared_seed;
         for (auto& [idx, info] : ctx.locals) {
             if (info.is_param) declared_seed[info.name] = info.type;
         }
+        std::cerr << "         [Step: ensure_local_declarations]" << std::endl;
         stmts = ensure_local_declarations(stmts, declared_seed);
+        std::cerr << "         [Step: fold_if_else_ternary]" << std::endl;
         stmts = fold_if_else_ternary(stmts);
+        std::cerr << "         [Step: hoist_escaping_locals]" << std::endl;
         {
             std::set<std::string> declared_so_far;
             for (int pass = 0; pass < 3; ++pass) {
                 stmts = hoist_escaping_locals(stmts, declared_so_far);
             }
         }
-        // НОВОЕ: схлопываем javac-паттерн switch(x.hashCode())+.equals() обратно
-        // в нормальный switch(String) - см. collapse_string_switch выше. ДО
-        // проверки has_escaping_local_decl ниже - если паттерн распознан и
-        // схлопнут, индекс-переменная (var8 и т.п.) вообще исчезает из AST,
-        // и часть методов, раньше падавших в fallback именно из-за неё,
-        // теперь пройдут структуризацию успешно.
+        std::cerr << "         [Step: collapse_string_switch]" << std::endl;
         stmts = collapse_string_switch(stmts);
+        std::cerr << "         [Step: eliminate_dead_locals]" << std::endl;
         stmts = eliminate_dead_locals(stmts);
+        std::cerr << "         [Step: collapse_sb_in_stmts]" << std::endl;
         collapse_sb_in_stmts(stmts);
+        std::cerr << "         [Step: prune_unused_imports]" << std::endl;
         prune_unused_imports(stmts, ctx);
+        std::cerr << "         [Step: collapse_adjacent_monitors]" << std::endl;
         stmts = collapse_adjacent_monitors(stmts);
-        // Не выбрасываем исключение, если единичный монитор не удалось схлопнуть:
-        // emit.cpp безопасно выведет комментарий /* monitorenter/exit */, сохранив чистый Java AST!
+        std::cerr << "         [Step: hoist_all_escaping_to_root]" << std::endl;
         for (int hoist_pass = 0; hoist_pass < 4 && has_escaping_local_decl(stmts); ++hoist_pass) {
             stmts = hoist_all_escaping_to_root(stmts, ctx);
         }
+        std::cerr << "         [Checking Escaping Decl]" << std::endl;
         if (has_escaping_local_decl(stmts)) {
             auto all_escaping = collect_all_escaping_names(stmts);
             if (!all_escaping.empty()) {
@@ -2977,7 +2933,9 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
         // emit_stmts" - сворачиваем `new T[N]; x[0]=..; x[1]=..;` в
         // `new T[]{..}` перед выводом.
         collapse_array_literals(stmts);
+        std::cerr << "         [Emit Stmts Start]" << std::endl;
         auto body_lines = emit_stmts(stmts, indent);
+        std::cerr << "         [Emit Stmts Done]" << std::endl;
         result.ok = true;
         result.stmts = stmts;
         result.pre_lines = pre_lines;

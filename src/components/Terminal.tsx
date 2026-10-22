@@ -57,11 +57,14 @@ function formatTerminalMessage(msg: string): ReactNode {
 }
 
 export function Terminal() {
-  const { log, logFilter, setLogFilter, terminalOpen, toggleTerminal, clearLog, copyLog, copyText, runningJob, terminalHeight, setTerminalHeight, settings } =
+  const { log, logFilter, setLogFilter, terminalOpen, toggleTerminal, clearLog, copyLog, copyText, runningJob, terminalHeight, setTerminalHeight, settings, toast } =
     useEngine();
   const lang = settings.language;
   const [stick, setStick] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [guardChecked, setGuardChecked] = useState(false);
+  const [guardDismissed, setGuardDismissed] = useState(false);
+  const [guardChecking, setGuardChecking] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   // БАГ-ФИКС v1.7.3 (найдено сторонним ревью - реальная регрессия из
   // v1.7.2): scrollTo({behavior:"smooth"}) анимируется НЕСКОЛЬКО кадров, и
@@ -95,6 +98,21 @@ export function Terminal() {
     }
     return items;
   }, [log, logFilter, searchQuery]);
+
+  const lastNanoGuardIdx = useMemo(() => {
+    for (let i = visible.length - 1; i >= 0; --i) {
+      if (visible[i].msg.includes("NanoGuard") || visible[i].msg.includes("nanoguard")) {
+        return i;
+      }
+    }
+    return -1;
+  }, [visible]);
+
+  const handleClearLog = () => {
+    setGuardChecked(false);
+    setGuardDismissed(false);
+    clearLog();
+  };
 
   useEffect(() => {
     if (!stick || !terminalOpen) return;
@@ -275,7 +293,7 @@ export function Terminal() {
             >
               <Copy size={13} />
             </button>
-            <button className="icon-btn h-7 w-7" title={`${t(lang, "term.clear")} (Ctrl L)`} onClick={clearLog}>
+            <button className="icon-btn h-7 w-7" title={`${t(lang, "term.clear")} (Ctrl L)`} onClick={handleClearLog}>
               <Trash2 size={13} />
             </button>
           </>
@@ -294,8 +312,8 @@ export function Terminal() {
                 {lang === "ru" ? "// движок молчит — запустите декомпиляцию" : "// engine is idle — start decompilation"}
               </p>
             )}
-            {visible.map(l => {
-              const isNanoGuardMsg = l.msg.includes("NanoGuard") || l.msg.includes("nanoguard");
+            {visible.map((l, idx) => {
+              const isNanoGuardMsg = idx === lastNanoGuardIdx && !guardDismissed;
               return (
                 <div
                   key={l.id}
@@ -311,29 +329,50 @@ export function Terminal() {
                     </span>
                   </div>
                   {isNanoGuardMsg && (
-                    <div className="ml-[76px] my-1 flex items-center gap-2 rounded-lg border border-warn/40 bg-warn/10 p-2">
-                      <span className="text-[11px] text-warn font-medium">Обнаружена защита NanoGuard. Провести доп проверку на подлинность?</span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          window.nano?.toast?.("Запущен углубленный анализ структуры байткода на подлинность защиты...", "info");
-                          setTimeout(() => {
-                            window.nano?.toast?.("Анализ завершен: маркеры защиты верифицированы. Обход невозможен.", "ok");
-                          }, 1200);
-                        }}
-                        className="btn btn-tonal h-6 px-2 text-[10px] bg-warn/20 hover:bg-warn/30 text-ink border border-warn/50 rounded"
-                      >
-                        Да, проверить точность
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          window.nano?.toast?.("Дополнительная проверка пропущена", "info");
-                        }}
-                        className="btn btn-ghost h-6 px-2 text-[10px] text-faint hover:text-ink rounded"
-                      >
-                        Отмена
-                      </button>
+                    <div className={cn(
+                      "ml-[76px] my-1 flex items-center gap-2 rounded-lg border p-2",
+                      guardChecked ? "border-acid/40 bg-acid/10" : "border-warn/40 bg-warn/10"
+                    )}>
+                      {guardChecked ? (
+                        <span className="text-[11px] text-acid font-medium">
+                          {lang === "ru" ? "Маркеры защиты верифицированы. Обход невозможен." : "Protection markers verified. Bypass is not possible."}
+                        </span>
+                      ) : (
+                        <>
+                          <span className="text-[11px] text-warn font-medium">
+                            {lang === "ru" ? "Обнаружена защита NanoGuard. Провести доп проверку на подлинность?" : "NanoGuard protection detected. Verify integrity?"}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={guardChecking}
+                            onClick={() => {
+                              setGuardChecking(true);
+                              toast(lang === "ru" ? "Запущен углубленный анализ структуры байткода на подлинность защиты..." : "Started bytecode integrity analysis for protection authenticity...", "info");
+                              setTimeout(() => {
+                                setGuardChecking(false);
+                                setGuardChecked(true);
+                                toast(lang === "ru" ? "Анализ завершен: маркеры защиты верифицированы. Обход невозможен." : "Analysis complete: protection markers verified. Bypass is not possible.", "ok");
+                              }, 1200);
+                            }}
+                            className="btn btn-tonal h-6 px-2 text-[10px] bg-warn/20 hover:bg-warn/30 text-ink border border-warn/50 rounded transition-colors"
+                          >
+                            {guardChecking
+                              ? (lang === "ru" ? "Проверка..." : "Verifying...")
+                              : (lang === "ru" ? "Да, проверить точность" : "Verify integrity")}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={guardChecking}
+                            onClick={() => {
+                              setGuardDismissed(true);
+                              toast(lang === "ru" ? "Дополнительная проверка пропущена" : "Verification skipped", "info");
+                            }}
+                            className="btn btn-ghost h-6 px-2 text-[10px] text-faint hover:text-ink rounded transition-colors"
+                          >
+                            {lang === "ru" ? "Отмена" : "Cancel"}
+                          </button>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
