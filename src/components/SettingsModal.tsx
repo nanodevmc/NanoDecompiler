@@ -242,40 +242,6 @@ export function SettingsModal() {
               </div>
             </div>
 
-            <p className="kicker pt-2 pb-2">Иконка приложения</p>
-            <div className="rounded-xl border border-line bg-bg px-3.5 py-3">
-              <div className="flex gap-3">
-                {(
-                  [
-                    { key: "terminal" as const, label: "Консоль", thumb: iconThumbnails.terminal || DEFAULT_ICON_THUMBNAILS.terminal },
-                    { key: "layers" as const, label: "Слои", thumb: iconThumbnails.layers || DEFAULT_ICON_THUMBNAILS.layers },
-                  ]
-                ).map(opt => (
-                  <button
-                    key={opt.key}
-                    onClick={() => setDraft(d => ({ ...d, appIcon: opt.key }))}
-                    className={cn(
-                      "flex flex-1 flex-col items-center gap-2 rounded-lg border px-3 py-3 transition-colors",
-                      draft.appIcon === opt.key
-                        ? "border-acid/50 bg-acid/5"
-                        : "border-line hover:border-line-strong",
-                    )}
-                  >
-                    {opt.thumb ? (
-                      <img src={opt.thumb} alt={opt.label} className="size-12 rounded-[10px]" />
-                    ) : (
-                      <div className="size-12 rounded-[10px] bg-raised" />
-                    )}
-                    <span className={cn("text-[11.5px]", draft.appIcon === opt.key ? "text-acid" : "text-dim")}>
-                      {opt.label}
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <p className="mt-3 text-[10.5px] leading-relaxed text-faint">
-                Меняет логотип в шапке приложения и иконку окна сразу. Иконку .exe/.app в проводнике при сборке это не затрагивает.
-              </p>
-            </div>
           </div>
         )}
 

@@ -505,7 +505,7 @@ ipcMain.handle("appIcon:thumbnails", async () => {
   };
   return {
     terminal: read("icon-b-terminal-thumb.png"),
-    layers: read("icon-e-layers-thumb.png"),
+    layers: null,
   };
 });
 
