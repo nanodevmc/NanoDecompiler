@@ -1,11 +1,6 @@
-fix: ликвидация крашей и зависаний C++ ядра, Java Diff в PluginDiffModal и фикс UI
+feat(diff): добавить синтаксическую подсветку Java и оптимизировать размер сборки
 
-- C++ Core:
-  - structure.cpp: устранена взаимная рекурсия simplify_stmt -> simplify_stmts (краш 0xC0000005 на ElemKits.<init>), лимит глубины в Structurer::region;
-  - emit.cpp: защита s_emitting_nodes от циклических узлов AST, отсечка глубины выражений и отступов (память снижена с 1.27 ГБ до 84 МБ);
-  - engine.cpp: линейный алгоритм O(N) вместо O(N^2) для has_escaping_local_decl_check, collect_all_escaping_names и hoist_escaping_locals без копирования срезов векторов; защита depth > 50 в обходчиках AST. Результат: 100.0% методов ElemKits.jar декомпилировано без зависаний;
-- Frontend & Electron:
-  - PluginDiffModal.tsx: добавлен просмотр декомпилированного Java Diff с цветовой подсветкой +/-;
-  - electron/pluginTools.ts: реализован computeLineDiff и IPC plugin:diffClass;
-  - Terminal.tsx: кнопки NanoGuard переведены на React Context toast, устранены повторные предупреждения;
-  - engine.tsx: расширен список открываемых текстовых ресурсов (.aeg, .toml, .ini, .cfg, .conf и др.).
+- src/lib/javaHighlight.tsx: экспортирован хелпер highlightJavaLineTokens;
+- src/components/PluginDiffModal.tsx: добавлена подсветка синтаксиса Java-кода в Diff-окне;
+- scripts/afterPack.cjs: удалены неиспользуемые платформы 7zip-bin (linux/mac/ia32/arm64), размер инсталлера снижен с 71.1 МБ до 67.3 МБ (-11 МБ на диске);
+- FakeNanoGuardPlugin.jar: подготовлен тестовый JAR с маркерами NanoGuard (выход с кодом 78).

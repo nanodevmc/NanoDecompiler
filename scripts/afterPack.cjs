@@ -95,4 +95,29 @@ exports.default = async function afterPack(context) {
     }
   }
   try { pruneDebugFiles(context.appOutDir); } catch (_) {}
+
+  // Очистка неиспользуемых платформ из 7zip-bin (экономит ~11 МБ)
+  try {
+    const p7z = path.join(context.appOutDir, "resources", "app.asar.unpacked", "node_modules", "7zip-bin");
+    if (fs.existsSync(p7z)) {
+      const plat = context.electronPlatformName; // win32, darwin, linux
+      for (const targetPlat of ["win", "mac", "linux"]) {
+        const platDir = path.join(p7z, targetPlat);
+        if (!fs.existsSync(platDir)) continue;
+        const isCurrentPlat = (plat === "win32" && targetPlat === "win") ||
+                              (plat === "darwin" && targetPlat === "mac") ||
+                              (plat === "linux" && targetPlat === "linux");
+        if (!isCurrentPlat) {
+          fs.rmSync(platDir, { recursive: true, force: true });
+        } else if (plat === "win32") {
+          for (const a of fs.readdirSync(platDir)) {
+            if (a !== "x64") {
+              fs.rmSync(path.join(platDir, a), { recursive: true, force: true });
+            }
+          }
+        }
+      }
+      console.log("[afterPack] удалены неиспользуемые платформы 7zip-bin (освобождено ~11 МБ)");
+    }
+  } catch (_) {}
 };

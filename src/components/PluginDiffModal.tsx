@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { highlightJavaLineTokens } from "../lib/javaHighlight";
 import { GitCompare, FolderOpen, ArrowRight, ArrowLeft, CheckCircle2, AlertTriangle, FileCode, Plus, Minus, RefreshCw, X, Loader2, Code2 } from "lucide-react";
 
 export interface PluginDiffReport {
@@ -220,7 +221,7 @@ export function PluginDiffModal({
                         <span className="w-5 text-center font-bold select-none text-[11px]">
                           {isAdd ? "+" : isRem ? "-" : " "}
                         </span>
-                        <span className="flex-1 whitespace-pre-wrap break-all pl-1">{line.text || " "}</span>
+                        <span className="flex-1 whitespace-pre-wrap break-all pl-1">{highlightJavaLineTokens(line.text)}</span>
                       </div>
                     );
                   })}

@@ -483,6 +483,13 @@ function renderToken(t: Token, i: number | string, textOverride?: string, raw?: 
   return <span key={i}>{text}</span>;
 }
 
+/** Подсветка одной строки Java-кода для Diff-вьюера */
+export function highlightJavaLineTokens(lineText: string): ReactNode {
+  if (!lineText) return " ";
+  const tokens = tokenizeLine(lineText);
+  return tokens.map((t, idx) => renderToken(t, idx, undefined, true));
+}
+
 /** Интерактивный чип серверного runtime-выражения: предотвращает случайное сворачивание
  * родительского блока, копирует выражение при клике и отображает понятное объяснение. */
 const RuntimeValueChip = memo(function RuntimeValueChip({ exprStr }: { exprStr: string }) {
