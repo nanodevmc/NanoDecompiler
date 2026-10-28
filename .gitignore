@@ -71,7 +71,22 @@ crates/**/target
 
 # Temporary test outputs
 test_*_out/
+test_out_*/
 out_*/
 *.log
 err*.txt
 *.bak
+*.class
+build/
+scratch/
+tauri-v2/src-tauri/target/
+
+# Scratch & temporary scripts
+patch_*.py
+apply_patch_*.py
+clean_css_*.py
+copy_to_desktop.py
+fix_structure.py
+inspect_downloads.py
+bump_version_*.py
+test_runner.py

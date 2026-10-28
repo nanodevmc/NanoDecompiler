@@ -436,7 +436,7 @@ export function Sidebar() {
         >
           {/* 4. Dropzone Radar Sweep Animation */}
           <div className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-            <div className="w-full h-full animate-radar-sweep" style={{ background: 'conic-gradient(from 0deg, transparent 0 300deg, rgba(155, 242, 70, 0.12) 360deg)' }} />
+            <div className="radar-vivid" style={{ background: 'conic-gradient(from 0deg, transparent 0 300deg, rgba(155, 242, 70, 0.12) 360deg)' }} />
           </div>
           <FileArchive size={20} className={cn("transition-transform duration-200 group-hover:scale-110 relative z-10", dragActive ? "text-acid animate-bounce" : "text-faint group-hover:text-acid")} />
           <p className="text-[12.5px] font-medium text-ink/90">

@@ -35,6 +35,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Принцип наименьших привилегий: сборочные job'ы запускают npm install /
 # компиляцию чужих зависимостей и НЕ должны иметь права записи в репозиторий.
 # Право contents: write выдано только job'у publish-release (см. ниже) -
@@ -401,10 +405,10 @@ jobs:
       - name: Кэш ccache (Windows)
         uses: actions/cache@v4
         with:
-          path: C:\msys64\home\runneradmin\.ccache
-          key: ${{ runner.os }}-msys2-ccache-${{ github.run_id }}
+          path: .ccache
+          key: ${{ runner.os }}-ccache-${{ hashFiles('resources/engine_cpp/**') }}
           restore-keys: |
-            ${{ runner.os }}-msys2-ccache-
+            ${{ runner.os }}-ccache-
 
       - uses: msys2/setup-msys2@v2
         with:
@@ -423,8 +427,13 @@ jobs:
         shell: msys2 {0}
         working-directory: resources/engine_cpp
         run: |
+          export CCACHE_DIR="$(cygpath -u "$GITHUB_WORKSPACE")/.ccache"
+          mkdir -p "$CCACHE_DIR"
+          ccache -M 1G
+          ccache -z
           cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
           ninja -C build -j $(nproc)
+          ccache -s
           strip -s build/NanoDecompilerCLI.exe
           upx --best build/NanoDecompilerCLI.exe || true
           cp build/NanoDecompilerCLI.exe ../../NanoDecompilerClApi.exe
@@ -465,7 +474,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
-          key: ${{ runner.os }}-ccache-${{ github.run_id }}
+          key: ${{ runner.os }}-ccache-${{ hashFiles('resources/engine_cpp/**') }}
           restore-keys: |
             ${{ runner.os }}-ccache-
 
@@ -475,8 +484,13 @@ jobs:
       - name: Собрать движок (Linux)
         working-directory: resources/engine_cpp
         run: |
+          export CCACHE_DIR=~/.cache/ccache
+          mkdir -p "$CCACHE_DIR"
+          ccache -M 1G
+          ccache -z
           cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
           ninja -C build -j $(nproc)
+          ccache -s
           strip --strip-all build/NanoDecompilerCLI
           upx --best build/NanoDecompilerCLI || true
           cp build/NanoDecompilerCLI ../../NanoDecompilerClApi
@@ -507,7 +521,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/Library/Caches/ccache
-          key: ${{ runner.os }}-ccache-${{ github.run_id }}
+          key: ${{ runner.os }}-ccache-${{ hashFiles('resources/engine_cpp/**') }}
           restore-keys: |
             ${{ runner.os }}-ccache-
 
@@ -519,12 +533,17 @@ jobs:
       - name: Собрать движок (macOS)
         working-directory: resources/engine_cpp
         run: |
+          export CCACHE_DIR=~/Library/Caches/ccache
+          mkdir -p "$CCACHE_DIR"
+          ccache -M 1G
+          ccache -z
           CMAKE_FLAGS="-S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo"
           if command -v ccache >/dev/null 2>&1; then
             CMAKE_FLAGS="$CMAKE_FLAGS -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache"
           fi
           cmake $CMAKE_FLAGS
           ninja -C build -j $(sysctl -n hw.logicalcpu)
+          ccache -s || true
           cp build/NanoDecompilerCLI ../../NanoDecompilerClApi
 
       - name: Проверка - бинарник реально работает
@@ -621,11 +640,173 @@ jobs:
           path: ${{ matrix.out_file }}-${{ needs.resolve-version.outputs.version }}${{ matrix.ext }}
           if-no-files-found: error
 
+  # =========================================================================
+  # ОСНОВНОЙ КЛИЕНТ НОВОГО ПОКОЛЕНИЯ: TAURI V2 NATIVE (WINDOWS & LINUX)
+  # =========================================================================
+  build-tauri-windows:
+    needs: [resolve-version, build-clapi-windows]
+    runs-on: windows-latest
+    env:
+      API_VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Скачать собранный движок ClApi (Windows)
+        uses: actions/download-artifact@v4
+        with:
+          name: clapi-artifacts-windows
+          path: resources/engine
+
+      - name: Подготовить NanoDecompilerCLI.exe
+        shell: bash
+        run: |
+          if [ -f "resources/engine/NanoDecompilerClApi.exe" ]; then
+            mv "resources/engine/NanoDecompilerClApi.exe" "resources/engine/NanoDecompilerCLI.exe"
+          fi
+          if [ ! -f "resources/engine/NanoDecompilerCLI.exe" ]; then
+            echo "::error::NanoDecompilerCLI.exe не найден!"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Подготовить хэш зависимостей
+        shell: bash
+        run: |
+          node -e 'const p = require("./package.json"); console.log(JSON.stringify({d: p.dependencies, dd: p.devDependencies}))' > .deps-hash.json
+
+      - name: Кэш node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node20-${{ hashFiles('.deps-hash.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node20-
+
+      - name: Установить Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Кэш Rust Cargo (Tauri & FastScan)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tauri-v2/src-tauri
+            crates/nanodecompiler-fastscan
+
+      - name: npm install
+        run: npm install
+
+      - name: Собрать фронтенд (Vite)
+        run: npm run build:renderer
+
+      - name: Собрать нативный бинарник Tauri v2
+        shell: bash
+        run: |
+          cd tauri-v2/src-tauri
+          cargo build --release
+          cd ../..
+          cp tauri-v2/src-tauri/target/release/nanodecompiler-tauri.exe NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe
+
+      - name: Собрать инсталлятор Tauri v2 (NSIS / Bundle)
+        shell: bash
+        run: |
+          npx --yes @tauri-apps/cli@2 build --config tauri-v2/src-tauri/tauri.conf.json || true
+          SETUP_FILE=$(find tauri-v2/src-tauri/target/release/bundle -iname "*.exe" 2>/dev/null | head -1)
+          if [ -n "$SETUP_FILE" ]; then
+            cp "$SETUP_FILE" NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe
+          else
+            cp NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-artifact-win
+          path: |
+            NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe
+            NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe
+          if-no-files-found: error
+
+  build-tauri-linux:
+    needs: [resolve-version, build-clapi-linux]
+    runs-on: ubuntu-latest
+    env:
+      API_VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Скачать собранный движок ClApi (Linux)
+        uses: actions/download-artifact@v4
+        with:
+          name: clapi-artifacts-linux
+          path: resources/engine
+
+      - name: Подготовить NanoDecompilerCLI
+        run: |
+          if [ -f "resources/engine/NanoDecompilerClApi" ]; then
+            mv "resources/engine/NanoDecompilerClApi" "resources/engine/NanoDecompilerCLI"
+          fi
+          chmod +x resources/engine/NanoDecompilerCLI
+
+      - name: Установить зависимости Linux для Tauri v2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev build-essential
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Подготовить хэш зависимостей
+        run: |
+          node -e 'const p = require("./package.json"); console.log(JSON.stringify({d: p.dependencies, dd: p.devDependencies}))' > .deps-hash.json
+
+      - name: Кэш node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node20-${{ hashFiles('.deps-hash.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node20-
+
+      - name: Установить Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Кэш Rust Cargo (Tauri & FastScan)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tauri-v2/src-tauri
+            crates/nanodecompiler-fastscan
+
+      - name: npm install
+        run: npm install
+
+      - name: Собрать фронтенд (Vite)
+        run: npm run build:renderer
+
+      - name: Собрать бинарник Tauri v2 Linux
+        run: |
+          cd tauri-v2/src-tauri
+          cargo build --release
+          cd ../..
+          cp tauri-v2/src-tauri/target/release/nanodecompiler-tauri NanoDecompiler-Tauri-v2-Linux-x64
+          chmod +x NanoDecompiler-Tauri-v2-Linux-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-artifact-linux
+          path: NanoDecompiler-Tauri-v2-Linux-x64
+          if-no-files-found: error
+
   publish-release:
     permissions:
       contents: write
     # HANDOFF_54: явно перечислены ВСЕ клиентские, ClApi и Lite job'ы
-    needs: [resolve-version, build-client-windows, build-client-linux, build-client-macos, build-clapi-windows, build-clapi-linux, build-clapi-macos, build-lite-gui]
+    needs: [resolve-version, build-tauri-windows, build-tauri-linux, build-client-windows, build-client-linux, build-client-macos, build-clapi-windows, build-clapi-linux, build-clapi-macos, build-lite-gui]
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ needs.resolve-version.outputs.version }}
@@ -633,6 +814,12 @@ jobs:
       API_VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tauri-artifact-*
+          path: release-files-tmp/tauri
+          merge-multiple: true
 
       - uses: actions/download-artifact@v4
         with:
@@ -663,23 +850,34 @@ jobs:
         shell: bash
         run: |
           TAG="${RELEASE_TAG}"
-          # Полные Electron-клиенты
-          mv release-files-tmp/clients/NanoDecompiler-Client-Setup.exe release-files/NanoDecompiler-Windows-x64-${TAG}.exe
-          mv release-files-tmp/clients/NanoDecompiler-Client.AppImage release-files/NanoDecompiler-Linux-x64-${TAG}.AppImage
-          mv release-files-tmp/clients/NanoDecompiler-Client.dmg release-files/NanoDecompiler-macOS-arm64-${TAG}.dmg
+          # 1. ОСНОВНЫЕ КЛИЕНТЫ: TAURI V2 NATIVE (НОВОЕ ПОКОЛЕНИЕ)
+          mv release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe release-files/NanoDecompiler-Tauri-v2-Windows-x64-${TAG}.exe
+          mv release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe release-files/NanoDecompiler-Tauri-v2-Windows-x64-${TAG}-Portable.exe
+          if [ -f "release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Linux-x64" ]; then
+            mv release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Linux-x64 release-files/NanoDecompiler-Tauri-v2-Linux-x64-${TAG}
+          fi
 
-          # Движки CLI (бывший ClApi) со стандартизированными именами
+          # Главный стандартный файл ведет прямо на быстрый нативный клиент Tauri v2!
+          cp release-files/NanoDecompiler-Tauri-v2-Windows-x64-${TAG}.exe release-files/NanoDecompiler-Windows-x64-${TAG}.exe
+          cp release-files/NanoDecompiler-Tauri-v2-Windows-x64-${TAG}.exe release-files/NanoDecompiler-Setup.exe
+
+          # 2. КЛАССИЧЕСКИЕ КЛИЕНТЫ (ELECTRON GUI - FALLBACK)
+          mv release-files-tmp/clients/NanoDecompiler-Client-Setup.exe release-files/NanoDecompiler-Electron-Windows-x64-${TAG}.exe
+          mv release-files-tmp/clients/NanoDecompiler-Client.AppImage release-files/NanoDecompiler-Electron-Linux-x64-${TAG}.AppImage
+          mv release-files-tmp/clients/NanoDecompiler-Client.dmg release-files/NanoDecompiler-Electron-macOS-arm64-${TAG}.dmg
+
+          # 3. ДВИЖКИ CLI (C++ CLI/API)
           mv release-files-tmp/windows/NanoDecompilerClApi.exe release-files/NanoDecompilerCLI-Windows-x64-${TAG}.exe
           mv release-files-tmp/linux/NanoDecompilerClApi release-files/NanoDecompilerCLI-Linux-x64-${TAG}
           mv release-files-tmp/macos/NanoDecompilerClApi release-files/NanoDecompilerCLI-macOS-arm64-${TAG}
 
-          # Обратная совместимость для старых скриптов и апдейтеров
+          # Обратная совместимость для старых скриптов и автоапдейтера
           cp release-files/NanoDecompilerCLI-Windows-x64-${TAG}.exe release-files/NanoDecompilerClApi-windows.exe
           cp release-files/NanoDecompilerCLI-Linux-x64-${TAG} release-files/NanoDecompilerClApi-linux
           cp release-files/NanoDecompilerCLI-macOS-arm64-${TAG} release-files/NanoDecompilerClApi-macos
-          cp release-files/NanoDecompiler-Windows-x64-${TAG}.exe release-files/NanoDecompiler-Client-Setup.exe
-          cp release-files/NanoDecompiler-Linux-x64-${TAG}.AppImage release-files/NanoDecompiler-Client.AppImage
-          cp release-files/NanoDecompiler-macOS-arm64-${TAG}.dmg release-files/NanoDecompiler-Client.dmg
+          cp release-files/NanoDecompiler-Electron-Windows-x64-${TAG}.exe release-files/NanoDecompiler-Client-Setup.exe
+          cp release-files/NanoDecompiler-Electron-Linux-x64-${TAG}.AppImage release-files/NanoDecompiler-Client.AppImage
+          cp release-files/NanoDecompiler-Electron-macOS-arm64-${TAG}.dmg release-files/NanoDecompiler-Client.dmg
 
       # Сгенерировать versions.json (для апдейтера)
       - name: Сгенерировать versions.json (для апдейтера - client vs api)
@@ -740,13 +938,16 @@ jobs:
               "",
               "| Файл | Описание | Платформа / Архитектура |",
               "|------|----------|-------------------------|",
-              f"| `NanoDecompiler-Windows-x64-{tag_full}.exe` | Полный клиент (Electron GUI) | Windows x64 |",
-              f"| `NanoDecompiler-Linux-x64-{tag_full}.AppImage` | Полный клиент (Electron GUI) | Linux x64 |",
-              f"| `NanoDecompiler-macOS-arm64-{tag_full}.dmg` | Полный клиент (Electron GUI) | macOS Apple Silicon |",
+              f"| `NanoDecompiler-Tauri-v2-Windows-x64-{tag_full}.exe` | **⭐ ОСНОВНОЙ КЛИЕНТ** (Tauri v2 Native Desktop, Liquid Glass + MD3) | Windows x64 |",
+              f"| `NanoDecompiler-Tauri-v2-Windows-x64-{tag_full}-Portable.exe` | **Портативный нативный клиент** (Tauri v2, без инсталляции) | Windows x64 |",
+              f"| `NanoDecompiler-Tauri-v2-Linux-x64-{tag_full}` | **⭐ ОСНОВНОЙ КЛИЕНТ** (Tauri v2 Native Desktop) | Linux x64 |",
               f"| `NanoDecompilerLite-Windows-x64-{tag_full}.exe` | **Ультралегкий C# GUI клиент** (быстрый, не лагает) | Windows x64 |",
               f"| `NanoDecompilerLite-Linux-x64-{tag_full}` | **Ультралегкий C# GUI клиент** | Linux x64 |",
               f"| `NanoDecompilerLite-macOS-x64-{tag_full}` | **Ультралегкий C# GUI клиент** | macOS Intel x64 |",
               f"| `NanoDecompilerLite-macOS-arm64-{tag_full}` | **Ультралегкий C# GUI клиент** | macOS Apple Silicon |",
+              f"| `NanoDecompiler-Electron-Windows-x64-{tag_full}.exe` | Классический Electron GUI клиент (fallback) | Windows x64 |",
+              f"| `NanoDecompiler-Electron-Linux-x64-{tag_full}.AppImage` | Классический Electron GUI клиент (fallback) | Linux x64 |",
+              f"| `NanoDecompiler-Electron-macOS-arm64-{tag_full}.dmg` | Классический Electron GUI клиент (fallback) | macOS Apple Silicon |",
               f"| `NanoDecompilerCLI-Windows-x64-{tag_full}.exe` | Движок декомпиляции (C++ CLI/API) | Windows x64 |",
               f"| `NanoDecompilerCLI-Linux-x64-{tag_full}` | Движок декомпиляции (C++ CLI/API) | Linux x64 |",
               f"| `NanoDecompilerCLI-macOS-arm64-{tag_full}` | Движок декомпиляции (C++ CLI/API) | macOS Apple Silicon |",

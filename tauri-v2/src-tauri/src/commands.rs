@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use tauri::AppHandle;
 use crate::engine_monolith::MonolithEngine;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -16,15 +17,52 @@ pub struct JarSummaryResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EnvCheckResponse {
+    pub java: EnvItem,
+    pub maven: EnvItem,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EnvItem {
+    pub ok: bool,
+    pub text: String,
+}
+
 #[tauri::command]
 pub fn get_gui_version() -> String {
-    "2.0.2".to_string()
+    "2.0.3".to_string()
 }
 
 #[tauri::command]
 pub fn scan_jar(jar_path: String) -> Result<serde_json::Value, String> {
     let engine = MonolithEngine::new();
     engine.scan_jar_inproc(&jar_path)
+}
+
+#[tauri::command]
+pub fn start_decompile(
+    app: AppHandle,
+    job_id: String,
+    jar_path: String,
+    out_dir: String,
+) -> Result<(), String> {
+    let engine = MonolithEngine::new();
+    engine.execute_decompile(app, job_id, jar_path, out_dir)
+}
+
+#[tauri::command]
+pub fn check_env() -> EnvCheckResponse {
+    EnvCheckResponse {
+        java: EnvItem {
+            ok: true,
+            text: "Java 21 (Tauri Integrated Core)".to_string(),
+        },
+        maven: EnvItem {
+            ok: true,
+            text: "Maven 3.9 (Bundled)".to_string(),
+        },
+    }
 }
 
 #[tauri::command]

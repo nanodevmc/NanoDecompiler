@@ -87,28 +87,44 @@ export function Workspace() {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         {envIssue && <EnvBanner />}
-        <Centered>
-          <div className="flex items-baseline justify-between gap-4">
-            <span className="kicker">{lang === "ru" ? "Декомпиляция" : "Decompilation"}</span>
-            <span className="mono text-[34px] leading-none font-semibold text-acid tabular-nums">
-              {pct}
-              <span className="text-[16px] text-dim">%</span>
-            </span>
+              <Centered>
+        {/* Квантовые светящиеся сферы Liquid Glass */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden flex items-center justify-center">
+          <div className="absolute w-3.5 h-3.5 rounded-full bg-acid orb-vivid-1" style={{ top: '22%', left: '28%' }} />
+          <div className="absolute w-4 h-4 rounded-full bg-sky-400 orb-vivid-2" style={{ top: '68%', right: '26%' }} />
+          <div className="absolute w-3 h-3 rounded-full bg-purple-500 orb-vivid-3" style={{ bottom: '18%', left: '38%' }} />
+        </div>
+
+        {/* Интерактивная карточка в стиле Liquid Glass + MD3 */}
+        <div className="relative liquid-glass md3-card p-8 flex flex-col items-center max-w-md text-center">
+          <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl border border-white/20 bg-black/40 shadow-[0_0_35px_rgba(155,242,70,0.3)] mb-4">
+            <FileArchive size={28} className="text-acid relative z-10" />
+            <div className="absolute -bottom-2 flex items-center gap-1.5">
+              <span className="w-1.5 rounded-full bg-acid dna-bar-1" />
+              <span className="w-1.5 rounded-full bg-acid dna-bar-2" />
+              <span className="w-1.5 rounded-full bg-acid dna-bar-3" />
+              <span className="w-1.5 rounded-full bg-acid dna-bar-4" />
+            </div>
           </div>
-          <p className="mono mt-3 truncate text-[13px] text-ink">{selectedJob.fileName}</p>
-          <div className="bar mt-4">
-            <i style={{ width: `${pct}%` }} />
-          </div>
-          <p className="mono mt-3 flex min-h-[18px] items-center gap-2 text-[11px] text-faint">
-            <span className="dot bg-acid animate-pulse-dot" />
-            <span className="truncate">{selectedJob.phase ?? lastPhase ?? (lang === "ru" ? "подготовка…" : "preparing…")}</span>
+
+          <p className="text-lg font-bold text-ink tracking-tight">
+            {jobs.length === 0
+              ? (lang === "ru" ? "Пока нечего декомпилировать." : "Nothing to decompile yet.")
+              : (lang === "ru" ? "Задача не выбрана." : "No job selected.")}
           </p>
-          <p className="mono mt-1 text-[11px] text-faint">
+          <p className="mt-2 text-xs leading-relaxed text-dim max-w-sm">
             {lang === "ru"
-              ? `прошло ${(selectedJob.elapsedMs / 1000).toFixed(1)} s · детали — в терминале ниже`
-              : `elapsed ${(selectedJob.elapsedMs / 1000).toFixed(1)} s · details in terminal below`}
+              ? "Перетащите .jar плагин или архив в левую панель. Движок распакует файлы, восстановит Java-код и отобразит дерево классов."
+              : "Drag and drop any .jar plugin into the left panel to decompile."}
           </p>
-        </Centered>
+          <div className="mt-5">
+            <button className="btn btn-acid md3-pill h-10 px-6 text-xs font-semibold shadow-[0_0_24px_rgba(155,242,70,0.35)] flex items-center gap-2" onClick={openFileDialog}>
+              <FileArchive size={15} />
+              {t(lang, "workspace.select_jar")}
+            </button>
+          </div>
+        </div>
+      </Centered>
       </div>
     );
   }

@@ -259,10 +259,15 @@ export const CodeView = memo(function CodeView({
 
         <div className="flex-1" />
 
-        <span className="mono hidden text-[10.5px] text-faint md:inline" title={lang === "ru" ? "Строк и символов в файле" : "Lines and characters in file"}>
-          {displayCode ? displayCode.split("\n").length : file.loc} {t(lang, "code.lines")}
-          {displayCode ? ` · ${fmtNum(displayCode.length)} ${lang === "ru" ? "симв." : "chars"}` : ""}
-          {` · ${t(lang, "code.readonly")}`}
+        <span
+          className="mono whitespace-nowrap shrink-0 rounded-full px-2 py-0.5 text-[10px] text-faint bg-surface/70 border border-line/60 hidden md:inline-flex items-center gap-1 shadow-sm select-none"
+          title={lang === "ru" ? `Строк: ${displayCode ? displayCode.split("\n").length : file.loc} · Символов: ${displayCode?.length || 0} · Только для чтения` : "Lines, characters, and read-only status"}
+        >
+          <span>{displayCode ? displayCode.split("\n").length : file.loc}L</span>
+          {displayCode && <span className="opacity-40">·</span>}
+          {displayCode && <span>{fmtNum(displayCode.length)}c</span>}
+          <span className="opacity-40">·</span>
+          <span className="text-acid/90 font-semibold tracking-wide">RO</span>
         </span>
         {outDir && (
           <OpenInMenu filePath={joinOutDir(outDir, file.relPath)} projectDir={outDir} />

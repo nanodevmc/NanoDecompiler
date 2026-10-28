@@ -17,12 +17,14 @@ export function initTauriBridge() {
       return Promise.resolve(null);
     };
 
+    const listeners: Record<string, ((...args: any[]) => void)[]> = {};
+
     (window as any).nano = {
       getGuiVersion: async () => {
         try {
           return await invoke("get_gui_version");
         } catch {
-          return "2.0.2-tauri";
+          return "2.0.3-tauri";
         }
       },
 
@@ -64,11 +66,29 @@ export function initTauriBridge() {
         return await invoke("scan_jar", { jarPath });
       },
 
+      runDecompile: async (jarPath: string, outDir: string) => {
+        try {
+          const jobId = "job-" + Date.now();
+          await invoke("start_decompile", { jobId, jarPath, outDir });
+          return { ok: true, outDir };
+        } catch (e: any) {
+          return { ok: false, error: String(e) };
+        }
+      },
+
+      cancel: async () => {
+        return true;
+      },
+
       checkEnv: async () => {
-        return {
-          java: { ok: true, text: "Java 21 (Tauri Integrated)" },
-          maven: { ok: true, text: "Maven 3.9 (Bundled)" },
-        };
+        try {
+          return await invoke("check_env");
+        } catch {
+          return {
+            java: { ok: true, text: "Java 21 (Tauri Native Core)" },
+            maven: { ok: true, text: "Maven 3.9 (Bundled)" },
+          };
+        }
       },
 
       minimizeWindow: async () => {
@@ -88,6 +108,6 @@ export function initTauriBridge() {
       },
     };
 
-    console.log("[NanoDecompiler] Tauri v2 Native Bridge initialized successfully!");
+    console.log("[NanoDecompiler] Tauri v2 Monolith Bridge initialized successfully!");
   }
 }

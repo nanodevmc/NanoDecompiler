@@ -10,6 +10,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_gui_version,
             scan_jar,
+            start_decompile,
+            check_env,
             jar_summary,
             open_path,
             open_external,

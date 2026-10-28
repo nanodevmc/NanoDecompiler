@@ -1,42 +1,15 @@
 #!/usr/bin/env node
-// НОВОЕ v1.8.4: мини-бэкенд телеметрии NanoDecompiler.
-//
-// Принимает POST /report от клиента (JSON, см. схему ниже), формирует
-// человекочитаемый отчёт и пересылает его в Telegram-бота - коротким
-// текстовым сообщением (summary) + файлом-вложением (полный контекст
-// каждого отката на байткод: 10 строк до, сам байткод, 10 строк после -
-// именно в таком порядке ДЛЯ КАЖДОГО отката, а не все "до" отдельно от
-// всех "после").
-//
-// БЕЗ npm-зависимостей вообще - только встроенные модули Node.js (fetch и
-// FormData глобальны с Node 18+). Специально: это разворачивается ОДИН РАЗ
-// на сервере пользователя, минимум мороки - `node server.js` и всё.
-//
-// ---- Запуск ----
-//   1. Скопировать config.example.json -> config.json, заполнить botToken/chatId
-//      (или задать переменные окружения TG_BOT_TOKEN / TG_CHAT_ID / PORT -
-//      они имеют приоритет над config.json).
-//   2. node server.js
-//   3. Указать http://<ip-сервера>:<port>/report как адрес телеметрии в
-//      настройках NanoDecompiler (переменная окружения NANO_TELEMETRY_URL).
-//
-// ---- Безопасность (исправлено в 2.0.0-alpha) ----
-//   - один кривой запрос больше не роняет процесс (раньше `null` в теле или
-//     `heavy_files: [null]` приводили к необработанному исключению и падению);
-//   - лимит по числу запросов с одного IP (RATE_LIMIT_PER_HOUR), таймауты на
-//     заголовки/тело, лимит тела считается в БАЙТАХ;
-//   - имена файлов внутри отправляемого ZIP очищаются от ".." и абсолютных
-//     путей (zip-slip у того, кто распаковывает архив);
-//   - секрет REPORT_SECRET сравнивается за постоянное время; клиент
-//     отправляет его из переменной окружения NANO_TELEMETRY_SECRET;
-//   - клиенту не возвращаются тексты ошибок Telegram;
-//   - ВСЁ ЭТО ПО ПРОСТОМУ HTTP: отчёты содержат фрагменты декомпилированного
-//     кода и читаются любым узлом на пути. Поставьте перед сервером
-//     TLS-прокси (nginx/caddy) и используйте https://-адрес.
-//
-// ---- Как получить chatId для личных сообщений ----
-//   Написать боту любое сообщение, затем открыть в браузере
-//   https://api.telegram.org/bot<TOKEN>/getUpdates - там будет chat.id.
+/**
+ * NanoDecompiler Telemetry & Bug Report Server v2.1.0
+ * 
+ * Особенности:
+ * 1. Валидация ключа подтверждения: sha256(base64(shortCommit + "+" + version)).
+ * 2. Строгая схема: отклонение неизвестных параметров и отчет о недостающих.
+ * 3. Типы жалоб: hang, crash, gui_error, decompilation_fallback, user_feedback.
+ * 4. Персистентная память по прошлым жалобам (reports_memory.json).
+ * 5. Бот с командами: /stats, /recent, /memory, /clear.
+ * 6. Полная поддержка логов зависаний (до 300 строк), файла и байткода.
+ */
 
 "use strict";
 
@@ -51,7 +24,34 @@ if (Number(process.versions.node.split(".")[0]) < 18) {
   process.exit(1);
 }
 
-// ==================== pure node zip generator ====================
+// ==================== Конфигурация ====================
+
+function loadConfig() {
+  const configPath = path.join(__dirname, "config.json");
+  let fileConfig = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      fileConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    } catch (e) {
+      console.error("config.json ошибка парсинга:", e.message);
+    }
+  }
+  const botToken = process.env.TG_BOT_TOKEN || fileConfig.botToken || "";
+  const chatId = String(process.env.TG_CHAT_ID || fileConfig.chatId || "");
+  const port = Number(process.env.PORT || fileConfig.port || 8787);
+  const host = process.env.HOST || fileConfig.host || "0.0.0.0";
+  const reportSecret = process.env.REPORT_SECRET || fileConfig.reportSecret || "";
+  const rateLimitPerHour = Number(process.env.RATE_LIMIT_PER_HOUR || fileConfig.rateLimitPerHour || 60);
+  const trustProxy = String(process.env.TRUST_PROXY || fileConfig.trustProxy || "") === "true" || fileConfig.trustProxy === true;
+
+  return { botToken, chatId, port, host, reportSecret, rateLimitPerHour, trustProxy };
+}
+
+const config = loadConfig();
+const TG_API = config.botToken ? `https://api.telegram.org/bot${config.botToken}` : null;
+
+// ==================== Zip Generator ====================
+
 const crcTable = new Uint32Array(256);
 for (let n = 0; n < 256; n++) {
   let c = n;
@@ -60,6 +60,7 @@ for (let n = 0; n < 256; n++) {
   }
   crcTable[n] = c;
 }
+
 function crc32(buf) {
   let crc = 0xffffffff;
   for (let i = 0; i < buf.length; i++) {
@@ -81,15 +82,13 @@ function createZip(files) {
     const uncompressedSize = dataBuf.length;
     const compressedSize = compressed.length;
 
-    // bit 11 (0x0800) - имя в UTF-8: без него кириллица/юникод в именах файлов
-    // разные распаковщики читали в произвольной кодировке.
     const localHeader = Buffer.alloc(30);
     localHeader.writeUInt32LE(0x04034b50, 0);
     localHeader.writeUInt16LE(20, 4);
     localHeader.writeUInt16LE(0x0800, 6);
     localHeader.writeUInt16LE(8, 8);
     localHeader.writeUInt16LE(0, 10);
-    localHeader.writeUInt16LE(0x21, 12); // дата 1980-01-01 (0 - невалидная дата в DOS-формате)
+    localHeader.writeUInt16LE(0x21, 12);
     localHeader.writeUInt32LE(crc, 14);
     localHeader.writeUInt32LE(compressedSize, 18);
     localHeader.writeUInt32LE(uncompressedSize, 22);
@@ -123,7 +122,6 @@ function createZip(files) {
 
   const centralDirOffset = offset;
   const centralDirSize = centralHeaders.reduce((acc, b) => acc + b.length, 0);
-
   const eocd = Buffer.alloc(22);
   eocd.writeUInt32LE(0x06054b50, 0);
   eocd.writeUInt16LE(0, 4);
@@ -137,276 +135,243 @@ function createZip(files) {
   return Buffer.concat([...localHeaders, ...centralHeaders, eocd]);
 }
 
-// ==================== конфигурация ====================
+// ==================== База памяти (reports_memory.json) ====================
 
-function loadConfig() {
-  const configPath = path.join(__dirname, "config.json");
-  let fileConfig = {};
-  if (fs.existsSync(configPath)) {
+const MEMORY_FILE = path.join(__dirname, "reports_memory.json");
+let memoryStore = {
+  total_reports: 0,
+  incidents: {}, // fingerprint -> { count, first_seen, last_seen, type, title }
+  recent: [],
+};
+
+function loadMemory() {
+  if (fs.existsSync(MEMORY_FILE)) {
     try {
-      fileConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+      memoryStore = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"));
     } catch (e) {
-      console.error("config.json существует, но не парсится как JSON:", e.message);
-      process.exit(1);
+      console.warn("Не удалось прочитать memory file, сброс:", e.message);
     }
   }
-  const botToken = process.env.TG_BOT_TOKEN || fileConfig.botToken;
-  const chatId = process.env.TG_CHAT_ID || fileConfig.chatId;
-  const port = Number(process.env.PORT || fileConfig.port || 8787);
-  const host = process.env.HOST || fileConfig.host || "0.0.0.0";
-  // Необязательный общий секрет - клиент присылает его в заголовке
-  // X-Report-Secret (из переменной окружения NANO_TELEMETRY_SECRET), сервер
-  // отбрасывает запросы без совпадения. Пусто - проверка выключена.
-  const reportSecret = process.env.REPORT_SECRET || fileConfig.reportSecret || "";
-  // Сколько отчётов в час принимать с одного IP (0 - без ограничения).
-  const rateLimitPerHour = Number(process.env.RATE_LIMIT_PER_HOUR || fileConfig.rateLimitPerHour || 30);
-  // За обратным прокси брать IP клиента из последнего значения X-Forwarded-For.
-  const trustProxy = String(process.env.TRUST_PROXY || fileConfig.trustProxy || "") === "true" || fileConfig.trustProxy === true;
-  if (!botToken || !chatId) {
-    console.error(
-      "Не хватает botToken/chatId - заполни config.json (см. config.example.json) " +
-        "или задай TG_BOT_TOKEN/TG_CHAT_ID в переменных окружения.",
-    );
-    process.exit(1);
+}
+
+function saveMemory() {
+  try {
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify(memoryStore, null, 2), "utf8");
+  } catch (e) {
+    console.error("Ошибка сохранения памяти:", e.message);
   }
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    console.error("Некорректный порт: " + port);
-    process.exit(1);
-  }
-  return {
-    botToken,
-    chatId: String(chatId),
-    port,
-    host,
-    reportSecret,
-    rateLimitPerHour: Number.isFinite(rateLimitPerHour) && rateLimitPerHour > 0 ? rateLimitPerHour : 0,
-    trustProxy,
-  };
 }
 
-const { botToken, chatId, port, host, reportSecret, rateLimitPerHour, trustProxy } = loadConfig();
-const TG_API = `https://api.telegram.org/bot${botToken}`;
+loadMemory();
 
-// Токен бота не должен попадать в логи, даже если он окажется в тексте ошибки.
-function redact(s) {
-  return String(s).split(botToken).join("***");
-}
+function recordIncident(report) {
+  memoryStore.total_reports++;
+  const rawKey = `${report.report_type}:${report.target_plugin_name || report.error_type || "app"}:${report.current_file || report.error_message || ""}`;
+  const fp = crypto.createHash("sha256").update(rawKey).digest("hex").slice(0, 16);
+  const now = new Date().toISOString();
 
-// ==================== нормализация входных данных ====================
-// НОВОЕ: движок может прислать что угодно "странное" (не тот тип, NaN,
-// отрицательные числа, слишком длинные массивы, null вместо объекта) - тут не
-// отклоняем весь отчёт из-за одного кривого поля, а просто приводим к разумному виду.
-
-function isObj(v) {
-  return v !== null && typeof v === "object" && !Array.isArray(v);
-}
-function safeStr(v, fallback = "unknown") {
-  if (typeof v === "string" && v.length) return v;
-  if (typeof v === "number" && Number.isFinite(v)) return String(v);
-  return fallback;
-}
-function safeNum(v, fallback = 0) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-function safeArrOfStr(v, maxItems = 2000, maxLineLen = 2000) {
-  if (!Array.isArray(v)) return [];
-  return v.slice(0, maxItems).map(x => {
-    const s = typeof x === "string" ? x : safeStr(x, "");
-    return s.length > maxLineLen ? s.slice(0, maxLineLen) + " …[обрезано]" : s;
-  });
-}
-
-// Имя файла для ZIP: только относительный путь без "..", "." и управляющих
-// символов, диска и ведущих слэшей (раньше убирались лишь ведущие слэши).
-function safeZipPath(name) {
-  const parts = String(name)
-    .replace(/\\/g, "/")
-    .split("/")
-    .map(p => p.replace(/[\u0000-\u001f<>:"|?*]/g, "_").trim())
-    .filter(p => p && p !== "." && p !== "..");
-  const joined = parts.join("/").slice(0, 200);
-  return joined || "file";
-}
-
-const MAX_HEAVY_FILE_CHARS = 2 * 1024 * 1024;
-
-/**
- * @typedef {{file: string, method_hint: string, java_before: string[], bytecode: string[], java_after: string[]}} FallbackContext
- */
-
-function normalizeReport(body) {
-  const b = isObj(body) ? body : {};
-  const fallbackContextsRaw = Array.isArray(b.fallback_contexts) ? b.fallback_contexts : [];
-  const MAX_CONTEXTS = 200;
-  const fallback_contexts = fallbackContextsRaw.slice(0, MAX_CONTEXTS).map(c => {
-    const o = isObj(c) ? c : {};
-    return {
-      file: safeStr(o.file, "unknown file"),
-      method_hint: safeStr(o.method_hint, ""),
-      java_before: safeArrOfStr(o.java_before),
-      bytecode: safeArrOfStr(o.bytecode),
-      java_after: safeArrOfStr(o.java_after),
+  let entry = memoryStore.incidents[fp];
+  if (!entry) {
+    entry = {
+      fingerprint: fp,
+      type: report.report_type,
+      title: report.error_message || report.target_plugin_name || "Unknown issue",
+      count: 1,
+      first_seen: now,
+      last_seen: now,
     };
+    memoryStore.incidents[fp] = entry;
+  } else {
+    entry.count++;
+    entry.last_seen = now;
+  }
+
+  memoryStore.recent.unshift({
+    timestamp: now,
+    type: report.report_type,
+    fingerprint: fp,
+    title: entry.title,
+    app_version: report.app_version,
   });
 
-  const usedNames = new Set();
-  const heavy_files = Array.isArray(b.heavy_files)
-    ? b.heavy_files.slice(0, 20).filter(isObj).map(f => {
-        let name = safeZipPath(safeStr(f.file, "unknown.java"));
-        for (let i = 2; usedNames.has(name); i++) name = `${i}_${name}`;
-        usedNames.add(name);
-        const content = typeof f.content === "string" ? f.content.slice(0, MAX_HEAVY_FILE_CHARS) : "";
-        return { file: name, content, fallback_pct: safeNum(f.fallback_pct, 0) };
-      })
-    : [];
+  if (memoryStore.recent.length > 50) {
+    memoryStore.recent = memoryStore.recent.slice(0, 50);
+  }
 
-  return {
-    app_version: safeStr(b.app_version),
-    app_commit: safeStr(b.app_commit, "unknown (not built from git checkout)"),
-    engine_version: safeStr(b.engine_version),
-    os: safeStr(b.os),
-    target_plugin_name: safeStr(b.target_plugin_name, "(unknown plugin)"),
-    target_platform: safeStr(b.target_platform, "unknown"),
-    jar_file_name: safeStr(b.jar_file_name, "(unknown file)"),
-    classes_total: Math.max(0, safeNum(b.classes_total)),
-    total_methods: Math.max(0, safeNum(b.total_methods)),
-    decompiled_methods: Math.max(0, safeNum(b.decompiled_methods)),
-    fallback_methods: Math.max(0, safeNum(b.fallback_methods)),
-    decompiled_pct: Math.max(0, Math.min(100, safeNum(b.decompiled_pct))),
-    user_comment: safeStr(b.user_comment, "").slice(0, 8000),
-    fallback_contexts,
-    heavy_files,
-  };
+  saveMemory();
+  return entry;
 }
 
-// ==================== форматирование отчёта ====================
+// ==================== Схема и валидация ====================
+
+const ALLOWED_FIELDS = new Set([
+  "report_type",
+  "app_version",
+  "app_commit",
+  "engine_version",
+  "os",
+  "timestamp",
+  "auth_token",
+  "target_plugin_name",
+  "target_platform",
+  "jar_file_name",
+  "classes_total",
+  "total_methods",
+  "decompiled_methods",
+  "fallback_methods",
+  "decompiled_pct",
+  "user_comment",
+  "fallback_contexts",
+  "heavy_files",
+  "error_type",
+  "error_message",
+  "error_stack",
+  "last_logs",
+  "current_file",
+  "current_bytecode",
+]);
+
+const REQUIRED_FIELDS = [
+  "report_type",
+  "app_version",
+  "app_commit",
+  "os",
+];
+
+const VALID_REPORT_TYPES = new Set([
+  "hang",
+  "crash",
+  "gui_error",
+  "decompilation_fallback",
+  "user_feedback",
+]);
+
+function computeAuthToken(shortCommit, version) {
+  const short = String(shortCommit || "").trim().slice(0, 7);
+  const ver = String(version || "").trim();
+  const raw = `${short}+${ver}`;
+  const b64 = Buffer.from(raw, "utf8").toString("base64");
+  return crypto.createHash("sha256").update(b64, "utf8").digest("hex");
+}
+
+function validatePayload(body, headers) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, status: 400, error: "invalid_json_object" };
+  }
+
+  // 1. Проверка лишних полей
+  const extraFields = Object.keys(body).filter(k => !ALLOWED_FIELDS.has(k));
+  if (extraFields.length > 0) {
+    return {
+      ok: false,
+      status: 400,
+      error: "unexpected_fields",
+      details: `Запрос отклонен: обнаружены лишние параметры: ${extraFields.join(", ")}`,
+      extra: extraFields,
+    };
+  }
+
+  // 2. Проверка недостающих обязательных полей
+  const missingFields = REQUIRED_FIELDS.filter(k => body[k] === undefined || body[k] === null || body[k] === "");
+  if (missingFields.length > 0) {
+    return {
+      ok: false,
+      status: 400,
+      error: "missing_fields",
+      details: `Запрос не полон: отсутствуют обязательные поля: ${missingFields.join(", ")}`,
+      missing: missingFields,
+    };
+  }
+
+  // 3. Проверка типа жалобы
+  if (!VALID_REPORT_TYPES.has(body.report_type)) {
+    return {
+      ok: false,
+      status: 400,
+      error: "invalid_report_type",
+      details: `Недопустимый тип жалобы: ${body.report_type}. Допустимы: ${Array.from(VALID_REPORT_TYPES).join(", ")}`,
+    };
+  }
+
+  // 4. Валидация ключа подтверждения: sha256(base64(shortCommit + "+" + version))
+  const expectedToken = computeAuthToken(body.app_commit, body.app_version);
+  const providedToken = String(headers["x-report-token"] || body.auth_token || headers["x-report-secret"] || "").trim();
+
+  // Если задан REPORT_SECRET в конфиге сервера, также принимаем его
+  const legacySecretOk = config.reportSecret && providedToken === config.reportSecret;
+
+  if (providedToken !== expectedToken && !legacySecretOk) {
+    return {
+      ok: false,
+      status: 401,
+      error: "unauthorized_token",
+      details: "Ключ подтверждения отправки не совпадает с sha256(base64(commit+version))",
+    };
+  }
+
+  return { ok: true };
+}
+
+// ==================== Telegram форматирование ====================
 
 function escapeHtml(s) {
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-// Telegram режет сообщение по 4096 символов. Раньше текст обрезался по
-// произвольному символу `slice(0, 4000)` - посреди тега/сущности, и Telegram
-// отвечал 400 "can't parse entities". Теперь режем по границе строки (каждая
-// строка содержит только закрытые теги), в запасе остаётся место под "…".
-function joinWithinLimit(lines, limit = 3900) {
-  const out = [];
-  let len = 0;
-  for (const line of lines) {
-    if (len + line.length + 1 > limit) {
-      out.push("…");
-      break;
-    }
-    out.push(line);
-    len += line.length + 1;
-  }
-  return out.join("\n");
-}
+function buildTelegramMessage(report, memoryEntry) {
+  const typeIcons = {
+    hang: "⏳ ЗАВИСАНИЕ",
+    crash: "💥 ВЗРЫВ / КРАШ",
+    gui_error: "⚠️ ОШИБКА GUI",
+    decompilation_fallback: "🔍 БАЙТКОД-ОТКАТ",
+    user_feedback: "💬 ОТЗЫВ ПОЛЬЗОВАТЕЛЯ",
+  };
 
-function buildSummaryHtml(r) {
-  const fallbackPct = r.total_methods > 0 ? (r.fallback_methods / r.total_methods) * 100 : (100 - r.decompiled_pct);
   const lines = [
-    `<b>🔍 NanoDecompiler Report</b>`,
+    `<b>${typeIcons[report.report_type] || "🐞 БАГ-РЕПОРТ"}</b>`,
     ``,
-    `📦 <b>Плагин:</b> <code>${escapeHtml(r.target_plugin_name)}</code> (${escapeHtml(r.jar_file_name)})`,
-    `🖥 <b>Платформа:</b> <code>${escapeHtml(r.target_platform)}</code>`,
-    `⚙️ <b>Версия:</b> GUI <code>${escapeHtml(r.app_version)}</code> · Engine <code>${escapeHtml(r.engine_version)}</code>`,
-    `💻 <b>ОС:</b> <code>${escapeHtml(r.os)}</code>`,
-    ``,
-    `📊 <b>Статистика:</b>`,
-    `• Классов: <b>${r.classes_total}</b>`,
-    `• Методов: <b>${r.decompiled_methods}/${r.total_methods}</b> декомпилировано (<b>${r.decompiled_pct.toFixed(1)}%</b>)`,
-    `• Байткод-откатов: <b>${r.fallback_methods}</b> (${fallbackPct.toFixed(1)}% | ${r.fallback_contexts.length} мест зафиксировано)`,
+    `⚙️ <b>Версия:</b> <code>${escapeHtml(report.app_version)}</code> (${escapeHtml(String(report.app_commit).slice(0, 7))})`,
+    `💻 <b>ОС:</b> <code>${escapeHtml(report.os)}</code>`,
   ];
 
-  if (r.user_comment) {
-    lines.push(``, `💬 <b>Комментарий:</b>\n<blockquote expandable>${escapeHtml(r.user_comment.slice(0, 1500))}</blockquote>`);
+  if (memoryEntry && memoryEntry.count > 1) {
+    lines.push(`🔁 <b>Повторяемость:</b> замечен <b>${memoryEntry.count}-й раз</b> (первый: ${memoryEntry.first_seen.slice(0, 16).replace("T", " ")})`);
   }
 
-  if (r.fallback_contexts.length > 0) {
-    lines.push(``, `⚠️ <b>Места байткода:</b>`);
-    const previewCount = Math.min(3, r.fallback_contexts.length);
-    for (let i = 0; i < previewCount; i++) {
-      const c = r.fallback_contexts[i];
-      const snippet = [
-        ...c.java_before.slice(-5),
-        `// --- БАЙТКОД (${c.bytecode.length} строк) ---`,
-        ...c.bytecode.slice(0, 8),
-        ...(c.bytecode.length > 8 ? ["// ..."] : []),
-        ...c.java_after.slice(0, 5),
-      ].join("\n");
-      lines.push(
-        `<b>[${i + 1}] ${escapeHtml(c.file)}</b>${c.method_hint ? ` · <code>${escapeHtml(c.method_hint)}</code>` : ""}\n<blockquote expandable>${escapeHtml(snippet.slice(0, 700))}</blockquote>`
-      );
-    }
-    if (r.fallback_contexts.length > previewCount) {
-      lines.push(`<i>... и ещё ${r.fallback_contexts.length - previewCount} мест во вложении</i>`);
-    }
+  if (report.target_plugin_name) {
+    lines.push(`📦 <b>Плагин:</b> <code>${escapeHtml(report.target_plugin_name)}</code> (${escapeHtml(report.jar_file_name || "")})`);
   }
 
-  return joinWithinLimit(lines);
-}
-
-function buildPlainSummary(r) {
-  return joinWithinLimit([
-    "NanoDecompiler Report",
-    `Плагин: ${r.target_plugin_name} (${r.jar_file_name})`,
-    `Платформа: ${r.target_platform}`,
-    `GUI ${r.app_version} / Engine ${r.engine_version}`,
-    `Методов: ${r.decompiled_methods}/${r.total_methods} (${r.decompiled_pct.toFixed(1)}%), откатов: ${r.fallback_methods}`,
-    r.user_comment ? `Комментарий: ${r.user_comment.slice(0, 1500)}` : "",
-  ].filter(Boolean));
-}
-
-function buildAttachmentText(r) {
-  const parts = [];
-  parts.push(`NanoDecompiler error report`);
-  parts.push(`====================================`);
-  parts.push(`App version:    ${r.app_version}`);
-  parts.push(`Commit:         ${r.app_commit}`);
-  parts.push(`Engine version: ${r.engine_version}`);
-  parts.push(`OS:             ${r.os}`);
-  parts.push(``);
-  parts.push(`Plugin:   ${r.target_plugin_name}`);
-  parts.push(`Jar file: ${r.jar_file_name}`);
-  parts.push(`Platform: ${r.target_platform}`);
-  parts.push(``);
-  parts.push(`Methods decompiled: ${r.decompiled_methods}/${r.total_methods} (${r.decompiled_pct.toFixed(1)}%)`);
-  parts.push(`Fallback methods:   ${r.fallback_methods}`);
-  if (r.user_comment) {
-    parts.push(``);
-    parts.push(`User comment:`);
-    parts.push(r.user_comment);
+  if (report.current_file) {
+    lines.push(`📄 <b>Текущий файл:</b> <code>${escapeHtml(report.current_file)}</code>`);
   }
-  parts.push(``);
-  parts.push(`==================== FALLBACK LOCATIONS (${r.fallback_contexts.length}) ====================`);
 
-  r.fallback_contexts.forEach((c, idx) => {
-    parts.push(``);
-    parts.push(`---- [${idx + 1}/${r.fallback_contexts.length}] ${c.file} ----`);
-    if (c.method_hint) parts.push(`Method: ${c.method_hint}`);
-    parts.push(``);
-    parts.push(`-- ${Math.min(5, c.java_before.length)} line(s) before --`);
-    parts.push(...c.java_before.slice(-5));
-    parts.push(``);
-    parts.push(`-- bytecode (${c.bytecode.length} line(s)) --`);
-    parts.push(...c.bytecode);
-    parts.push(``);
-    parts.push(`-- ${Math.min(5, c.java_after.length)} line(s) after --`);
-    parts.push(...c.java_after.slice(0, 5));
-  });
+  if (report.error_message) {
+    lines.push(``, `❌ <b>Ошибка:</b>\n<blockquote expandable>${escapeHtml(report.error_message.slice(0, 1000))}</blockquote>`);
+  }
 
-  return parts.join("\n");
+  if (report.user_comment) {
+    lines.push(``, `💬 <b>Комментарий:</b>\n<blockquote expandable>${escapeHtml(report.user_comment.slice(0, 1500))}</blockquote>`);
+  }
+
+  if (report.decompiled_pct !== undefined) {
+    lines.push(
+      ``,
+      `📊 <b>Декомпиляция:</b> <b>${report.decompiled_methods || 0}/${report.total_methods || 0}</b> (${Number(report.decompiled_pct || 0).toFixed(1)}%) · Откатов: <b>${report.fallback_methods || 0}</b>`
+    );
+  }
+
+  if (report.last_logs && Array.isArray(report.last_logs) && report.last_logs.length > 0) {
+    const previewLogs = report.last_logs.slice(-10).join("\n");
+    lines.push(``, `📋 <b>Хвост логов (последние 10 строк из ${report.last_logs.length}):</b>\n<pre>${escapeHtml(previewLogs.slice(0, 800))}</pre>`);
+  }
+
+  return lines.join("\n");
 }
 
-// ==================== отправка в Telegram ====================
-
-// Telegram Bot API: документ - до 50 МБ.
-const TG_MAX_DOCUMENT_BYTES = 45 * 1024 * 1024;
-
-async function tgSendMessage(text, html) {
-  const payload = { chat_id: chatId, text };
+async function tgSendMessage(text, html = true) {
+  if (!TG_API || !config.chatId) return;
+  const payload = { chat_id: config.chatId, text };
   if (html) payload.parse_mode = "HTML";
   const res = await fetch(`${TG_API}/sendMessage`, {
     method: "POST",
@@ -414,197 +379,213 @@ async function tgSendMessage(text, html) {
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(30000),
   });
-  if (!res.ok) throw new Error(`sendMessage: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw new Error(`tgSendMessage: ${res.status} ${await res.text()}`);
 }
 
-async function tgSendDocument(filename, content, mimeType = "text/plain; charset=utf-8") {
-  if (!content) return;
+async function tgSendDocument(filename, buffer, mimeType = "application/zip") {
+  if (!TG_API || !config.chatId || !buffer) return;
   const form = new FormData();
-  form.append("chat_id", chatId);
-  form.append("document", new Blob([content], { type: mimeType }), filename);
-  const res = await fetch(`${TG_API}/sendDocument`, { method: "POST", body: form, signal: AbortSignal.timeout(120000) });
-  if (!res.ok) throw new Error(`sendDocument: ${res.status} ${await res.text()}`);
+  form.append("chat_id", config.chatId);
+  form.append("document", new Blob([buffer], { type: mimeType }), filename);
+  const res = await fetch(`${TG_API}/sendDocument`, {
+    method: "POST",
+    body: form,
+    signal: AbortSignal.timeout(120000),
+  });
+  if (!res.ok) throw new Error(`tgSendDocument: ${res.status} ${await res.text()}`);
 }
 
-// ==================== защита от злоупотреблений ====================
+// ==================== Telegram Bot Команды ====================
 
-const hits = new Map(); // ip -> [timestamps]
-function rateLimited(ip) {
-  if (!rateLimitPerHour) return false;
+let lastUpdateId = 0;
+async function pollTelegramUpdates() {
+  if (!TG_API) return;
+  try {
+    const res = await fetch(`${TG_API}/getUpdates?offset=${lastUpdateId + 1}&timeout=20`, {
+      signal: AbortSignal.timeout(35000),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.ok || !Array.isArray(data.result)) return;
+
+    for (const update of data.result) {
+      lastUpdateId = Math.max(lastUpdateId, update.update_id);
+      const msg = update.message;
+      if (!msg || !msg.text) continue;
+      const text = msg.text.trim();
+      const replyChatId = msg.chat.id;
+
+      const sendReply = async (replyText) => {
+        await fetch(`${TG_API}/sendMessage`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ chat_id: replyChatId, text: replyText, parse_mode: "HTML" }),
+        });
+      };
+
+      if (text === "/stats") {
+        const typesCount = {};
+        for (const inc of Object.values(memoryStore.incidents)) {
+          typesCount[inc.type] = (typesCount[inc.type] || 0) + inc.count;
+        }
+        const statsMsg = [
+          `📊 <b>Статистика NanoDecompiler Telemetry</b>`,
+          `• Всего принято репортов: <b>${memoryStore.total_reports}</b>`,
+          `• Уникальных инцидентов: <b>${Object.keys(memoryStore.incidents).length}</b>`,
+          ``,
+          `<b>По категориям:</b>`,
+          ...Object.entries(typesCount).map(([t, c]) => `• ${t}: <b>${c}</b>`),
+        ].join("\n");
+        await sendReply(statsMsg);
+      } else if (text === "/recent") {
+        const recentLines = memoryStore.recent.slice(0, 8).map((r, i) =>
+          `<b>${i + 1}.</b> [${r.type}] <code>${escapeHtml(r.title.slice(0, 40))}</code> (${r.timestamp.slice(11, 16)})`
+        );
+        await sendReply(recentLines.length ? recentLines.join("\n") : "Нет недавних инцидентов.");
+      } else if (text === "/memory") {
+        const topIncidents = Object.values(memoryStore.incidents)
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 5)
+          .map((inc, i) => `<b>#${i + 1} (${inc.count}x):</b> [${inc.type}] <code>${escapeHtml(inc.title.slice(0, 50))}</code>`);
+        await sendReply(topIncidents.length ? `🧠 <b>Топ инцидентов из памяти:</b>\n\n` + topIncidents.join("\n") : "Память пуста.");
+      } else if (text === "/clear") {
+        memoryStore = { total_reports: 0, incidents: {}, recent: [] };
+        saveMemory();
+        await sendReply("🧹 Память жалоб успешно очищена.");
+      }
+    }
+  } catch (e) {
+    // Тихо продолжаем polling
+  }
+}
+
+if (TG_API) {
+  setInterval(pollTelegramUpdates, 5000);
+}
+
+// ==================== HTTP Сервер ====================
+
+const rateLimitHits = new Map();
+function isRateLimited(ip) {
+  if (!config.rateLimitPerHour) return false;
   const now = Date.now();
   const windowStart = now - 60 * 60 * 1000;
-  const list = (hits.get(ip) || []).filter(t => t > windowStart);
-  if (list.length >= rateLimitPerHour) {
-    hits.set(ip, list);
+  const list = (rateLimitHits.get(ip) || []).filter(t => t > windowStart);
+  if (list.length >= config.rateLimitPerHour) {
+    rateLimitHits.set(ip, list);
     return true;
   }
   list.push(now);
-  hits.set(ip, list);
+  rateLimitHits.set(ip, list);
   return false;
 }
-// Чтобы Map не рос бесконечно от разных адресов.
-setInterval(() => {
-  const windowStart = Date.now() - 60 * 60 * 1000;
-  for (const [ip, list] of hits) {
-    const fresh = list.filter(t => t > windowStart);
-    if (fresh.length) hits.set(ip, fresh);
-    else hits.delete(ip);
-  }
-}, 10 * 60 * 1000).unref();
 
-function clientIp(req) {
-  if (trustProxy) {
-    const xff = String(req.headers["x-forwarded-for"] || "").split(",").map(s => s.trim()).filter(Boolean);
-    if (xff.length) return xff[xff.length - 1];
-  }
-  return req.socket.remoteAddress || "unknown";
-}
-
-function secretMatches(provided) {
-  if (!reportSecret) return true;
-  if (typeof provided !== "string") return false;
-  const a = crypto.createHash("sha256").update(provided).digest();
-  const b = crypto.createHash("sha256").update(reportSecret).digest();
-  return crypto.timingSafeEqual(a, b);
-}
-
-function reply(res, status, obj) {
-  if (res.headersSent || res.writableEnded) return;
-  const text = typeof obj === "string" ? obj : JSON.stringify(obj);
-  res.writeHead(status, { "content-type": typeof obj === "string" ? "text/plain; charset=utf-8" : "application/json" }).end(text);
-}
-
-// ==================== HTTP-сервер ====================
-
-const MAX_BODY = 25 * 1024 * 1024;
-let inFlight = 0;
-const MAX_IN_FLIGHT = 8;
-
-async function handleReport(body) {
-  const report = normalizeReport(body);
-  try {
-    await tgSendMessage(buildSummaryHtml(report), true);
-  } catch (e) {
-    // Типичная причина - 400 "can't parse entities": повторяем простым текстом.
-    if (/\b400\b/.test(String(e.message))) await tgSendMessage(buildPlainSummary(report), false);
-    else throw e;
-  }
-  const safeName = report.jar_file_name.replace(/[^\w.\-]+/g, "_").slice(0, 60) || "report";
-  const fallbackPct = report.total_methods > 0 ? (report.fallback_methods / report.total_methods) * 100 : (100 - report.decompiled_pct);
-
-  if (fallbackPct > 5.0 || report.heavy_files.length > 0) {
-    // Упаковываем в ZIP архив, если байткод превышает 5% или есть файлы с байткодом
-    const stats = { ...report, heavy_files: report.heavy_files.map(f => ({ file: f.file, fallback_pct: f.fallback_pct })) };
-    const zipFiles = [
-      { name: "report_summary.txt", data: buildAttachmentText(report) },
-      { name: "stats.json", data: JSON.stringify(stats, null, 2) },
-    ];
-    for (const f of report.heavy_files) {
-      zipFiles.push({ name: `sources/${f.file}`, data: f.content });
-    }
-    const zipBuf = createZip(zipFiles);
-    if (zipBuf.length <= TG_MAX_DOCUMENT_BYTES) {
-      await tgSendDocument(`${safeName}_bytecode_archive.zip`, zipBuf, "application/zip");
-    } else {
-      await tgSendDocument(`${safeName}_fallback_report.txt`, buildAttachmentText(report), "text/plain; charset=utf-8");
-    }
-  } else if (report.fallback_contexts.length > 0) {
-    await tgSendDocument(`${safeName}_fallback_report.txt`, buildAttachmentText(report), "text/plain; charset=utf-8");
-  }
-}
-
-const server = http.createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/health") {
-    reply(res, 200, { ok: true });
-    return;
-  }
-  if (req.method !== "POST" || req.url !== "/report") {
-    reply(res, 404, "not found");
-    return;
-  }
-  if (!secretMatches(req.headers["x-report-secret"])) {
-    reply(res, 401, "unauthorized");
-    return;
-  }
-  if (rateLimited(clientIp(req))) {
-    reply(res, 429, "too many requests");
-    return;
-  }
-  if (inFlight >= MAX_IN_FLIGHT) {
-    reply(res, 503, "busy");
-    return;
-  }
-
-  const declared = Number(req.headers["content-length"]);
-  if (Number.isFinite(declared) && declared > MAX_BODY) {
-    reply(res, 413, "payload too large");
-    req.destroy();
-    return;
-  }
-
-  inFlight++;
-  let released = false;
-  const release = () => {
-    if (!released) {
-      released = true;
-      inFlight--;
-    }
+const server = http.createServer(async (req, res) => {
+  const sendJson = (status, data) => {
+    if (res.headersSent) return;
+    res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(data));
   };
-  res.on("close", release);
+
+  if (req.method === "GET" && req.url === "/health") {
+    return sendJson(200, { ok: true, version: "2.1.0", total_reports: memoryStore.total_reports });
+  }
+
+  if (req.method !== "POST" || req.url !== "/report") {
+    return sendJson(404, { ok: false, error: "not_found" });
+  }
+
+  const clientIp = req.socket.remoteAddress || "unknown";
+  if (isRateLimited(clientIp)) {
+    return sendJson(429, { ok: false, error: "too_many_requests" });
+  }
 
   const chunks = [];
-  let size = 0;
-  let tooBig = false;
+  let bytesCount = 0;
+  const MAX_BYTES = 50 * 1024 * 1024;
+
   req.on("data", chunk => {
-    if (tooBig) return;
-    size += chunk.length; // байты, а не символы
-    if (size > MAX_BODY) {
-      tooBig = true;
-      reply(res, 413, "payload too large");
+    bytesCount += chunk.length;
+    if (bytesCount > MAX_BYTES) {
+      sendJson(413, { ok: false, error: "payload_too_large" });
       req.destroy();
       return;
     }
     chunks.push(chunk);
   });
-  req.on("error", release);
+
   req.on("end", async () => {
-    if (tooBig) return;
     try {
+      const raw = Buffer.concat(chunks).toString("utf8");
       let body;
       try {
-        body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      } catch {
-        reply(res, 400, "invalid json");
-        return;
+        body = JSON.parse(raw);
+      } catch (err) {
+        return sendJson(400, { ok: false, error: "invalid_json" });
       }
-      if (!isObj(body)) {
-        reply(res, 400, "json object expected");
-        return;
+
+      // Валидация схемы и ключа
+      const val = validatePayload(body, req.headers);
+      if (!val.ok) {
+        return sendJson(val.status, { ok: false, error: val.error, details: val.details, extra: val.extra, missing: val.missing });
       }
-      await handleReport(body);
-      reply(res, 200, { ok: true });
+
+      // Запись в память
+      const incident = recordIncident(body);
+
+      // Формирование Telegram сообщения
+      const msgHtml = buildTelegramMessage(body, incident);
+      await tgSendMessage(msgHtml, true);
+
+      // Формирование архива при необходимости (hang, crash, тяжелые логи или байткод)
+      const zipFiles = [];
+
+      // 1. Логи
+      if (body.last_logs && Array.isArray(body.last_logs) && body.last_logs.length > 0) {
+        zipFiles.push({ name: "logs_last_300.txt", data: body.last_logs.join("\n") });
+      }
+
+      // 2. Текущий файл и байткод при зависании / краше
+      if (body.current_file) {
+        const safeFileName = path.basename(body.current_file);
+        if (body.current_bytecode) {
+          zipFiles.push({ name: `${safeFileName}.bytecode.txt`, data: String(body.current_bytecode) });
+        }
+      }
+
+      // 3. Fallback контексты
+      if (body.fallback_contexts && Array.isArray(body.fallback_contexts) && body.fallback_contexts.length > 0) {
+        zipFiles.push({ name: "fallback_contexts.json", data: JSON.stringify(body.fallback_contexts, null, 2) });
+      }
+
+      // 4. Тяжелые файлы декомпиляции
+      if (body.heavy_files && Array.isArray(body.heavy_files)) {
+        for (const hf of body.heavy_files) {
+          if (hf && hf.file && hf.content) {
+            zipFiles.push({ name: `sources/${path.basename(hf.file)}`, data: hf.content });
+          }
+        }
+      }
+
+      // 5. Метаданные инцидента
+      zipFiles.push({ name: "incident_meta.json", data: JSON.stringify({ ...body, incident_record: incident }, null, 2) });
+
+      if (zipFiles.length > 0) {
+        const zip = createZip(zipFiles);
+        const prefix = body.report_type || "report";
+        const filename = `${prefix}_${body.target_plugin_name || "app"}_${Date.now()}.zip`;
+        await tgSendDocument(filename, zip, "application/zip");
+      }
+
+      return sendJson(200, { ok: true, status: "reported", fingerprint: incident.fingerprint, incident_count: incident.count });
     } catch (e) {
-      // Подробности (в т.ч. ответ Telegram) - только в лог, клиенту не отдаём.
-      console.error("Ошибка обработки отчёта:", redact(e && e.message ? e.message : e));
-      reply(res, 502, { ok: false, error: "upstream error" });
-    } finally {
-      release();
+      console.error("Ошибка обработки /report:", e);
+      return sendJson(500, { ok: false, error: "internal_error", details: e.message });
     }
   });
 });
 
-// Таймауты против медленных клиентов (slowloris): раньше не было никаких.
-server.headersTimeout = 15000;
-server.requestTimeout = 60000;
-server.keepAliveTimeout = 5000;
-server.maxHeadersCount = 50;
-
-// Последний рубеж: необработанный отказ промиса логируется, а не роняет сервис
-// (раньше так падал любой запрос с кривым JSON). uncaughtException намеренно НЕ
-// глушим - после него состояние процесса неопределённо, пусть перезапустит supervisor.
-process.on("unhandledRejection", e => console.error("unhandledRejection:", redact(e && e.stack ? e.stack : e)));
-
-server.listen(port, host, () => {
-  console.log(`NanoDecompiler telemetry relay слушает на ${host}:${port} (POST /report)`);
-  if (!reportSecret) console.log("ВНИМАНИЕ: REPORT_SECRET не задан - сервер принимает отчёты от кого угодно.");
+server.listen(config.port, config.host, () => {
+  console.log(`[TelemetryServer] Сервер запущен на ${config.host}:${config.port}`);
+  console.log(`[TelemetryServer] Бот: ${config.botToken ? "Подключен" : "Выключен (нет токена)"}, ChatId: ${config.chatId || "нет"}`);
 });

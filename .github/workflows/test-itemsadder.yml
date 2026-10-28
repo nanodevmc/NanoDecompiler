@@ -20,10 +20,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache
-          key: ${{ runner.os }}-ccache-${{ github.ref_name }}-${{ github.sha }}
+          key: ${{ runner.os }}-ccache-${{ hashFiles('resources/engine_cpp/**') }}
           restore-keys: |
-            ${{ runner.os }}-ccache-${{ github.ref_name }}-
             ${{ runner.os }}-ccache-
+
+      - name: Кэш Rust Cargo (FastScan)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/nanodecompiler-fastscan
 
       - name: Установить зависимости сборки
         run: sudo apt-get update && sudo apt-get install -y build-essential zlib1g-dev ccache ninja-build python3-pip
@@ -31,8 +35,12 @@ jobs:
       - name: Собрать движок C++ (Linux)
         working-directory: resources/engine_cpp
         run: |
+          export CCACHE_DIR=~/.cache/ccache
+          ccache -M 500M
+          ccache -z
           cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
           ninja -C build -j $(nproc)
+          ccache -s
           cp build/NanoDecompilerCLI ../../NanoDecompilerCLI
 
       - name: Собрать Rust модуль (FastScan & Malware Scanner)
