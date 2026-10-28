@@ -1,0 +1,3 @@
+C:/Users/nanodev/.gemini/antigravity/scratch/NanoDecompiler/resources/engine_cpp/build/CMakeFiles/NanoDecompilerCLI.dir
+C:/Users/nanodev/.gemini/antigravity/scratch/NanoDecompiler/resources/engine_cpp/build/CMakeFiles/edit_cache.dir
+C:/Users/nanodev/.gemini/antigravity/scratch/NanoDecompiler/resources/engine_cpp/build/CMakeFiles/rebuild_cache.dir

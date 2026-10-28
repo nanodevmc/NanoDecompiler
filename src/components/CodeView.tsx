@@ -2,7 +2,10 @@ import { Copy, Hash, Search, WrapText, ZoomIn, ZoomOut } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEngine } from "../state/engine";
 import { JavaCode } from "../lib/javaHighlight";
-import { PlainCode, PropertiesCode, JsonCode, XmlCode, YamlCode } from "../lib/textHighlight";
+import { PlainCode, PropertiesCode, JsonCode, XmlCode, YamlCode, MappingCode } from "../lib/textHighlight";
+import { lintSpigotJavaSource, type LintIssue } from "../lib/spigotLinter";
+import { generateAsmListing } from "../lib/asmDisassembler";
+import { Bug, Columns, Cpu } from "lucide-react";
 import { fmtNum, joinOutDir, type SourceFile } from "../lib/model";
 import { t } from "../lib/i18n";
 import { FindBar } from "./FindBar";
@@ -70,17 +73,13 @@ function GotoLineBar({
 // независимо от расширения - .yml подсвечивался java-ключевыми словами.
 // Выбираем токенизатор по расширению реального имени файла.
 function codeComponentFor(name: string) {
-  if (/\.java$/i.test(name)) return JavaCode;
+  if (/\.(java|so|dll|dylib)$/i.test(name)) return JavaCode;
   if (/\.ya?ml$/i.test(name)) return YamlCode;
-  // БАГ-ФИКС v1.7.2: .properties использует "=" как разделитель, а
-  // YAML_KEY_RE в YamlCode понимает только ":" - подсветка ключей никогда
-  // не срабатывала. Отдельный токенизатор PropertiesCode понимает оба.
-  if (/\.properties$/i.test(name)) return PropertiesCode;
-  // НОВОЕ v1.7.3 (реальная жалоба - "нет подсветки для .json, например
-  // fabric.mod.json") - раньше .json не имел своего токенизатора вообще,
-  // шёл через PlainCode (только pretty-print без цвета).
+  if (/\.(properties|ini|cfg|conf|env)$/i.test(name) || /MANIFEST\.MF$/i.test(name) || /\.toml$/i.test(name)) return PropertiesCode;
   if (/\.json$/i.test(name)) return JsonCode;
   if (/\.xml$/i.test(name)) return XmlCode;
+  if (/mapping/i.test(name) || /deobf_mapping/i.test(name) || /brackets_report/i.test(name) || /MAPPING/i.test(name)) return MappingCode;
+  if (/\.(gradle|groovy|kt|kts)$/i.test(name)) return JavaCode;
   return PlainCode;
 }
 
@@ -172,6 +171,8 @@ export const CodeView = memo(function CodeView({
 
   const [findOpen, setFindOpen] = useState(false);
   const [gotoOpen, setGotoOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<"java" | "asm" | "split">("java");
+  const [linterOpen, setLinterOpen] = useState(false);
 
   const jumpToLine = useCallback((lineNum: number) => {
     const el = codeContainerRef.current?.querySelector(`#codeline-${lineNum}`) as HTMLElement | null;
@@ -265,6 +266,41 @@ export const CodeView = memo(function CodeView({
         </span>
         {outDir && (
           <OpenInMenu filePath={joinOutDir(outDir, file.relPath)} projectDir={outDir} />
+        )}
+        {/\.java$/i.test(file.name) && (
+          <div className="flex items-center gap-1 border-r border-line pr-1.5 mr-1">
+            <button
+              className={`icon-btn h-7 px-1.5 text-[10.5px] font-mono ${viewMode === "java" ? "bg-acid/15 text-acid" : ""}`}
+              title="Режим: Только исходный Java"
+              onClick={() => setViewMode("java")}
+            >
+              Java
+            </button>
+            <button
+              className={`icon-btn h-7 px-1.5 text-[10.5px] font-mono ${viewMode === "asm" ? "bg-acid/15 text-acid" : ""}`}
+              title="Режим: Только байткод мнемоники (ASM)"
+              onClick={() => setViewMode("asm")}
+            >
+              <Cpu size={12} className="mr-0.5 inline" /> ASM
+            </button>
+            <button
+              className={`icon-btn h-7 px-1.5 text-[10.5px] font-mono ${viewMode === "split" ? "bg-acid/15 text-acid" : ""}`}
+              title="Режим: Split View (Java + Байткод параллельно)"
+              onClick={() => setViewMode("split")}
+            >
+              <Columns size={12} className="mr-0.5 inline" /> Split
+            </button>
+          </div>
+        )}
+        {/\.java$/i.test(file.name) && (
+          <button
+            className={`icon-btn h-7 px-1.5 text-[10.5px] font-mono mr-1 ${linterOpen ? "bg-warn/20 text-warn" : ""}`}
+            title="Spigot/Paper Linter: поиск утечек памяти и крашей"
+            onClick={() => setLinterOpen(v => !v)}
+          >
+            <Bug size={13} className="mr-0.5 inline" />
+            Linter
+          </button>
         )}
         <button
           className="icon-btn h-7 w-7"
@@ -367,11 +403,52 @@ export const CodeView = memo(function CodeView({
         ) : displayCode === undefined ? (
           <p className="mono px-4 text-[11.5px] text-faint">{lang === "ru" ? "// загрузка…" : "// loading…"}</p>
         ) : (
-          <div className={wrap ? undefined : "min-w-max"}>
-            <CodeComponent code={displayCode} wrap={wrap} disableVsCodeLogs={settings.disableVsCodeLogs} />
+          <div className="flex flex-1 min-h-0 w-full">
+            {(viewMode === "java" || viewMode === "split") && (
+              <div className={`flex-1 overflow-auto ${viewMode === "split" ? "border-r border-line pr-2" : ""} ${wrap ? "" : "min-w-max"}`}>
+                <CodeComponent code={displayCode} wrap={wrap} disableVsCodeLogs={settings.disableVsCodeLogs} />
+              </div>
+            )}
+            {(viewMode === "asm" || viewMode === "split") && (
+              <div className="flex-1 overflow-auto bg-raised/20 pl-2">
+                <div className="text-[10px] font-mono text-faint pb-1 border-b border-line mb-1">
+                  // Байткод мнемоники (ASM Opcode Listing)
+                </div>
+                <CodeComponent code={generateAsmListing(displayCode, file.name.replace(/\.java$/i, ""))} wrap={wrap} disableVsCodeLogs={settings.disableVsCodeLogs} />
+              </div>
+            )}
           </div>
         )}
       </div>
+
+      {/* Выдвижная панель Spigot Linter */}
+      {linterOpen && /\.java$/i.test(file.name) && (
+        <div className="flex-none border-t border-line bg-surface p-3 max-h-56 overflow-y-auto">
+          <div className="flex items-center justify-between pb-1.5 mb-2 border-b border-line">
+            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-warn">
+              <Bug size={14} />
+              Spigot/Paper Linter Анализ
+            </div>
+            <button className="icon-btn h-5 w-5 text-faint" onClick={() => setLinterOpen(false)}>✕</button>
+          </div>
+          {lintSpigotJavaSource(displayCode || "").length === 0 ? (
+            <p className="text-[11px] text-faint mono">// Критических утечек памяти и асинхронных крашей не обнаружено</p>
+          ) : (
+            <div className="space-y-2">
+              {lintSpigotJavaSource(displayCode || "").map((issue, idx) => (
+                <div key={idx} className="rounded-lg border border-warn/30 bg-warn/5 p-2 text-[11px]">
+                  <div className="flex items-center justify-between mb-0.5">
+                    <span className="font-semibold text-ink">{issue.title} (Строка {issue.line})</span>
+                    <span className="chip border-warn/40 text-warn text-[9.5px] uppercase">{issue.severity}</span>
+                  </div>
+                  <p className="text-dim mb-1 leading-snug">{issue.message}</p>
+                  <p className="text-acid mono text-[10px]">💡 {issue.suggestion}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 });

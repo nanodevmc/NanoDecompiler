@@ -68,3 +68,11 @@ telemetry-server/config.json
  
 crates/**/target 
 *.exe
+
+# Temporary test outputs
+test_*_out/
+out_*/
+*.log
+err*.txt
+*.bak
+test_jars/

@@ -97,7 +97,7 @@ declare global {
         autoUpdateCheck: boolean;
         appIcon: "terminal" | "layers";
         setupCompleted: boolean;
-        language: "ru" | "en";
+        language: string; themeId?: string;
         disableVsCodeLogs: boolean;
         telemetryEnabled: boolean;
         telemetryUrl: string;
@@ -108,7 +108,7 @@ declare global {
           autoUpdateCheck: boolean;
           appIcon: "terminal" | "layers";
           setupCompleted: boolean;
-          language: "ru" | "en";
+          language: string; themeId?: string;
           disableVsCodeLogs: boolean;
           telemetryEnabled: boolean;
           telemetryUrl: string;
@@ -118,7 +118,7 @@ declare global {
         autoUpdateCheck: boolean;
         appIcon: "terminal" | "layers";
         setupCompleted: boolean;
-        language: "ru" | "en";
+        language: string; themeId?: string;
         telemetryEnabled: boolean;
         telemetryUrl: string;
         ok: boolean;
@@ -158,6 +158,15 @@ declare global {
       diffClass: (jarA: string, jarB: string, classRelPath: string) => Promise<any>;
       getPluginTree: (jarPath: string) => Promise<any>;
       exportToGitHub: (options: unknown) => Promise<any>;
+      generatePluginWiki: (treeData: any) => Promise<{ ok: boolean; markdown?: string; error?: string }>;
+      exportToIde: (options: { outDir: string; ideType: "vscode" | "idea"; pluginName: string }) => Promise<{ ok: boolean; path?: string; error?: string }>;
+      getCustomThemes: () => Promise<any[]>;
+      saveCustomThemes: (themes: any[]) => Promise<{ ok: boolean; error?: string }>;
+      openThemesFile: () => Promise<void>;
+      getCustomTranslations: () => Promise<Record<string, { name: string; dict: Record<string, string> }>>;
+      saveCustomTranslation: (langKey: string, name: string, dict: Record<string, string>) => Promise<{ ok: boolean; error?: string }>;
+      openTranslationsFolder: () => Promise<void>;
+      createTranslationTemplate: () => Promise<{ ok: boolean; path?: string; error?: string }>;
       otaSyncModule?: (mod: { name: string; sha256?: string; url: string }) => Promise<{ ok: boolean; path?: string; error?: string }>;
       otaGetStatus?: () => Promise<any>;
     };

@@ -620,7 +620,7 @@ std::vector<StmtPtr> Structurer::region(std::optional<int64_t> pc_opt, const std
     std::set<int64_t> seen_here;
     static thread_local int s_region_call_depth = 0;
     s_region_call_depth++;
-    if (s_region_call_depth > 500) {
+    if (s_region_call_depth > 50) {
         s_region_call_depth--;
         if (pc_opt) return {std::make_shared<GotoStmt>("block_" + std::to_string(*pc_opt))};
         return {};
@@ -628,7 +628,7 @@ std::vector<StmtPtr> Structurer::region(std::optional<int64_t> pc_opt, const std
     struct DepthGuard { ~DepthGuard() { s_region_call_depth--; } } dguard;
     while (true) {
         guard_ += 1;
-        if (guard_ > 200000) break;
+        if (guard_ > 1500) break;
         if (!pc_opt.has_value() || !cfg_.blocks.count(*pc_opt) || stop_addrs.count(*pc_opt)) break;
         int64_t pc = *pc_opt;
         if (seen_here.count(pc)) {
@@ -1265,42 +1265,147 @@ static bool is_same_expr(const ExprPtr& a, const ExprPtr& b) {
     if (!a && !b) return true;
     if (!a || !b) return false;
     if (a->kind != b->kind) return false;
-    if (a->kind == ExprKind::Local) {
-        return static_cast<Local*>(a.get())->name == static_cast<Local*>(b.get())->name;
+    switch (a->kind) {
+        case ExprKind::Local:
+            return static_cast<Local*>(a.get())->name == static_cast<Local*>(b.get())->name;
+        case ExprKind::Const:
+            return static_cast<Const*>(a.get())->literal == static_cast<Const*>(b.get())->literal;
+        case ExprKind::This:
+            return true;
+        case ExprKind::FieldAccess: {
+            auto* fa1 = static_cast<FieldAccess*>(a.get());
+            auto* fa2 = static_cast<FieldAccess*>(b.get());
+            return fa1->name == fa2->name && fa1->owner == fa2->owner && is_same_expr(fa1->target, fa2->target);
+        }
+        case ExprKind::ArrayAccess: {
+            auto* aa1 = static_cast<ArrayAccess*>(a.get());
+            auto* aa2 = static_cast<ArrayAccess*>(b.get());
+            return is_same_expr(aa1->array, aa2->array) && is_same_expr(aa1->index, aa2->index);
+        }
+        case ExprKind::Cast: {
+            auto* c1 = static_cast<Cast*>(a.get());
+            auto* c2 = static_cast<Cast*>(b.get());
+            return c1->type == c2->type && is_same_expr(c1->expr, c2->expr);
+        }
+        case ExprKind::UnOp: {
+            auto* u1 = static_cast<UnOp*>(a.get());
+            auto* u2 = static_cast<UnOp*>(b.get());
+            return u1->op == u2->op && u1->postfix == u2->postfix && is_same_expr(u1->expr, u2->expr);
+        }
+        case ExprKind::BinOp: {
+            auto* b1 = static_cast<BinOp*>(a.get());
+            auto* b2 = static_cast<BinOp*>(b.get());
+            return b1->op == b2->op && is_same_expr(b1->left, b2->left) && is_same_expr(b1->right, b2->right);
+        }
+        case ExprKind::MethodCall: {
+            auto* m1 = static_cast<MethodCall*>(a.get());
+            auto* m2 = static_cast<MethodCall*>(b.get());
+            if (m1->name != m2->name || m1->is_ctor != m2->is_ctor || m1->is_super != m2->is_super ||
+                !is_same_expr(m1->target, m2->target) || m1->args.size() != m2->args.size()) return false;
+            for (size_t k = 0; k < m1->args.size(); ++k) {
+                if (!is_same_expr(m1->args[k], m2->args[k])) return false;
+            }
+            return true;
+        }
+        case ExprKind::NewObject: {
+            auto* no1 = static_cast<NewObject*>(a.get());
+            auto* no2 = static_cast<NewObject*>(b.get());
+            if (no1->type != no2->type || no1->args.size() != no2->args.size()) return false;
+            for (size_t k = 0; k < no1->args.size(); ++k) {
+                if (!is_same_expr(no1->args[k], no2->args[k])) return false;
+            }
+            return true;
+        }
+        case ExprKind::NewArray: {
+            auto* na1 = static_cast<NewArray*>(a.get());
+            auto* na2 = static_cast<NewArray*>(b.get());
+            if (na1->elem_type != na2->elem_type || na1->dims.size() != na2->dims.size() ||
+                na1->initializer.has_value() != na2->initializer.has_value()) return false;
+            for (size_t k = 0; k < na1->dims.size(); ++k) {
+                if (!is_same_expr(na1->dims[k], na2->dims[k])) return false;
+            }
+            if (na1->initializer.has_value()) {
+                if (na1->initializer->size() != na2->initializer->size()) return false;
+                for (size_t k = 0; k < na1->initializer->size(); ++k) {
+                    if (!is_same_expr((*na1->initializer)[k], (*na2->initializer)[k])) return false;
+                }
+            }
+            return true;
+        }
+        case ExprKind::InstanceOf: {
+            auto* io1 = static_cast<InstanceOf*>(a.get());
+            auto* io2 = static_cast<InstanceOf*>(b.get());
+            return io1->check_type == io2->check_type && io1->pattern_var == io2->pattern_var &&
+                   is_same_expr(io1->expr, io2->expr);
+        }
+        case ExprKind::Ternary: {
+            auto* t1 = static_cast<Ternary*>(a.get());
+            auto* t2 = static_cast<Ternary*>(b.get());
+            return is_same_expr(t1->cond, t2->cond) && is_same_expr(t1->tval, t2->tval) &&
+                   is_same_expr(t1->fval, t2->fval);
+        }
+        case ExprKind::Assign: {
+            auto* as1 = static_cast<Assign*>(a.get());
+            auto* as2 = static_cast<Assign*>(b.get());
+            return as1->op == as2->op && is_same_expr(as1->target, as2->target) &&
+                   is_same_expr(as1->value, as2->value);
+        }
+        case ExprKind::Raw:
+            return static_cast<Raw*>(a.get())->text == static_cast<Raw*>(b.get())->text;
+        case ExprKind::ClassLiteral:
+            return static_cast<ClassLiteral*>(a.get())->type_name == static_cast<ClassLiteral*>(b.get())->type_name;
+        default:
+            return false;
     }
-    if (a->kind == ExprKind::Const) {
-        return static_cast<Const*>(a.get())->literal == static_cast<Const*>(b.get())->literal;
+}
+
+static bool is_opposite_expr(const ExprPtr& a, const ExprPtr& b) {
+    if (!a || !b) return false;
+    if (a->kind == ExprKind::UnOp && static_cast<UnOp*>(a.get())->op == "!") {
+        return is_same_expr(static_cast<UnOp*>(a.get())->expr, b);
     }
-    if (a->kind == ExprKind::FieldAccess) {
-        auto* fa1 = static_cast<FieldAccess*>(a.get());
-        auto* fa2 = static_cast<FieldAccess*>(b.get());
-        return fa1->name == fa2->name && fa1->owner == fa2->owner && is_same_expr(fa1->target, fa2->target);
+    if (b->kind == ExprKind::UnOp && static_cast<UnOp*>(b.get())->op == "!") {
+        return is_same_expr(static_cast<UnOp*>(b.get())->expr, a);
     }
-    if (a->kind == ExprKind::ArrayAccess) {
-        auto* aa1 = static_cast<ArrayAccess*>(a.get());
-        auto* aa2 = static_cast<ArrayAccess*>(b.get());
-        return is_same_expr(aa1->array, aa2->array) && is_same_expr(aa1->index, aa2->index);
-    }
-    if (a->kind == ExprKind::Cast) {
-        auto* c1 = static_cast<Cast*>(a.get());
-        auto* c2 = static_cast<Cast*>(b.get());
-        return c1->type == c2->type && is_same_expr(c1->expr, c2->expr);
-    }
-    if (a->kind == ExprKind::UnOp) {
-        auto* u1 = static_cast<UnOp*>(a.get());
-        auto* u2 = static_cast<UnOp*>(b.get());
-        return u1->op == u2->op && is_same_expr(u1->expr, u2->expr);
-    }
-    if (a->kind == ExprKind::BinOp) {
-        auto* b1 = static_cast<BinOp*>(a.get());
-        auto* b2 = static_cast<BinOp*>(b.get());
-        return b1->op == b2->op && is_same_expr(b1->left, b2->left) && is_same_expr(b1->right, b2->right);
+    if (a->kind == ExprKind::BinOp && b->kind == ExprKind::BinOp) {
+        auto* ba = static_cast<BinOp*>(a.get());
+        auto* bb = static_cast<BinOp*>(b.get());
+        static const std::map<std::string, std::string> opp = {
+            {"==", "!="}, {"!=", "=="},
+            {"<", ">="}, {">=", "<"},
+            {">", "<="}, {"<=", ">"}
+        };
+        auto it = opp.find(ba->op);
+        if (it != opp.end() && it->second == bb->op) {
+            return is_same_expr(ba->left, bb->left) && is_same_expr(ba->right, bb->right);
+        }
     }
     return false;
 }
 
-ExprPtr simplify_expr(ExprPtr e) {
-    if (!e) return nullptr;
+static ExprPtr invert_condition(const ExprPtr& cond) {
+    if (!cond) return nullptr;
+    if (cond->kind == ExprKind::UnOp) {
+        auto* u = static_cast<UnOp*>(cond.get());
+        if (u->op == "!") return u->expr;
+    }
+    if (cond->kind == ExprKind::BinOp) {
+        auto* b = static_cast<BinOp*>(cond.get());
+        static const std::map<std::string, std::string> opp = {
+            {"==", "!="}, {"!=", "=="},
+            {"<", ">="}, {">=", "<"},
+            {">", "<="}, {"<=", ">"}
+        };
+        auto it = opp.find(b->op);
+        if (it != opp.end()) {
+            return std::make_shared<BinOp>(it->second, b->left, b->right, "boolean");
+        }
+    }
+    return std::make_shared<UnOp>("!", cond);
+}
+
+ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
+    if (!e || depth > 40) return e;
     switch (e->kind) {
         case ExprKind::Const: {
             auto* c = static_cast<Const*>(e.get());
@@ -2500,63 +2605,205 @@ static StmtPtr simplify_stmt(StmtPtr s, int depth) {
     return s;
 }
 
+static bool is_same_stmt(const StmtPtr& a, const StmtPtr& b);
+
+static bool is_same_stmts(const std::vector<StmtPtr>& a, const std::vector<StmtPtr>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t k = 0; k < a.size(); ++k) {
+        if (!is_same_stmt(a[k], b[k])) return false;
+    }
+    return true;
+}
+
 static bool is_same_stmt(const StmtPtr& a, const StmtPtr& b) {
     if (!a && !b) return true;
     if (!a || !b) return false;
     if (a->kind != b->kind) return false;
-    if (a->kind == StmtKind::ReturnStmt) {
-        return is_same_expr(static_cast<ReturnStmt*>(a.get())->expr, static_cast<ReturnStmt*>(b.get())->expr);
+    switch (a->kind) {
+        case StmtKind::ExprStmt:
+            return is_same_expr(static_cast<ExprStmtNode*>(a.get())->expr, static_cast<ExprStmtNode*>(b.get())->expr);
+        case StmtKind::LocalDecl: {
+            auto* l1 = static_cast<LocalDecl*>(a.get());
+            auto* l2 = static_cast<LocalDecl*>(b.get());
+            return l1->type == l2->type && l1->name == l2->name && is_same_expr(l1->init, l2->init);
+        }
+        case StmtKind::ReturnStmt:
+            return is_same_expr(static_cast<ReturnStmt*>(a.get())->expr, static_cast<ReturnStmt*>(b.get())->expr);
+        case StmtKind::ThrowStmt:
+            return is_same_expr(static_cast<ThrowStmt*>(a.get())->expr, static_cast<ThrowStmt*>(b.get())->expr);
+        case StmtKind::BreakStmt:
+            return static_cast<BreakStmt*>(a.get())->label == static_cast<BreakStmt*>(b.get())->label;
+        case StmtKind::ContinueStmt:
+            return static_cast<ContinueStmt*>(a.get())->label == static_cast<ContinueStmt*>(b.get())->label;
+        case StmtKind::GotoStmt:
+            return static_cast<GotoStmt*>(a.get())->label == static_cast<GotoStmt*>(b.get())->label;
+        case StmtKind::LabelStmt:
+            return static_cast<LabelStmt*>(a.get())->label == static_cast<LabelStmt*>(b.get())->label;
+        case StmtKind::RawStmt:
+            return static_cast<RawStmt*>(a.get())->text == static_cast<RawStmt*>(b.get())->text;
+        case StmtKind::BlockStmt:
+            return is_same_stmts(static_cast<BlockStmt*>(a.get())->stmts, static_cast<BlockStmt*>(b.get())->stmts);
+        case StmtKind::IfStmt: {
+            auto* i1 = static_cast<IfStmt*>(a.get());
+            auto* i2 = static_cast<IfStmt*>(b.get());
+            if (!is_same_expr(i1->cond, i2->cond)) return false;
+            if (!is_same_stmts(i1->then_body, i2->then_body)) return false;
+            if (i1->else_body.has_value() != i2->else_body.has_value()) return false;
+            if (i1->else_body.has_value()) {
+                if (!is_same_stmts(*i1->else_body, *i2->else_body)) return false;
+            }
+            return true;
+        }
+        default:
+            return false;
     }
-    return false;
+}
+
+static void unwrap_nested_blocks(std::vector<StmtPtr>& body) {
+    if (body.size() == 1 && body[0] && body[0]->kind == StmtKind::BlockStmt) {
+        auto* b = static_cast<BlockStmt*>(body[0].get());
+        if (!b->label.has_value()) {
+            body = b->stmts;
+        }
+    }
 }
 
 std::vector<StmtPtr> collapse_nested_if_conditions(std::vector<StmtPtr> stmts) {
     bool changed = true;
-    while (changed) {
+    int max_iters = 25;
+    while (changed && --max_iters >= 0) {
         changed = false;
-        for (auto& s : stmts) {
-            if (s && s->kind == StmtKind::IfStmt) {
+        std::vector<StmtPtr> next_stmts;
+        next_stmts.reserve(stmts.size());
+
+        for (size_t s_idx = 0; s_idx < stmts.size(); ++s_idx) {
+            auto s = stmts[s_idx];
+            if (!s) continue;
+
+            if (s->kind == StmtKind::IfStmt) {
                 auto* i = static_cast<IfStmt*>(s.get());
-                // Схлопывание if (c1) { if (c2) { ... } } без else в if (c1 && c2)
+                unwrap_nested_blocks(i->then_body);
+                if (i->else_body.has_value()) unwrap_nested_blocks(*i->else_body);
+
+                // 1. Пустые ветки
+                // if (C) {} else { B } => if (!C) { B }
+                if (i->then_body.empty() && i->else_body.has_value() && !i->else_body->empty()) {
+                    i->cond = invert_condition(i->cond);
+                    i->then_body = *i->else_body;
+                    i->else_body = std::nullopt;
+                    changed = true;
+                }
+                // if (C) { A } else {} => if (C) { A }
+                if (i->else_body.has_value() && i->else_body->empty()) {
+                    i->else_body = std::nullopt;
+                    changed = true;
+                }
+                // if (C) {} без else => удаляем
+                if (i->then_body.empty() && !i->else_body.has_value()) {
+                    changed = true;
+                    continue;
+                }
+
+                // 2. Идентичные ветки
+                // if (C) { A } else { A } => A
+                if (i->else_body.has_value() && is_same_stmts(i->then_body, *i->else_body)) {
+                    for (auto& bs : i->then_body) next_stmts.push_back(bs);
+                    changed = true;
+                    continue;
+                }
+
+                // 3. Схлопывание if (c1) { if (c2) { ... } } без else в if (c1 && c2)
                 if (!i->else_body.has_value() && i->then_body.size() == 1 && i->then_body[0] && i->then_body[0]->kind == StmtKind::IfStmt) {
-                    auto inner_holder = i->then_body[0];
-                    auto* inner = static_cast<IfStmt*>(inner_holder.get());
+                    auto* inner = static_cast<IfStmt*>(i->then_body[0].get());
                     if (!inner->else_body.has_value() && inner->cond) {
                         auto new_then = inner->then_body;
-                        // Если условие идентично, не дублируем (избегаем C && C && C...)
                         if (!is_same_expr(i->cond, inner->cond)) {
                             i->cond = std::make_shared<BinOp>("&&", i->cond, inner->cond, "boolean");
                         }
                         i->then_body = std::move(new_then);
                         changed = true;
-                        break;
                     }
                 }
-                // Схлопывание анти-декомпиляторных ловушек (AegisArmorTrap):
-                // if (C) { if (C) { A } else { B } } else { B } => if (C) { A } else { B }
+
+                // 4. Схлопывание анти-декомпиляторных ловушек в then_body (AegisArmorTrap):
+                // 4a. if (C) { if (C) { A } else { B } } else { B } => if (C) { A } else { B }
                 if (i->else_body.has_value() && i->then_body.size() == 1 && i->then_body[0] && i->then_body[0]->kind == StmtKind::IfStmt) {
-                    auto inner_holder = i->then_body[0];
-                    auto* inner = static_cast<IfStmt*>(inner_holder.get());
-                    if (inner->else_body.has_value() && is_same_expr(i->cond, inner->cond)) {
-                        bool else_matches = false;
-                        if (i->else_body->size() == inner->else_body->size()) {
-                            else_matches = true;
-                            for (size_t b_idx = 0; b_idx < i->else_body->size(); ++b_idx) {
-                                if (!is_same_stmt((*i->else_body)[b_idx], (*inner->else_body)[b_idx])) {
-                                    else_matches = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if (else_matches) {
+                    auto* inner = static_cast<IfStmt*>(i->then_body[0].get());
+                    if (inner->else_body.has_value()) {
+                        if (is_same_expr(i->cond, inner->cond) && is_same_stmts(*i->else_body, *inner->else_body)) {
                             i->then_body = inner->then_body;
                             changed = true;
-                            break;
+                        } else if (is_opposite_expr(i->cond, inner->cond) && is_same_stmts(*i->else_body, inner->then_body)) {
+                            // if (C) { if (!C) { B } else { A } } else { B } => if (C) { A } else { B }
+                            i->then_body = *inner->else_body;
+                            changed = true;
                         }
                     }
                 }
+
+                // 5. Схлопывание анти-декомпиляторных ловушек в else_body (симметричный AegisArmorTrap):
+                // 5a. if (C) { A } else { if (C) { A } else { B } } => if (C) { A } else { B }
+                if (i->else_body.has_value() && i->else_body->size() == 1 && (*i->else_body)[0] && (*i->else_body)[0]->kind == StmtKind::IfStmt) {
+                    auto* inner = static_cast<IfStmt*>((*i->else_body)[0].get());
+                    if (inner->else_body.has_value()) {
+                        if (is_same_expr(i->cond, inner->cond) && is_same_stmts(i->then_body, inner->then_body)) {
+                            i->else_body = inner->else_body;
+                            changed = true;
+                        } else if (is_opposite_expr(i->cond, inner->cond) && is_same_stmts(i->then_body, *inner->else_body)) {
+                            // if (C) { A } else { if (!C) { B } else { A } } => if (C) { A } else { B }
+                            i->else_body = inner->then_body;
+                            changed = true;
+                        } else if (is_opposite_expr(i->cond, inner->cond) && is_same_stmts(i->then_body, inner->then_body)) {
+                            // if (!C) { B } else { if (C) { A } else { B } } => if (C) { A } else { B }
+                            i->cond = inner->cond;
+                            i->then_body = inner->then_body;
+                            i->else_body = inner->else_body;
+                            changed = true;
+                        }
+                    }
+                }
+
+                // Рекурсивный проход в тела
+                i->then_body = collapse_nested_if_conditions(i->then_body);
+                if (i->else_body.has_value()) {
+                    i->else_body = collapse_nested_if_conditions(*i->else_body);
+                }
+                next_stmts.push_back(s);
+            } else if (s->kind == StmtKind::WhileStmt) {
+                auto* w = static_cast<WhileStmt*>(s.get());
+                w->body = collapse_nested_if_conditions(w->body);
+                next_stmts.push_back(s);
+            } else if (s->kind == StmtKind::DoWhileStmt) {
+                auto* dw = static_cast<DoWhileStmt*>(s.get());
+                dw->body = collapse_nested_if_conditions(dw->body);
+                next_stmts.push_back(s);
+            } else if (s->kind == StmtKind::ForStmt) {
+                auto* f = static_cast<ForStmt*>(s.get());
+                f->body = collapse_nested_if_conditions(f->body);
+                next_stmts.push_back(s);
+            } else if (s->kind == StmtKind::BlockStmt) {
+                auto* b = static_cast<BlockStmt*>(s.get());
+                b->stmts = collapse_nested_if_conditions(b->stmts);
+                next_stmts.push_back(s);
+            } else if (s->kind == StmtKind::TryStmt) {
+                auto* t = static_cast<TryStmt*>(s.get());
+                t->body = collapse_nested_if_conditions(t->body);
+                for (auto& c : t->catches) c.body = collapse_nested_if_conditions(c.body);
+                if (t->finally_body.has_value()) t->finally_body = collapse_nested_if_conditions(*t->finally_body);
+                next_stmts.push_back(s);
+            } else if (s->kind == StmtKind::SwitchStmt) {
+                auto* sw = static_cast<SwitchStmt*>(s.get());
+                for (auto& c : sw->cases) c.body = collapse_nested_if_conditions(c.body);
+                next_stmts.push_back(s);
+            } else if (s->kind == StmtKind::SyncStmt) {
+                auto* sy = static_cast<SyncStmt*>(s.get());
+                sy->body = collapse_nested_if_conditions(sy->body);
+                next_stmts.push_back(s);
+            } else {
+                next_stmts.push_back(s);
             }
         }
+        stmts = std::move(next_stmts);
     }
     return stmts;
 }
@@ -3019,6 +3266,20 @@ std::vector<StmtPtr> prune_opaque_branches(std::vector<StmtPtr> stmts) {
                     continue;
                 }
             }
+            if (i->else_body.has_value() && is_same_stmts(i->then_body, *i->else_body)) {
+                for (auto& bs : i->then_body) out.push_back(bs);
+                continue;
+            }
+            if (i->then_body.empty() && i->else_body.has_value() && !i->else_body->empty()) {
+                i->cond = invert_condition(i->cond);
+                i->then_body = *i->else_body;
+                i->else_body = std::nullopt;
+            } else if (i->else_body.has_value() && i->else_body->empty()) {
+                i->else_body = std::nullopt;
+            }
+            if (i->then_body.empty() && !i->else_body.has_value()) {
+                continue;
+            }
             out.push_back(s);
         } else if (s->kind == StmtKind::WhileStmt) {
             auto* w = static_cast<WhileStmt*>(s.get());
@@ -3028,9 +3289,31 @@ std::vector<StmtPtr> prune_opaque_branches(std::vector<StmtPtr> stmts) {
             }
             w->body = prune_opaque_branches(w->body);
             out.push_back(s);
+        } else if (s->kind == StmtKind::DoWhileStmt) {
+            auto* dw = static_cast<DoWhileStmt*>(s.get());
+            dw->body = prune_opaque_branches(dw->body);
+            out.push_back(s);
+        } else if (s->kind == StmtKind::ForStmt) {
+            auto* f = static_cast<ForStmt*>(s.get());
+            f->body = prune_opaque_branches(f->body);
+            out.push_back(s);
         } else if (s->kind == StmtKind::BlockStmt) {
             auto* b = static_cast<BlockStmt*>(s.get());
             b->stmts = prune_opaque_branches(b->stmts);
+            out.push_back(s);
+        } else if (s->kind == StmtKind::TryStmt) {
+            auto* t = static_cast<TryStmt*>(s.get());
+            t->body = prune_opaque_branches(t->body);
+            for (auto& c : t->catches) c.body = prune_opaque_branches(c.body);
+            if (t->finally_body.has_value()) t->finally_body = prune_opaque_branches(*t->finally_body);
+            out.push_back(s);
+        } else if (s->kind == StmtKind::SwitchStmt) {
+            auto* sw = static_cast<SwitchStmt*>(s.get());
+            for (auto& c : sw->cases) c.body = prune_opaque_branches(c.body);
+            out.push_back(s);
+        } else if (s->kind == StmtKind::SyncStmt) {
+            auto* sy = static_cast<SyncStmt*>(s.get());
+            sy->body = prune_opaque_branches(sy->body);
             out.push_back(s);
         } else {
             out.push_back(s);
@@ -3987,43 +4270,45 @@ std::vector<StmtPtr> simplify_stmts(const std::vector<StmtPtr>& stmts) {
     nd::g_crash_pass_name = "simplify_stmt_initial";
     std::vector<StmtPtr> out = simplify_stmt_list(stmts, 0);
     for (int iter = 0; iter < 4; ++iter) {
-        nd::g_crash_pass_name = "fold_boolean_materialization";
+        std::cerr << " [PASS-ITER " << iter << "]" << std::endl;
+        std::cerr << " [PASS: " << "fold_boolean_materialization";
+        std::cerr << " [PASS: " << nd::g_crash_pass_name << "]" << std::endl;
         out = fold_boolean_materialization(out);
-        nd::g_crash_pass_name = "collapse_temp_chains";
+        std::cerr << " [PASS: " << "collapse_temp_chains" << std::endl;
         out = collapse_temp_chains(out);
-        nd::g_crash_pass_name = "hoist_common_branch_tail";
+        std::cerr << " [PASS: " << "hoist_common_branch_tail" << std::endl;
         out = hoist_common_branch_tail(out);
-        nd::g_crash_pass_name = "eliminate_redundant_else_after_return";
+        std::cerr << " [PASS: " << "eliminate_redundant_else_after_return" << std::endl;
         out = eliminate_redundant_else_after_return(out);
-        nd::g_crash_pass_name = "desugar_return_ternaries";
+        std::cerr << " [PASS: " << "desugar_return_ternaries" << std::endl;
         out = desugar_return_ternaries(out);
-        nd::g_crash_pass_name = "propagate_single_use_flags";
+        std::cerr << " [PASS: " << "propagate_single_use_flags" << std::endl;
         out = propagate_single_use_flags(out);
-        nd::g_crash_pass_name = "collapse_nested_if_conditions";
+        std::cerr << " [PASS: " << "collapse_nested_if_conditions" << std::endl;
         out = collapse_nested_if_conditions(out);
-        nd::g_crash_pass_name = "merge_sequential_short_circuit_ifs";
+        std::cerr << " [PASS: " << "merge_sequential_short_circuit_ifs" << std::endl;
         out = merge_sequential_short_circuit_ifs(out);
-        nd::g_crash_pass_name = "group_multi_catch_blocks";
+        std::cerr << " [PASS: " << "group_multi_catch_blocks" << std::endl;
         out = group_multi_catch_blocks(out);
-        nd::g_crash_pass_name = "desugar_enhanced_for_loops";
+        std::cerr << " [PASS: " << "desugar_enhanced_for_loops" << std::endl;
         out = desugar_enhanced_for_loops(out);
-        nd::g_crash_pass_name = "fold_try_with_resources";
+        std::cerr << " [PASS: " << "fold_try_with_resources" << std::endl;
         out = fold_try_with_resources(out);
-        nd::g_crash_pass_name = "fuse_for_initializers";
+        std::cerr << " [PASS: " << "fuse_for_initializers" << std::endl;
         out = fuse_for_initializers(out);
-        nd::g_crash_pass_name = "propagate_local_constant_arrays";
+        std::cerr << " [PASS: " << "propagate_local_constant_arrays" << std::endl;
         out = propagate_local_constant_arrays(out);
-        nd::g_crash_pass_name = "fold_try_catches";
+        std::cerr << " [PASS: " << "fold_try_catches" << std::endl;
         out = fold_try_catches(out);
-        nd::g_crash_pass_name = "prune_opaque_branches";
+        std::cerr << " [PASS: " << "prune_opaque_branches" << std::endl;
         out = prune_opaque_branches(out);
-        nd::g_crash_pass_name = "unflatten_switch_dispatchers";
+        std::cerr << " [PASS: " << "unflatten_switch_dispatchers" << std::endl;
         out = unflatten_switch_dispatchers(out);
-        nd::g_crash_pass_name = "restore_assertions_pass";
+        std::cerr << " [PASS: " << "restore_assertions_pass" << std::endl;
         out = restore_assertions_pass(out);
-        nd::g_crash_pass_name = "prune_empty_blocks_pass";
+        std::cerr << " [PASS: " << "prune_empty_blocks_pass" << std::endl;
         out = prune_empty_blocks_pass(out);
-        nd::g_crash_pass_name = "prune_dead_code_pass";
+        std::cerr << " [PASS: " << "prune_dead_code_pass" << std::endl;
         out = prune_dead_code_pass(out);
     }
     nd::g_crash_pass_name = "clean_synthetic_null_checks";

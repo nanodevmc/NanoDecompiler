@@ -5,6 +5,7 @@ import { Kbd } from "./ui";
 import { cn } from "../utils/cn";
 import { ChangelogView } from "./ChangelogView";
 import { formatVersionsDisplay } from "../lib/model";
+import { ENGINE_MICRO_MODULES, EngineMicroModule } from "../lib/engineOta";
 
 export function UpdateModal() {
   const {
@@ -333,8 +334,10 @@ interface GuiModuleItem {
 
 function OtaModulesSection() {
   const [collapsed, setCollapsed] = useState(false);
+  const [otaTab, setOtaTab] = useState<"engine" | "ui">("engine");
   const [syncingModule, setSyncingModule] = useState<string | null>(null);
   const [syncAllLoading, setSyncAllLoading] = useState(false);
+  const [engineMods, setEngineMods] = useState<EngineMicroModule[]>(ENGINE_MICRO_MODULES);
 
   // Модули интерфейса и движка
   const [modules, setModules] = useState<GuiModuleItem[]>([
@@ -398,6 +401,30 @@ function OtaModulesSection() {
         </button>
       </div>
 
+      {/* Переключатель категорий OTA: Движок (КБ) vs Интерфейс */}
+      <div className="mt-2.5 flex items-center gap-1.5 border-b border-line pb-2">
+        <button
+          className={cn(
+            "rounded px-2.5 py-1 text-[11.5px] font-medium transition-colors flex items-center gap-1.5",
+            otaTab === "engine" ? "bg-acid/10 text-acid font-bold border border-acid/30" : "text-faint hover:text-ink"
+          )}
+          onClick={() => setOtaTab("engine")}
+        >
+          <Terminal size={12} />
+          ⚡ C++ Движок (по Килобайтам)
+        </button>
+        <button
+          className={cn(
+            "rounded px-2.5 py-1 text-[11.5px] font-medium transition-colors flex items-center gap-1.5",
+            otaTab === "ui" ? "bg-acid/10 text-acid font-bold border border-acid/30" : "text-faint hover:text-ink"
+          )}
+          onClick={() => setOtaTab("ui")}
+        >
+          <Sparkles size={12} />
+          Фронтенд и UI модули
+        </button>
+      </div>
+
       {/* Текст статуса модулей */}
       <div className="mt-2 text-[12px] leading-relaxed">
         {allUpToDate ? (
@@ -420,7 +447,56 @@ function OtaModulesSection() {
       {/* Список модулей */}
       {!collapsed && (
         <div className="mt-3 space-y-2">
-          {modules.map(mod => {
+          {otaTab === "engine" ? (
+            engineMods.map(emod => (
+              <div
+                key={emod.id}
+                className={cn(
+                  "flex items-center justify-between rounded-lg p-2.5 transition-all text-[12px]",
+                  emod.hasUpdate ? "border border-amber-500/50 bg-amber-500/5" : "border border-line/60 bg-bg/40 opacity-90"
+                )}
+              >
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-semibold text-ink">{emod.name}</span>
+                    <span className="mono rounded bg-acid/10 border border-acid/30 px-1.5 py-0.2 text-[10px] font-bold text-acid">
+                      {emod.sizeKb} КБ
+                    </span>
+                    {emod.hasUpdate && (
+                      <span className="rounded border border-amber-500 px-1 py-0.2 text-[9.5px] font-bold text-amber-400 bg-amber-500/10">
+                        UPD
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-faint line-clamp-1">{emod.description}</p>
+                </div>
+                <div>
+                  {!emod.hasUpdate ? (
+                    <span className="flex items-center gap-1 text-[11.5px] text-faint">
+                      <Check size={12} className="text-acid" />
+                      Актуален
+                    </span>
+                  ) : (
+                    <button
+                      className="btn btn-acid h-7 px-2.5 text-[11.5px] font-medium shadow-sm gap-1"
+                      onClick={() => {
+                        setSyncingModule(emod.id);
+                        setTimeout(() => {
+                          setEngineMods(prev => prev.map(m => m.id === emod.id ? { ...m, hasUpdate: false } : m));
+                          setSyncingModule(null);
+                        }, 600);
+                      }}
+                      disabled={syncingModule === emod.id}
+                    >
+                      {syncingModule === emod.id ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                      Обновить ({emod.sizeKb} КБ)
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))
+          ) : (
+            modules.map(mod => {
             const isNew = mod.status === "new";
             const isUpd = mod.status === "update_available";
             const isOk = mod.status === "up_to_date";
@@ -484,8 +560,7 @@ function OtaModulesSection() {
                 </div>
               </div>
             );
-          })}
-
+          }))}
           {/* Кнопка "Скачать все разом" если есть не обновлённые модули */}
           {!allUpToDate && (
             <div className="pt-1.5">

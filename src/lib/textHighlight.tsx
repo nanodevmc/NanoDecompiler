@@ -41,16 +41,17 @@ function renderTokens(tokens: Token[], key: number): ReactNode {
   );
 }
 
-// YAML/properties: "# комментарий", "ключ: значение", "ключ=значение",
-// строки в кавычках, числа/true/false/null как отдельные слова.
+// YAML / конфигурации: комментарии (#), ключи (любой язык включая кириллицу, кавычки),
+// значения (числа, булевы, кавычки и неэкранированные строки с цветами Minecraft)
 const YAML_LINE_RE = /^(\s*)((?:#|!)[^\n]*)?$/;
-const YAML_KEY_RE = /^(\s*(?:-\s*)?)([A-Za-z0-9_.\-]+)(\s*:)(.*)$/;
+// Поддерживает кириллические ключи (настройки:, мир:), спецсимволы, кавычки и дефисы списков
+const YAML_KEY_RE = /^(\s*(?:-\s*)?)(["'][^"'\n]+["']|[^\s:#][^:#\n]*?)(\s*:)(.*)$/;
 const YAML_TOKEN_RE = new RegExp(
   [
     String.raw`((?:#|!)[^\n]*)`,
     String.raw`("(?:[^"\\\n]|\\.)*")`,
     String.raw`('(?:[^'\\\n]|\\.)*')`,
-    String.raw`\b(true|false|null|yes|no)\b`,
+    String.raw`\b(true|false|null|yes|no|on|off)\b`,
     String.raw`\b(-?\d[\d.]*)\b`,
   ].join("|"),
   "gi",
@@ -66,34 +67,68 @@ function tokenizeYamlLine(line: string): Token[] {
   const out: Token[] = [];
   let rest = line;
   if (keyMatch) {
-    out.push({ text: keyMatch[1], cls: null }, { text: keyMatch[2], cls: "tok-a" }, { text: keyMatch[3], cls: null });
+    out.push({ text: keyMatch[1], cls: null }, { text: keyMatch[2], cls: "tok-a font-semibold" }, { text: keyMatch[3], cls: "tok-p" });
     rest = keyMatch[4];
   }
+  
+  if (!rest.trim()) return out;
+
   let last = 0;
   YAML_TOKEN_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
+  let matchedAny = false;
   while ((m = YAML_TOKEN_RE.exec(rest)) !== null) {
-    if (m.index > last) out.push({ text: rest.slice(last, m.index), cls: null });
+    matchedAny = true;
+    if (m.index > last) {
+      const between = rest.slice(last, m.index);
+      // Если между токенами есть непустой текст значения (unquoted string) - красим как строку!
+      const cls = between.trim() ? "tok-s" : null;
+      out.push({ text: between, cls });
+    }
     const text = m[0];
     let cls: string | null = "tok-s";
     if (text.startsWith("#") || text.startsWith("!")) {
       cls = "tok-c";
+    } else if (/^(true|false|null|yes|no|on|off)$/i.test(text)) {
+      cls = "tok-k font-semibold";
+    } else if (/^-?\d[\d.]*$/.test(text)) {
+      cls = "tok-m";
     }
     out.push({ text, cls });
     last = m.index + text.length;
   }
-  if (last < rest.length) out.push({ text: rest.slice(last), cls: null });
+  if (last < rest.length) {
+    const trailing = rest.slice(last);
+    // Остаток значения строки красим как tok-s (строка/значение), чтобы ничего не оставалось белым!
+    const cls = trailing.trim() ? "tok-s" : null;
+    out.push({ text: trailing, cls });
+  } else if (!matchedAny && rest.trim()) {
+    // Вся строка - неэкранированное значение/строка
+    out.push({ text: rest, cls: "tok-s" });
+  }
   return out;
 }
 
-// .properties (Java): "# комментарий" (а также "!"), "ключ=значение" и
-// "ключ:значение" (формат Java Properties формально допускает оба
-// разделителя, а также просто пробел). БАГ-ФИКС (v1.7.2): раньше
-// .properties ошибочно роутились на tokenizeYamlLine(), чей YAML_KEY_RE
-// требует ":" - на реальных .properties (разделитель "=") regex не
-// совпадал никогда, ключи не подсвечивались. Отдельный токенизатор ниже
-// проверен .exec() на настоящих строках из EssentialsX messages_en.properties.
-const PROPERTIES_KEY_RE = /^(\s*)([^\s=:#!][^=:]*?)(\s*[=:]\s*|\s+)(.*)$/;
+// Служебные маппинги (MAPPING_RU.TXT, mapping.txt, deobf_mapping.txt):
+// строка: `a.b.c -> com.package.Class` или `field_123 -> myField`
+function tokenizeMappingLine(line: string): Token[] {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("//")) {
+    return [{ text: line, cls: "tok-c" }];
+  }
+  const arrowIdx = line.indexOf("->");
+  if (arrowIdx !== -1) {
+    const left = line.slice(0, arrowIdx);
+    const arrow = "->";
+    const right = line.slice(arrowIdx + 2);
+    return [
+      { text: left, cls: "tok-c font-mono" },
+      { text: arrow, cls: "tok-a font-bold" },
+      { text: right, cls: "tok-k font-semibold font-mono" },
+    ];
+  }
+  return [{ text: line, cls: "tok-ink/80 font-mono" }];
+}
 
 function tokenizePropertiesLine(line: string): Token[] {
   const commentOnly = YAML_LINE_RE.exec(line);
@@ -258,5 +293,10 @@ export const XmlCode = memo(function XmlCode({ code, wrap, disableVsCodeLogs }: 
 // java/yaml - неверная подсветка хуже, чем её отсутствие.
 export const PlainCode = memo(function PlainCode({ code, wrap, disableVsCodeLogs }: { code: string; wrap?: boolean; disableVsCodeLogs?: boolean }) {
   const lines = useMemo(() => code.split("\n").map((l, i) => <span key={i}>{l}</span>), [code]);
+  return renderShell(lines, wrap);
+});
+
+export const MappingCode = memo(function MappingCode({ code, wrap }: { code: string; wrap?: boolean }) {
+  const lines = useMemo(() => code.split("\n").map((l, i) => renderTokens(tokenizeMappingLine(l), i)), [code]);
   return renderShell(lines, wrap);
 });

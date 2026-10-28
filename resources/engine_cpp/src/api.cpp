@@ -48,7 +48,7 @@ namespace {
 // перехватывало консольный вывод process_jar_with_stats() через
 // redirect_stdout - здесь process_jar_with_stats() и так МОЛЧА работает
 // (см. process_jar.hpp, HANDOFF_44), перехватывать нечего.
-std::string decompile_silent_json(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy) {
+std::string decompile_silent_json(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool ignore_nanoguard = false) {
     auto t0 = std::chrono::steady_clock::now();
     try {
         std::string lower_path = jar_path;
@@ -57,7 +57,7 @@ std::string decompile_silent_json(const std::string& jar_path, const std::string
 
         JarProcessResult jr = is_single_class 
             ? process_single_class(jar_path, out_dir, /*print_progress=*/false)
-            : process_jar_with_stats(jar_path, out_dir, skip_legitimacy, /*print_progress=*/false);
+            : process_jar_with_stats(jar_path, out_dir, skip_legitimacy, /*print_progress=*/false, ignore_nanoguard);
         double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         return jar_process_result_to_json(jr, out_dir, elapsed);
     } catch (const std::exception& e) {
@@ -67,8 +67,8 @@ std::string decompile_silent_json(const std::string& jar_path, const std::string
 
 }  // namespace
 
-int run_json_output(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy) {
-    std::string json = decompile_silent_json(jar_path, out_dir, skip_legitimacy);
+int run_json_output(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool ignore_nanoguard) {
+    std::string json = decompile_silent_json(jar_path, out_dir, skip_legitimacy, ignore_nanoguard);
     std::cout << json << "\n";
     // status:"ok" всегда идёт первым полем - дешёвая проверка без полного
     // JSON-парсинга (зеркалит `result.get("status") == "ok"` оригинала).

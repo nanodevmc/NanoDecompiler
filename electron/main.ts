@@ -15,6 +15,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
 import * as https from "https";
+import * as nodeCrypto from "crypto";
 import { promisify } from "util";
 import { registerUpdateHandlers, sweepStaleUpdateDirs } from "./updater";
 import { readJarSummaryNative } from "./jarSummary";
@@ -26,7 +27,8 @@ import {
   archivesRootDir,
   sweepStaleArchiveTemps,
 } from "./archiveExtractor";
-import { getPluginTree, compareJars, diffClassBetweenJars, exportToGitHub } from "./pluginTools";
+import { getPluginTree, compareJars, diffClassBetweenJars, exportToGitHub, generatePluginWiki, exportToIde } from "./pluginTools";
+import { decompileNativeSo } from "./soDecompiler";
 import { resolveWithinRoot as resolveWithinRootGuarded, isSamePathOrInside, isFilesystemRootOrHome, isRiskyToOpen } from "./pathGuards";
 import { OtaManager } from "./otaManager";
 
@@ -124,8 +126,10 @@ type Settings = {
   // Мастер первого запуска (EULA + приветствие) - показывается один раз,
   // пока false.
   setupCompleted: boolean;
-  // НОВОЕ v1.8.4: язык интерфейса.
-  language: "ru" | "en";
+  // НОВОЕ v1.8.4: язык интерфейса (поддерживает встроенные ru/en и кастомные).
+  language: string;
+  // Глобальная тема оформления
+  themeId: string;
   // НОВОЕ v1.8.4 (телеметрия - "сбор ошибок + отправка на сервер"): адрес
   // мини-бэкенда (см. telemetry-server/) и переключатель.
   //
@@ -146,9 +150,10 @@ const DEFAULT_SETTINGS: Settings = {
   // appIcon: "terminal",
   setupCompleted: false,
   language: "ru",
+  themeId: "terminal-noir",
   disableVsCodeLogs: false,
   telemetryEnabled: true,
-  telemetryUrl: "http://195.179.231.14:15015/report", //просьба не ебать сервак :)
+  telemetryUrl: "http://85.190.241.150:15015/report",
 };
 
 function settingsPath(): string {
@@ -185,7 +190,8 @@ function normalizeSettings(parsed: unknown): Settings {
     // appIcon: p.appIcon === "terminal" ? p.appIcon : DEFAULT_SETTINGS.appIcon,
     // v2.0.2: убрана иконка Layers 
     setupCompleted: bool(p.setupCompleted, DEFAULT_SETTINGS.setupCompleted),
-    language: p.language === "ru" || p.language === "en" ? p.language : DEFAULT_SETTINGS.language,
+    language: typeof p.language === "string" && p.language.trim().length > 0 ? p.language : DEFAULT_SETTINGS.language,
+    themeId: typeof p.themeId === "string" && p.themeId.trim().length > 0 ? p.themeId : DEFAULT_SETTINGS.themeId,
     disableVsCodeLogs: bool(p.disableVsCodeLogs, DEFAULT_SETTINGS.disableVsCodeLogs),
     telemetryEnabled: bool(p.telemetryEnabled, DEFAULT_SETTINGS.telemetryEnabled),
     // БАГ-ФИКС v1.9.12 (жалоба "новый IP не работает"): telemetryUrl
@@ -467,6 +473,120 @@ ipcMain.on("applog:push", (_event, kind: string, msg: string) => {
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
+});
+
+function themesPath(): string {
+  return path.join(app.getPath("userData"), "themes.json");
+}
+
+function translationsDir(): string {
+  return path.join(app.getPath("userData"), "translations");
+}
+
+ipcMain.handle("theme:getCustomThemes", async (): Promise<any[]> => {
+  try {
+    const tp = themesPath();
+    if (!fs.existsSync(tp)) return [];
+    const raw = fs.readFileSync(tp, "utf-8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+});
+
+ipcMain.handle("theme:saveCustomThemes", async (_e, themes: any[]): Promise<{ ok: boolean; error?: string }> => {
+  try {
+    const tp = themesPath();
+    fs.mkdirSync(path.dirname(tp), { recursive: true });
+    const tmp = `${tp}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(themes, null, 2), "utf-8");
+    fs.renameSync(tmp, tp);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle("theme:openFile", async (): Promise<void> => {
+  const tp = themesPath();
+  if (!fs.existsSync(tp)) {
+    fs.mkdirSync(path.dirname(tp), { recursive: true });
+    fs.writeFileSync(tp, "[]", "utf-8");
+  }
+  shell.showItemInFolder(tp);
+});
+
+ipcMain.handle("i18n:getTranslations", async (): Promise<Record<string, { name: string; dict: Record<string, string> }>> => {
+  const out: Record<string, { name: string; dict: Record<string, string> }> = {};
+  try {
+    const td = translationsDir();
+    if (!fs.existsSync(td)) return out;
+    const entries = fs.readdirSync(td);
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      try {
+        const full = path.join(td, entry);
+        const raw = fs.readFileSync(full, "utf-8");
+        const parsed = JSON.parse(raw);
+        const langKey = path.basename(entry, ".json");
+        const name = typeof parsed._name === "string" ? parsed._name : langKey;
+        const dict = (typeof parsed.dict === "object" && parsed.dict) ? parsed.dict : parsed;
+        out[langKey] = { name, dict };
+      } catch {}
+    }
+  } catch {}
+  return out;
+});
+
+ipcMain.handle("i18n:saveTranslation", async (_e, langKey: string, name: string, dict: Record<string, string>): Promise<{ ok: boolean; error?: string }> => {
+  try {
+    const td = translationsDir();
+    fs.mkdirSync(td, { recursive: true });
+    const file = path.join(td, `${langKey}.json`);
+    const payload = { _name: name, dict };
+    fs.writeFileSync(file, JSON.stringify(payload, null, 2), "utf-8");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle("i18n:openFolder", async (): Promise<void> => {
+  const td = translationsDir();
+  fs.mkdirSync(td, { recursive: true });
+  shell.openPath(td);
+});
+
+ipcMain.handle("i18n:createTemplate", async (): Promise<{ ok: boolean; path?: string; error?: string }> => {
+  try {
+    const td = translationsDir();
+    fs.mkdirSync(td, { recursive: true });
+    const file = path.join(td, "custom_template.json");
+    if (!fs.existsSync(file)) {
+      const sample = {
+        _name: "Мой перевод (Кастомный)",
+        dict: {
+          "app.settings": "Настройки",
+          "app.ready": "готов",
+          "app.busy": "занят",
+          "app.open_jar": "Открыть .jar",
+          "app.file_search": "Поиск файлов",
+          "settings.tab.general": "Общие",
+          "settings.tab.decompiler": "Декомпилятор",
+          "settings.tab.editor": "Редактор",
+          "settings.tab.about": "О сервисе",
+          "settings.save": "Сохранить",
+          "settings.cancel": "Отмена"
+        }
+      };
+      fs.writeFileSync(file, JSON.stringify(sample, null, 2), "utf-8");
+    }
+    shell.showItemInFolder(file);
+    return { ok: true, path: file };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
 });
 
 ipcMain.handle("settings:get", async (): Promise<Settings> => loadSettings());
@@ -1270,9 +1390,18 @@ ipcMain.handle("telemetry:sendReport", async (_e, report: unknown) => {
     if (Buffer.byteLength(body, "utf8") > MAX_TELEMETRY_BODY_BYTES) {
       return { ok: false, error: "отчёт слишком большой для отправки" };
     }
-    const headers: Record<string, string> = { "content-type": "application/json" };
-    // Общий секрет для СВОЕГО сервера телеметрии (REPORT_SECRET в telemetry-server):
-    // задаётся переменной окружения, а не вшивается в публичный клиент.
+    const rep = report as Record<string, any>;
+    const shortCommit = String(rep.app_commit || "").trim().slice(0, 7);
+    const version = String(rep.app_version || "").trim();
+    const rawAuth = `${shortCommit}+${version}`;
+    const b64Auth = Buffer.from(rawAuth, "utf8").toString("base64");
+    const authToken = nodeCrypto.createHash("sha256").update(b64Auth, "utf8").digest("hex");
+    rep.auth_token = authToken;
+
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "x-report-token": authToken
+    };
     if (process.env.NANO_TELEMETRY_SECRET) headers["x-report-secret"] = process.env.NANO_TELEMETRY_SECRET;
     const res = await fetch(settings.telemetryUrl, {
       method: "POST",
@@ -1553,9 +1682,15 @@ ipcMain.handle("fs:readTextFile", async (_e, root: string, relPath: string) => {
   try {
     const stat = fs.statSync(filePath);
     if (!stat.isFile()) return { ok: false, error: "не файл" };
-    // Блокировка форматов, не предназначенных для текстового просмотрщика (базы данных, sql-дампы, бинарные контейнеры)
+    // Автоматическая декомпиляция нативных библиотек (.so, .dll) в Java JNI/JNA
     const lowerName = path.basename(filePath).toLowerCase();
-    if (/\.(sql|sqlite|sqlite3|db|db3|bin|dat|class|exe|dll|so|dylib)$/i.test(lowerName)) {
+    if (/\.(so|dll|dylib)$/i.test(lowerName)) {
+      const buf = fs.readFileSync(filePath);
+      const decompiledJava = decompileNativeSo(path.basename(filePath), buf);
+      return { ok: true, content: decompiledJava, size: stat.size };
+    }
+    // Блокировка форматов, не предназначенных для текстового просмотрщика (базы данных, sql-дампы, бинарные контейнеры)
+    if (/\.(sql|sqlite|sqlite3|db|db3|bin|dat|class|exe)$/i.test(lowerName)) {
       return { ok: false, error: "это расширение нечитабельного формата для встроенного просмотрщика (воспользуйтесь кнопкой «Открыть в...»)" };
     }
     if (stat.size > MAX_TEXT_FILE_BYTES) {
@@ -1728,6 +1863,19 @@ ipcMain.handle("plugin:diffClass", async (_e, jarA: unknown, jarB: unknown, clas
 ipcMain.handle("github:export", async (_e, options: unknown) => {
   // Подробная валидация (формат токена, имя репозитория, каталог) - в exportToGitHub.
   return await exportToGitHub(options as Parameters<typeof exportToGitHub>[0]);
+});
+
+// НОВОЕ v2.0.2: Wiki Generator & IDE Exporter
+ipcMain.handle("plugin:generateWiki", async (_e, treeData: unknown) => {
+  try {
+    return { ok: true, markdown: generatePluginWiki(treeData) };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle("plugin:exportIde", async (_e, options: unknown) => {
+  return await exportToIde(options as any);
 });
 
 // НОВОЕ v2.0.1: Модульные OTA-обновления

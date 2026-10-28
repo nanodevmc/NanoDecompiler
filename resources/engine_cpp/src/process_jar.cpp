@@ -288,7 +288,7 @@ const char* g_crash_class_name = nullptr;
 const char* g_crash_method_name = nullptr;
 const char* g_crash_pass_name = nullptr;
 
-JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool print_progress) {
+JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool print_progress, bool ignore_nanoguard) {
     JarProcessResult jr;
     jr.out_dir = out_dir;
     ProjectStats& stats = jr.stats;
@@ -418,11 +418,15 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     }
 
     if (nanoguard_detected) {
-        jr.rejected = true;
         jr.is_nanoguard = true;
         jr.nanoguard_detail = nanoguard_stage_info;
-        jr.rejected_reason = "Файл защищен NanoGuard (этап защиты: " + nanoguard_stage_info + "), декомпиляция невозможна!";
-        return jr;
+        if (ignore_nanoguard) {
+            std::cerr << "[!] ПРЕДУПРЕЖДЕНИЕ: обнаружен маркер NanoGuard (" << nanoguard_stage_info << "), продолжаю декомпиляцию (--ignore-nanoguard)..." << std::endl;
+        } else {
+            jr.rejected = true;
+            jr.rejected_reason = "Файл защищен NanoGuard (этап защиты: " + nanoguard_stage_info + "), декомпиляция невозможна!";
+            return jr;
+        }
     }
 
     // --- 1. Сканирование на подозрительное содержимое (см. HANDOFF_31) ---
@@ -472,9 +476,29 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         return jr;
     }
 
+    std::string res_dir = (fs::u8path(out_dir) / "src" / "main" / "resources").u8string();
+    AegisDeobfResult aeg_res;
+    if (is_aegis_archive(all_names)) {
+        print_stage("aegis_deobf");
+        aeg_res = deobfuscate_aegis_files(zr, out_dir, res_dir);
+        if (aeg_res.success) {
+            std::cout << "[AegisDeobf] 100% расшифровано защищённых ресурсов: " << aeg_res.decrypted_files << "\n";
+            if (aeg_res.recovered_classes_count > 0) {
+                std::cout << "[AegisDeobf] Восстановлено классов из .aeg: " << aeg_res.recovered_classes_count << "\n";
+            }
+            if (aeg_res.recovered_vm_methods_count > 0) {
+                std::cout << "[AegisDeobf] Восстановлено методов Aegis VM: " << aeg_res.recovered_vm_methods_count << "\n";
+            }
+        }
+    }
+
     std::vector<std::string> class_names;
-    for (auto& n : all_names)
-        if (n.size() >= 6 && n.substr(n.size() - 6) == ".class" && n.find("module-info") == std::string::npos) class_names.push_back(n);
+    for (auto& n : all_names) {
+        if (n.size() >= 6 && n.substr(n.size() - 6) == ".class" && n.find("module-info") == std::string::npos) {
+            if (is_aegis_trap_class(n)) continue;
+            class_names.push_back(n);
+        }
+    }
     stats.classes_total = static_cast<int>(class_names.size());
 
     // --- 2. Разбор .class файлов ---
@@ -493,6 +517,20 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         } catch (const std::exception& e) {
             parse_errors.push_back({n, e.what()});
         }
+    }
+    // Добавляем восстановленные из .aeg классов
+    for (auto& rec_cls : aeg_res.recovered_classes) {
+        if (is_aegis_trap_class(rec_cls.internal_name)) continue;
+        try {
+            ClassFile cf(rec_cls.class_data);
+            std::string internal = cf.this_class_name;
+            if (is_aegis_trap_class(internal)) continue;
+            if (class_files.find(internal) == class_files.end()) {
+                class_order.push_back(internal);
+                class_files.emplace(internal, std::move(cf));
+                class_names.push_back(internal + ".class");
+            }
+        } catch (...) {}
     }
     stats.classes_parsed = static_cast<int>(class_files.size());
     stats.parse_errors = parse_errors;
@@ -529,6 +567,10 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     std::vector<std::string> library_internal_names;
     std::set<std::string> library_hit_labels;
     for (auto it = class_files.begin(); it != class_files.end();) {
+        if (is_aegis_trap_class(it->first)) {
+            it = class_files.erase(it);
+            continue;
+        }
         bool is_own_plugin_pkg = (!main_class_pkg.empty() && it->first.rfind(main_class_pkg, 0) == 0);
         auto hit = known_library_coords(it->first, relocated_prefixes);
         if (hit.has_value() && !is_own_plugin_pkg) {
@@ -559,16 +601,7 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         (void)coords;
         skip_res_prefixes.push_back(dotted_to_path_prefix(prefix));
     }
-    std::string res_dir = (fs::u8path(out_dir) / "src" / "main" / "resources").u8string();
-
-    // --- 5.1. Автоматическая 100% деобфускация Aegis Forge (.aeg файлов) ---
-    if (is_aegis_archive(all_names)) {
-        print_stage("aegis_deobf");
-        auto aeg_res = deobfuscate_aegis_files(zr, out_dir, res_dir);
-        if (aeg_res.success) {
-            std::cout << "[AegisDeobf] 100% расшифровано защищённых ресурсов: " << aeg_res.decrypted_files << "\n";
-        }
-    }
+    // res_dir уже инициализирован и расшифрован на этапе 1 (AegisDeobf)
 
     // --- 5.2. Контрольная точка и оценка байткода .nano_inf ---
     std::string jar_hash;
@@ -690,11 +723,16 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
             if (is_library_service) continue;
         }
         bool skip = false;
-        for (auto& p : skip_res_prefixes)
-            if (starts_with(n, p)) {
-                skip = true;
-                break;
-            }
+        // Пропускаем внутренние мусорные файлы обфускатора Aegis (.aeg, aegis/*, defaults/*)
+        if (n.size() >= 4 && n.substr(n.size() - 4) == ".aeg") skip = true;
+        else if (n.rfind("aegis/", 0) == 0 || n.rfind("defaults/", 0) == 0 || n.rfind("dev/aegisforge", 0) == 0) skip = true;
+        if (!skip) {
+            for (auto& p : skip_res_prefixes)
+                if (starts_with(n, p)) {
+                    skip = true;
+                    break;
+                }
+        }
         // НОВОЕ: та же логика, что и для .class-файлов выше - ресурс
         // (не-.class файл) внутри пути с сегментом "libs"/"lib" тоже
         // считаем частью зашейдженной библиотеки, даже если конкретное имя
@@ -848,6 +886,7 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         std::cerr << "[Render] " << internal << std::endl;
 
         if (synthetic_switchmap_classes.count(internal)) continue;
+        if (is_aegis_trap_class(internal)) continue;
         g_crash_class_name = internal.c_str();
         std::string text;
         OrderedImports cls_imports;
@@ -888,11 +927,15 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         // содержит этого слова вообще) - нужны ОБА варианта через ИЛИ.
         bool has_fallback_marker = text.find("не удалось безопасно") != std::string::npos;
         bool has_enum_ctor_warning = text.find("ВНИМАНИЕ: конструктор этого enum") != std::string::npos;
+        bool has_irreducible_marker = text.find("нередуцируемый переход") != std::string::npos;
         if (has_fallback_marker || has_enum_ctor_warning) {
             stats.file_notes["src/main/java/" + new_internal + ".java"] =
                 has_fallback_marker
                     ? "Частичный вывод - декомпилятор не смог безопасно восстановить часть кода, см. комментарии в файле"
                     : "Частичный вывод - конструктор enum с аргументами восстановлен не полностью, файл НЕ скомпилируется как есть, см. комментарии в файле";
+        } else if (has_irreducible_marker) {
+            stats.file_notes["src/main/java/" + new_internal + ".java"] =
+                "⚠ Содержит нередуцируемые переходы control-flow (goto)";
         }
         // НОВОЕ v1.8.4 - см. extract_fallback_contexts() выше. Отдельно от
         // file_notes: тут нужен именно байткод-блок (маркер + дизассемблированные

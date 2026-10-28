@@ -135,6 +135,7 @@ std::string stats_body_json(const ProjectStats& stats) {
     o << "],";
     o << "\"total_methods\":" << stats.total_methods << ",";
     o << "\"decompiled_methods\":" << stats.decompiled_methods << ",";
+    o << "\"irreducible_methods\":" << stats.irreducible_methods << ",";
     o << "\"fallback_methods\":" << stats.fallback_methods << ",";
     o << "\"fallback_reasons\":{";
     for (size_t i = 0; i < stats.fallback_reasons.size(); ++i) {

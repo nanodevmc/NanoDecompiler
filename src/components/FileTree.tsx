@@ -464,7 +464,7 @@ export const FileTree = memo(function FileTree({ files, openId, onSelect, totalS
         {resourceTree.map(n => renderResNode(n, 0))}
         {artifactTree.length > 0 && (
           <div className="tree-section-label mono mt-1 border-t border-line px-1.5 pt-2 pb-1 text-[9.5px] tracking-wide text-acid/80 uppercase">
-            От декомпилятора
+            Служебный отдел (от декомпилятора)
           </div>
         )}
         {artifactTree.map(n => renderResNode(n, 0))}

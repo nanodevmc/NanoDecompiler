@@ -30,6 +30,13 @@ function Shell() {
   // браузер иначе открывает перетащенный файл как страницу
   useEffect(() => {
     try {
+      const savedBtnStyle = localStorage.getItem("nano:button_style") || "default";
+      document.documentElement.setAttribute("data-button-style", savedBtnStyle);
+      const savedLayout = localStorage.getItem("nano:layout_preset") || "classic";
+      document.documentElement.setAttribute("data-layout-preset", savedLayout);
+    } catch {}
+
+    try {
       const savedFont = localStorage.getItem("nano:editor_font");
       if (savedFont === "fira") {
         document.documentElement.style.setProperty("--font-mono", '"Fira Code", ui-monospace, "SF Mono", Menlo, monospace');

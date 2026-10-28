@@ -1,5 +1,5 @@
 // i18n.ts — локализация интерфейса NanoDecompiler (ru / en)
-export type Lang = "ru" | "en";
+export type Lang = string;
 
 export const DICT = {
   ru: {
@@ -293,10 +293,36 @@ export const DICT = {
     "sidebar.decompile": "Decompile",
     "sidebar.core_skipped": "Server core skipped",
   },
-} satisfies Record<Lang, Record<string, string>>;
+};
 
 export type TranslationKey = keyof (typeof DICT)["ru"];
 
-export function t(lang: Lang, key: TranslationKey): string {
-  return DICT[lang]?.[key] ?? DICT.ru[key] ?? key;
+export const CUSTOM_LANG_NAMES: Record<string, string> = {};
+
+export function registerCustomTranslation(langKey: string, name: string, dict: Record<string, string>) {
+  CUSTOM_LANG_NAMES[langKey] = name;
+  (DICT as any)[langKey] = { ...((DICT as any)[langKey] || {}), ...dict };
+}
+
+export function getAvailableLanguages(): { key: string; name: string }[] {
+  const base = [
+    { key: "ru", name: "Русский" },
+    { key: "en", name: "English" },
+  ];
+  for (const [k, n] of Object.entries(CUSTOM_LANG_NAMES)) {
+    if (k !== "ru" && k !== "en") {
+      base.push({ key: k, name: n });
+    }
+  }
+  return base;
+}
+
+export function t(lang: Lang, key: TranslationKey | string, params?: Record<string, string | number>): string {
+  let text = (DICT as any)[lang]?.[key] ?? (DICT as any).ru[key] ?? key;
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      text = text.replace(new RegExp(`\\{${k}\\}`, "g"), String(v));
+    }
+  }
+  return text;
 }

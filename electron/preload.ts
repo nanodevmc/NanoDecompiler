@@ -64,7 +64,8 @@ export type AppSettings = {
   // переведена только сама панель настроек (см. src/lib/i18n.ts) -
   // полный перевод всех экранов приложения - отдельная большая задача,
   // это ПЕРВЫЙ ШАГ (инфраструктура + один экран), не полное покрытие.
-  language: "ru" | "en";
+  language: string;
+  themeId?: string;
   // НОВОЕ v1.8.4 - см. комментарий у Settings.telemetryEnabled в main.ts.
   disableVsCodeLogs: boolean;
   telemetryEnabled: boolean;
@@ -203,4 +204,13 @@ contextBridge.exposeInMainWorld("nano", {
   diffClass: (jarA: string, jarB: string, classRelPath: string): Promise<any> => ipcRenderer.invoke("plugin:diffClass", jarA, jarB, classRelPath),
   // НОВОЕ v2.0.0-alpha: GitHub Exporter с PAT токеном
   exportToGitHub: (options: any): Promise<any> => ipcRenderer.invoke("github:export", options),
+  generatePluginWiki: (treeData: any): Promise<{ ok: boolean; markdown?: string; error?: string }> => ipcRenderer.invoke("plugin:generateWiki", treeData),
+  exportToIde: (options: { outDir: string; ideType: "vscode" | "idea"; pluginName: string }): Promise<{ ok: boolean; path?: string; error?: string }> => ipcRenderer.invoke("plugin:exportIde", options),
+  getCustomThemes: (): Promise<any[]> => ipcRenderer.invoke("theme:getCustomThemes"),
+  saveCustomThemes: (themes: any[]): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("theme:saveCustomThemes", themes),
+  openThemesFile: (): Promise<void> => ipcRenderer.invoke("theme:openFile"),
+  getCustomTranslations: (): Promise<Record<string, { name: string; dict: Record<string, string> }>> => ipcRenderer.invoke("i18n:getTranslations"),
+  saveCustomTranslation: (langKey: string, name: string, dict: Record<string, string>): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("i18n:saveTranslation", langKey, name, dict),
+  openTranslationsFolder: (): Promise<void> => ipcRenderer.invoke("i18n:openFolder"),
+  createTranslationTemplate: (): Promise<{ ok: boolean; path?: string; error?: string }> => ipcRenderer.invoke("i18n:createTemplate"),
 });

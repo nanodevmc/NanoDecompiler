@@ -25,7 +25,7 @@ namespace nd {
 // --json-output: разовый вызов, печатает ТОЛЬКО JSON в stdout, возвращает
 // код завершения процесса (0 = success, 1 = error) - вызывающий код
 // (cli_main.cpp) должен сам вызвать std::exit с этим кодом.
-int run_json_output(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy = false);
+int run_json_output(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy = false, bool ignore_nanoguard = false);
 
 // --api-server: блокирующий вызов (как и оригинал - serve_forever()),
 // возвращается только при ошибке биндинга сокета (порт занят и т.п.) - в

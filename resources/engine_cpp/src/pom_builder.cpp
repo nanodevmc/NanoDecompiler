@@ -128,6 +128,7 @@ const std::vector<KnownLibEntry>& known_libs() {
         {"net.objecthunter.exp4j", "net.objecthunter", "exp4j", "парсер математических выражений (exp4j)"},
         {"com.google.re2j", "com.google.re2j", "re2j", "линейные регулярные выражения RE2/J"},
         {"com.esotericsoftware.yamlbeans", "com.esotericsoftware.yamlbeans", "yamlbeans", "парсер YAML в Java-объекты"},
+        {"org.khelekore.prtree", "org.khelekore", "prtree", "PRTree spatial indexing library (shaded in WorldGuard/WorldEdit)"},
         {"javax.annotation", "javax.annotation", "jsr305", ""},
         {"com.mojang.brigadier", "com.mojang", "brigadier", ""},
         {"com.mojang.authlib", "com.mojang", "authlib", ""},

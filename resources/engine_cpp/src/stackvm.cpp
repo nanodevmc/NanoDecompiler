@@ -13,6 +13,7 @@
 
 #include "javatypes.hpp"
 #include "str_decrypt.hpp"
+#include "aegis_deobf.hpp"
 
 namespace nd {
 
@@ -1121,6 +1122,47 @@ ExprPtr handle_invokedynamic(const ClassFile& cf, const Instruction& ins, Method
         if (bsm_owner == "java/lang/runtime/ObjectMethods" && bsm_name == "bootstrap") {
             return build_object_methods(cf, bm.args, call_args, indy_name, ctx);
         }
+        if (bsm_owner.find("Aegis") != std::string::npos || bsm_owner == "dev/aegisforge/vm/AegisIndyBootstrap") {
+            if (!bm.args.empty()) {
+                uint16_t arg_cp = bm.args[0];
+                auto cp_it = cf.pool.find(arg_cp);
+                if (cp_it != cf.pool.end()) {
+                    uint64_t token = 0;
+                    if (cp_it->second.tag == CpTag::Long) {
+                        token = cp_it->second.long_value;
+                    } else if (cp_it->second.tag == CpTag::Integer) {
+                        token = static_cast<uint64_t>(cp_it->second.int_value);
+                    }
+                    if (auto vm_m = get_aegis_vm_method(token)) {
+                        std::vector<ExprPtr> actual_args;
+                        if (call_args.size() == 1 && call_args[0]->kind == ExprKind::NewArray) {
+                            auto arr = std::dynamic_pointer_cast<NewArray>(call_args[0]);
+                            if (arr && arr->initializer.has_value() && !arr->initializer->empty()) {
+                                actual_args = *arr->initializer;
+                            }
+                        } else if (call_args.size() > 1) {
+                            actual_args = call_args;
+                        }
+
+                        // Если аргументы не удалось распаковать из массива вызова, берем параметры текущего метода
+                        if (actual_args.empty()) {
+                            bool is_static_m = (ctx.method.access & 0x0008) != 0;
+                            if (!is_static_m) {
+                                actual_args.push_back(std::make_shared<This>());
+                            }
+                            for (auto& [slot, info] : ctx.locals) {
+                                if (info.is_param && (is_static_m || slot != 0)) {
+                                    actual_args.push_back(std::make_shared<Local>(info.name, info.type));
+                                }
+                            }
+                        }
+
+                        auto expr = translate_aegis_ir_method(*vm_m, actual_args, ctx);
+                        if (expr) return expr;
+                    }
+                }
+            }
+        }
     } catch (...) {
         // Safe fallback for custom or non-standard BSMs
     }
@@ -1822,6 +1864,20 @@ BlockResult simulate_block(const Block& block, const std::vector<ExprPtr>& entry
             for (size_t k = 0; k < args.size(); ++k) args[k] = coerce_arg(args[k], ctx.map_type(params[k]));
 
             if (mn == "invokestatic") {
+                if (owner.find("AegisVM") != std::string::npos || owner.find("aegisforge") != std::string::npos) {
+                    if (name == "toBool" || name == "toInt" || name == "toLong" || name == "toDouble" ||
+                        name == "toShort" || name == "toByte" || name == "toChar" || name == "cast") {
+                        if (!args.empty()) {
+                            push(args[0]);
+                            i += 1;
+                            continue;
+                        }
+                    }
+                    if (name == "checkSecurity" || name == "verifyIntegrity") {
+                        i += 1;
+                        continue;
+                    }
+                }
                 auto& active = str_decrypt_get_active();
                 if (active.has_value() && owner == active->owner && name == active->method && args.size() == 1 &&
                     args[0]->kind == ExprKind::Const) {

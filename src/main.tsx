@@ -3,6 +3,10 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
 import { LogWindow } from "./components/LogWindow";
+import { initTauriBridge } from "./lib/tauriBridge";
+
+// Инициализация нативного моста Tauri v2 (если запущено под Tauri)
+initTauriBridge();
 
 // НОВОЕ v1.9.8 (окно логов разработчика, HANDOFF п.16): второе окно
 // (electron/main.ts::openLogWindow) грузит тот же index.html, но с

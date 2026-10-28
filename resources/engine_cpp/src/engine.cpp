@@ -807,10 +807,11 @@ std::vector<StmtPtr> eliminate_dead_locals(const std::vector<StmtPtr>& stmts) {
             // Если init - чистое выражение (const/literal) без побочных эффектов,
             // и имя НЕ используется нигде дальше - пропускаем объявление
             bool init_pure = !ld->init || ld->init->kind == ExprKind::Const ||
+                             ld->init->kind == ExprKind::NewArray ||
                              (ld->init->kind == ExprKind::UnOp && static_cast<UnOp*>(ld->init.get())->expr->kind == ExprKind::Const);
-            if (init_pure) {
+            if (init_pure || ld->name.rfind("__obj", 0) == 0) {
                 if (!uses_name_in_stmts(stmts, ld->name, i + 1)) {
-                    continue;  // мёртвый код - пропускаем
+                    continue;  // мёртвый код (включая временные бандлы параметров) - пропускаем
                 }
             }
         }
@@ -2573,6 +2574,38 @@ void refresh_crossing_temp_types(const std::vector<StmtPtr>& stmts, MethodCtx& c
 
 }  // namespace
 
+static int count_goto_stmts(const std::vector<StmtPtr>& stmts) {
+    int cnt = 0;
+    for (const auto& s : stmts) {
+        if (!s) continue;
+        if (s->kind == StmtKind::GotoStmt) {
+            cnt++;
+        } else if (s->kind == StmtKind::IfStmt) {
+            auto* i = static_cast<IfStmt*>(s.get());
+            cnt += count_goto_stmts(i->then_body);
+            if (i->else_body) cnt += count_goto_stmts(*i->else_body);
+        } else if (s->kind == StmtKind::WhileStmt) {
+            cnt += count_goto_stmts(static_cast<WhileStmt*>(s.get())->body);
+        } else if (s->kind == StmtKind::DoWhileStmt) {
+            cnt += count_goto_stmts(static_cast<DoWhileStmt*>(s.get())->body);
+        } else if (s->kind == StmtKind::ForStmt) {
+            cnt += count_goto_stmts(static_cast<ForStmt*>(s.get())->body);
+        } else if (s->kind == StmtKind::BlockStmt) {
+            cnt += count_goto_stmts(static_cast<BlockStmt*>(s.get())->stmts);
+        } else if (s->kind == StmtKind::SwitchStmt) {
+            for (auto& c : static_cast<SwitchStmt*>(s.get())->cases) cnt += count_goto_stmts(c.body);
+        } else if (s->kind == StmtKind::TryStmt) {
+            auto* t = static_cast<TryStmt*>(s.get());
+            cnt += count_goto_stmts(t->body);
+            for (auto& c : t->catches) cnt += count_goto_stmts(c.body);
+            if (t->finally_body) cnt += count_goto_stmts(*t->finally_body);
+        } else if (s->kind == StmtKind::SyncStmt) {
+            cnt += count_goto_stmts(static_cast<SyncStmt*>(s.get())->body);
+        }
+    }
+    return cnt;
+}
+
 // ==================== fallback_bytecode_listing / decompile_method_body ====================
 
 std::vector<std::string> fallback_bytecode_listing(const ClassFile& cf, const Method& method, int indent,
@@ -2603,11 +2636,10 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
 
     try {
         g_crash_method_name = method.name.c_str();
-        std::cerr << "         [Decode Method]" << std::endl;
+        std::cerr << " [DBG: method " << method.name << " start]" << std::endl;
         DecodedMethod dm = decode_method(method.code);
         result.n_instructions = static_cast<int>(dm.order.size());
         auto [filtered_exceptions, junk_removed] = filter_junk_catches(method);
-        std::cerr << "         [CFG Build]" << std::endl;
         CFG cfg(dm.instrs, dm.order, filtered_exceptions);
         result.n_blocks = static_cast<int>(cfg.blocks.size());
         result.junk_catches_removed = junk_removed;
@@ -2620,7 +2652,6 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
 
         std::map<int64_t, BlockResult> results;
         std::map<int64_t, size_t> underflow_starts;
-        std::cerr << "         [Simulate Blocks Start]" << std::endl;
         for (auto& [start, blk] : cfg.blocks) {
             std::vector<ExprPtr> seed = seeds.count(start) ? seeds[start] : std::vector<ExprPtr>{};
             std::vector<ExprPtr> flag;
@@ -2635,6 +2666,15 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
         std::function<std::vector<ExprPtr>(int64_t, size_t, std::vector<int64_t>)> get_producer_temps;
 
         get_producer_temps = [&](int64_t pc, size_t needed, std::vector<int64_t> chain) -> std::vector<ExprPtr> {
+            if (chain.size() > 6) {
+                std::vector<ExprPtr> synthetic;
+                for (size_t k = 0; k < needed; ++k) {
+                    std::string t = ctx.new_temp('A');
+                    ctx.crossing_temp_types[t] = "Object";
+                    synthetic.push_back(std::make_shared<Local>(t, "Object"));
+                }
+                return synthetic;
+            }
             auto it = producer_temps.find(pc);
             if (it != producer_temps.end()) {
                 if (it->second.size() == needed) return it->second;
@@ -2674,7 +2714,7 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
         };
 
         ensure_depth = [&](int64_t pc, size_t needed, std::vector<int64_t> chain) -> std::vector<ExprPtr> {
-            if (std::find(chain.begin(), chain.end(), pc) != chain.end()) {
+            if (chain.size() > 6 || std::find(chain.begin(), chain.end(), pc) != chain.end()) {
                 std::vector<ExprPtr> synthetic;
                 for (size_t k = 0; k < needed; ++k) {
                     std::string t = ctx.new_temp('A');
@@ -2764,7 +2804,6 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
             return {};
         };
 
-        std::cerr << "         [Ensure Depth Underflow]" << std::endl;
         for (auto& [cpc, k] : underflow_starts) ensure_depth(cpc, k, {});
 
         for (auto& [start, res] : results) {
@@ -2782,62 +2821,44 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
             }
         }
 
-        std::cerr << "         [Structurer Init]" << std::endl;
+        std::cerr << " [DBG: before structurer.build]" << std::endl;
         Structurer structurer(cfg, results, filtered_exceptions, ctx);
-        std::cerr << "         [Structurer Build Run]" << std::endl;
         auto stmts = structurer.build(*cfg.entry);
-        std::cerr << "         [Structurer Build Done]" << std::endl;
+        std::cerr << " [DBG: after structurer.build]" << std::endl;
         stmts = fold_sync_blocks(stmts);
-        std::cerr << "         [Fold Sync Done]" << std::endl;
         stmts = simplify_stmts(stmts);
-        std::cerr << "         [Simplify Done]" << std::endl;
+        std::cerr << " [DBG: after simplify_stmts]" << std::endl;
         if (method.name == "<init>") stmts = reorder_ctor_call_to_front(stmts);
-        std::cerr << "         [Reorder Ctor Done]" << std::endl;
         stmts = inline_single_use_crossing_temps(stmts, ctx);
-        std::cerr << "         [Fold Array Literals]" << std::endl;
-        std::cerr << "         [Inline Temps Done]" << std::endl;
-        std::cerr << "         [Step: fold_array_literals]" << std::endl;
         stmts = fold_array_literals(stmts);
-        std::cerr << "         [Step: desugar_enum_switches]" << std::endl;
         if (!enum_ordinals.empty() || !switchmap_tables.empty()) {
             stmts = desugar_enum_switches(stmts, enum_ordinals, ctx, switchmap_tables);
         }
         if (!stmts.empty() && stmts.back()->kind == StmtKind::ReturnStmt && !static_cast<ReturnStmt*>(stmts.back().get())->expr) {
             stmts.pop_back();
         }
-        std::cerr << "         [Step: refresh_crossing_temp_types]" << std::endl;
         refresh_crossing_temp_types(stmts, ctx);
 
         std::map<std::string, std::string> declared_seed;
         for (auto& [idx, info] : ctx.locals) {
             if (info.is_param) declared_seed[info.name] = info.type;
         }
-        std::cerr << "         [Step: ensure_local_declarations]" << std::endl;
         stmts = ensure_local_declarations(stmts, declared_seed);
-        std::cerr << "         [Step: fold_if_else_ternary]" << std::endl;
         stmts = fold_if_else_ternary(stmts);
-        std::cerr << "         [Step: hoist_escaping_locals]" << std::endl;
         {
             std::set<std::string> declared_so_far;
             for (int pass = 0; pass < 3; ++pass) {
                 stmts = hoist_escaping_locals(stmts, declared_so_far);
             }
         }
-        std::cerr << "         [Step: collapse_string_switch]" << std::endl;
         stmts = collapse_string_switch(stmts);
-        std::cerr << "         [Step: eliminate_dead_locals]" << std::endl;
         stmts = eliminate_dead_locals(stmts);
-        std::cerr << "         [Step: collapse_sb_in_stmts]" << std::endl;
         collapse_sb_in_stmts(stmts);
-        std::cerr << "         [Step: prune_unused_imports]" << std::endl;
         prune_unused_imports(stmts, ctx);
-        std::cerr << "         [Step: collapse_adjacent_monitors]" << std::endl;
         stmts = collapse_adjacent_monitors(stmts);
-        std::cerr << "         [Step: hoist_all_escaping_to_root]" << std::endl;
         for (int hoist_pass = 0; hoist_pass < 4 && has_escaping_local_decl(stmts); ++hoist_pass) {
             stmts = hoist_all_escaping_to_root(stmts, ctx);
         }
-        std::cerr << "         [Checking Escaping Decl]" << std::endl;
         if (has_escaping_local_decl(stmts)) {
             auto all_escaping = collect_all_escaping_names(stmts);
             if (!all_escaping.empty()) {
@@ -2933,10 +2954,11 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
         // emit_stmts" - сворачиваем `new T[N]; x[0]=..; x[1]=..;` в
         // `new T[]{..}` перед выводом.
         collapse_array_literals(stmts);
-        std::cerr << "         [Emit Stmts Start]" << std::endl;
         auto body_lines = emit_stmts(stmts, indent);
-        std::cerr << "         [Emit Stmts Done]" << std::endl;
         result.ok = true;
+        int gotos = count_goto_stmts(stmts);
+        result.has_irreducible_goto = (gotos > 0);
+        result.irreducible_gotos_count = gotos;
         result.stmts = stmts;
         result.pre_lines = pre_lines;
         result.java_lines = pre_lines;

@@ -40,6 +40,7 @@ struct FallbackContext {
 struct ProjectStats {
     int total_methods = 0;
     int decompiled_methods = 0;
+    int irreducible_methods = 0;
     int fallback_methods = 0;
     // Порядок вставки важен (как Python dict) - пары (reason, count);
     // reason == nullopt - причина не указана (Python None). record_method

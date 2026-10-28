@@ -149,7 +149,7 @@ void print_usage() {
     }
 }
 
-int run_decompile_console(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy) {
+int run_decompile_console(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool ignore_nanoguard = false) {
     std::cout << "\n" << banner_text() << "\n\n";
 
     std::string lower_path = jar_path;
@@ -161,7 +161,7 @@ int run_decompile_console(const std::string& jar_path, const std::string& out_di
         if (is_single_class) {
             jr = nd::process_single_class(jar_path, out_dir);
         } else {
-            jr = nd::process_jar_with_stats(jar_path, out_dir, skip_legitimacy);
+            jr = nd::process_jar_with_stats(jar_path, out_dir, skip_legitimacy, /*print_progress=*/true, ignore_nanoguard);
         }
     } catch (const std::exception& e) {
         std::cerr << "[!] ОШИБКА: " << e.what() << "\n";
@@ -214,7 +214,15 @@ int run_decompile_console(const std::string& jar_path, const std::string& out_di
     }
 
     double pct = jr.stats.pct(jr.stats.decompiled_methods, jr.stats.total_methods);
-    std::printf("[*] Методов декомпилировано: %d/%d (%.1f%%)\n", jr.stats.decompiled_methods, jr.stats.total_methods, pct);
+    std::printf("[*] Методов декомпилировано чисто: %d/%d (%.1f%%)\n", jr.stats.decompiled_methods, jr.stats.total_methods, pct);
+    if (jr.stats.irreducible_methods > 0) {
+        std::printf("[*] Методов с нередуцируемыми goto: %d (%.1f%%)\n", jr.stats.irreducible_methods,
+                    jr.stats.pct(jr.stats.irreducible_methods, jr.stats.total_methods));
+    }
+    if (jr.stats.fallback_methods > 0) {
+        std::printf("[*] Методов в байткод-фоллбэке: %d (%.1f%%)\n", jr.stats.fallback_methods,
+                    jr.stats.pct(jr.stats.fallback_methods, jr.stats.total_methods));
+    }
     std::cout << "[+] Готово. Результат в: " << out_dir << "\n";
     // НОВОЕ v1.8.0 (реальный запрос - "детальнейшая информация о плагине"
     // в мини-карточке в GUI): переиспользуем ТОТ ЖЕ сериализатор, что и
@@ -437,11 +445,14 @@ int run_cli(int argc, char** argv) {
     bool skip_legitimacy = false;
     bool json_output = false;
     bool keep_archive_temp = false;
+    bool ignore_nanoguard = false;
     std::string explicit_out_dir;
     std::vector<std::string> positional_rest;
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "--no-legitimacy-check") {
             skip_legitimacy = true;
+        } else if (args[i] == "--ignore-nanoguard" || args[i] == "--force" || args[i] == "-f") {
+            ignore_nanoguard = true;
         } else if (args[i] == "--json-output" || args[i] == "--api") {
             json_output = true;
         } else if (args[i] == "--keep-temp") {
@@ -542,9 +553,9 @@ int run_cli(int argc, char** argv) {
                 std::cout << "=======================================================\n";
             }
             if (json_output) {
-                ret |= nd::run_json_output(p.full_path, plugin_out_dir, skip_legitimacy);
+                ret |= nd::run_json_output(p.full_path, plugin_out_dir, skip_legitimacy, ignore_nanoguard);
             } else {
-                ret |= run_decompile_console(p.full_path, plugin_out_dir, skip_legitimacy);
+                ret |= run_decompile_console(p.full_path, plugin_out_dir, skip_legitimacy, ignore_nanoguard);
             }
         }
         // Распакованный архив больше не нужен (результат лежит в out_dir). Раньше папка в
@@ -553,9 +564,9 @@ int run_cli(int argc, char** argv) {
         return ret;
     }
 
-    if (json_output) return nd::run_json_output(jar_path, out_dir, skip_legitimacy);
+    if (json_output) return nd::run_json_output(jar_path, out_dir, skip_legitimacy, ignore_nanoguard);
 
-    return run_decompile_console(jar_path, out_dir, skip_legitimacy);
+    return run_decompile_console(jar_path, out_dir, skip_legitimacy, ignore_nanoguard);
 }
 
 // БАГ-ФИКС v1.7.4 (реальный краш на Windows - необработанное исключение

@@ -207,6 +207,7 @@ export interface Settings {
   disableVsCodeLogs: boolean;
   telemetryEnabled: boolean;
   telemetryUrl: string;
+  detailedPluginInfo?: boolean;
   /** единственное поле здесь, которое реально доходит до движка -
    * остальные (threads/renameObfuscated/keepLineNumbers) сейчас чисто
    * визуальные: CLI принимает только [jarPath, outDir, --no-legitimacy-check?].
@@ -224,7 +225,8 @@ export interface Settings {
   setupCompleted: boolean;
   /** НОВОЕ v1.7.6: язык интерфейса - пока переведена только сама панель
    * настроек (см. src/lib/i18n.ts), это первый шаг инфраструктуры. */
-  language: "ru" | "en";
+  language: string;
+  themeId: string;
 }
 
 export type ToastKind = LogLevel;

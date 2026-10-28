@@ -428,13 +428,17 @@ export function Sidebar() {
             if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
           }}
           className={cn(
-            "flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border border-dashed px-4 py-5 text-center transition-colors duration-150",
+            "flex cursor-pointer flex-col items-center gap-1.5 rounded-xl border border-dashed px-4 py-5 text-center transition-all duration-200 relative overflow-hidden group",
             dragActive
-              ? "border-acid/60 bg-acid/8"
-              : "border-line hover:border-line-strong hover:bg-raised/50",
+              ? "border-acid/80 bg-acid/10 shadow-[0_0_24px_rgba(155,242,70,0.2)]"
+              : "border-line hover:border-acid/40 hover:bg-raised/60",
           )}
         >
-          <FileArchive size={18} className={dragActive ? "text-acid" : "text-faint"} />
+          {/* 4. Dropzone Radar Sweep Animation */}
+          <div className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+            <div className="w-full h-full animate-radar-sweep" style={{ background: 'conic-gradient(from 0deg, transparent 0 300deg, rgba(155, 242, 70, 0.12) 360deg)' }} />
+          </div>
+          <FileArchive size={20} className={cn("transition-transform duration-200 group-hover:scale-110 relative z-10", dragActive ? "text-acid animate-bounce" : "text-faint group-hover:text-acid")} />
           <p className="text-[12.5px] font-medium text-ink/90">
             {dragActive
               ? (lang === "ru" ? "Отпускайте — добавлю в очередь" : "Drop to add to queue")

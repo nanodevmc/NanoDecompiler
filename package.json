@@ -90,7 +90,8 @@
       "packElevateHelper": false,
       "allowToChangeInstallationDirectory": true,
       "oneClick": false,
-      "differentialPackage": false
+      "differentialPackage": false,
+      "include": "build/installer.nsh"
     }
   },
   "dependencies": {

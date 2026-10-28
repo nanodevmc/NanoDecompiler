@@ -1,5 +1,5 @@
 import { Bell, ChevronDown, FileArchive, FolderOpen, MessageSquare, Play, Settings2, Square, Wrench, ListTree, GitCompare } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { t } from "../lib/i18n";
 import { fmtBytes } from "../lib/model";
 import { useEngine } from "../state/engine";
@@ -22,6 +22,11 @@ function GithubIcon({ size = 16, className }: { size?: number; className?: strin
 import { PluginTreeModal, type PluginTreeData } from "./PluginTreeModal";
 import { PluginDiffModal } from "./PluginDiffModal";
 import { GitHubExportModal } from "./GitHubExportModal";
+import { SecurityAuditModal } from "./SecurityAuditModal";
+import { PaperExportModal } from "./PaperExportModal";
+import { EventFlowModal } from "./EventFlowModal";
+import { DeobfMappingModal } from "./DeobfMappingModal";
+import { ShieldAlert, FolderUp, GitFork, BookOpen } from "lucide-react";
 
 export function AppHeader() {
   const {
@@ -52,6 +57,27 @@ export function AppHeader() {
   const [treeData, setTreeData] = useState<PluginTreeData | null>(null);
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [githubExportOpen, setGithubExportOpen] = useState(false);
+  const [securityModalOpen, setSecurityModalOpen] = useState(false);
+  const [paperExportOpen, setPaperExportOpen] = useState(false);
+  const [eventFlowOpen, setEventFlowOpen] = useState(false);
+  const [deobfMappingOpen, setDeobfMappingOpen] = useState(false);
+
+  const [toolbarButtons, setToolbarButtons] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem("nano:toolbar_buttons");
+      return saved ? JSON.parse(saved) : { search: true, export: true, diff: true, terminal: true, ota: true, bugreport: true };
+    } catch {
+      return { search: true, export: true, diff: true, terminal: true, ota: true, bugreport: true };
+    }
+  });
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      if (e.detail) setToolbarButtons(e.detail);
+    };
+    window.addEventListener("nano:toolbar-updated", handler);
+    return () => window.removeEventListener("nano:toolbar-updated", handler);
+  }, []);
 
   async function handleOpenTree() {
     let jarPath = selectedJob?.jarPath;
@@ -80,7 +106,7 @@ export function AppHeader() {
   }
 
   return (
-    <div className="flex h-12 flex-none items-center gap-3 z-20 border-b border-line bg-surface px-3">
+    <div className="app-header flex h-12 flex-none items-center gap-3 z-20 border-b border-line bg-surface px-3" data-app-header="true">
       {/* статус движка — ассист-чип с точкой, наследие gui_neon.py */}
       <div
         className={cn(
@@ -165,19 +191,29 @@ export function AppHeader() {
         </button>
       )}
 
-      <button className="btn btn-ghost flex-none" onClick={() => setPaletteOpen(true)} title="Палитра команд">
-        <span className="kbd">Ctrl K</span>
-        <span className="hidden text-faint md:inline">команды</span>
-      </button>
+      {toolbarButtons.search !== false && (
+        <button className="btn btn-ghost flex-none" onClick={() => setPaletteOpen(true)} title="Палитра команд">
+          <span className="kbd">Ctrl K</span>
+          <span className="hidden text-faint md:inline">команды</span>
+        </button>
+      )}
 
       {/* НОВОЕ v2.0.0-alpha: Меню инструментов (Дерево, Diff, GitHub) */}
-      <ToolsMenu
-        onOpenTree={handleOpenTree}
-        onOpenDiff={handleOpenDiff}
-        onOpenGitHub={handleOpenGitHubExport}
-      />
+      {(toolbarButtons.diff !== false || toolbarButtons.export !== false) && (
+        <ToolsMenu
+          onOpenTree={handleOpenTree}
+          onOpenDiff={handleOpenDiff}
+          onOpenGitHub={handleOpenGitHubExport}
+          onOpenSecurity={() => setSecurityModalOpen(true)}
+          onOpenPaperExport={() => setPaperExportOpen(true)}
+          onOpenEventFlow={() => setEventFlowOpen(true)}
+          onOpenDeobfMapping={() => setDeobfMappingOpen(true)}
+        />
+      )}
 
-      <ToolbarMenu lang={lang} hasUpdate={hasUpdate} setUpdateModalOpen={setUpdateModalOpen} setBugReportOpen={setBugReportOpen} />
+      {(toolbarButtons.ota !== false || toolbarButtons.bugreport !== false) && (
+        <ToolbarMenu lang={lang} hasUpdate={hasUpdate} setUpdateModalOpen={setUpdateModalOpen} setBugReportOpen={setBugReportOpen} />
+      )}
 
       <button
         className="icon-btn flex-none"
@@ -185,7 +221,7 @@ export function AppHeader() {
         aria-label={t(lang, "app.settings")}
         title={`${t(lang, "app.settings")} (Ctrl ,)`}
       >
-        <Settings2 size={16} />
+        <Settings2 size={16} className="group-hover:animate-reactor-spin transition-transform" />
       </button>
 
       {/* Модалки инструментов v2.0 */}
@@ -199,6 +235,34 @@ export function AppHeader() {
           defaultRepoName={selectedJob?.fileName ? selectedJob.fileName.replace(/\.jar$/i, "") : "decompiled-plugin"}
         />
       )}
+      {securityModalOpen && (
+        <SecurityAuditModal
+          open={securityModalOpen}
+          onClose={() => setSecurityModalOpen(false)}
+          files={selectedJob?.files || []}
+        />
+      )}
+      {paperExportOpen && (
+        <PaperExportModal
+          open={paperExportOpen}
+          onClose={() => setPaperExportOpen(false)}
+          pluginName={selectedJob?.fileName ? selectedJob.fileName.replace(/\.jar$/i, "") : "MyPlugin"}
+          decompiledFiles={selectedJob?.files || []}
+        />
+      )}
+      {eventFlowOpen && (
+        <EventFlowModal
+          open={eventFlowOpen}
+          onClose={() => setEventFlowOpen(false)}
+          files={selectedJob?.files || []}
+        />
+      )}
+      {deobfMappingOpen && (
+        <DeobfMappingModal
+          open={deobfMappingOpen}
+          onClose={() => setDeobfMappingOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -207,10 +271,18 @@ function ToolsMenu({
   onOpenTree,
   onOpenDiff,
   onOpenGitHub,
+  onOpenSecurity,
+  onOpenPaperExport,
+  onOpenEventFlow,
+  onOpenDeobfMapping,
 }: {
   onOpenTree: () => void;
   onOpenDiff: () => void;
   onOpenGitHub: () => void;
+  onOpenSecurity: () => void;
+  onOpenPaperExport: () => void;
+  onOpenEventFlow: () => void;
+  onOpenDeobfMapping: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -270,6 +342,59 @@ function ToolsMenu({
                 <div className="text-[10px] text-faint">Пуш проекта с PAT токеном</div>
               </div>
             </button>
+            <div className="my-1 border-t border-line/40" />
+            <button
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12px] text-ink/90 hover:bg-raised transition-colors"
+              onClick={() => {
+                setOpen(false);
+                onOpenSecurity();
+              }}
+            >
+              <ShieldAlert size={14} className="text-red-400" />
+              <div>
+                <div className="font-medium text-ink">Сканер безопасности</div>
+                <div className="text-[10px] text-faint">Бэкдоры, ForceOP, RCE</div>
+              </div>
+            </button>
+            <button
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12px] text-ink/90 hover:bg-raised transition-colors"
+              onClick={() => {
+                setOpen(false);
+                onOpenPaperExport();
+              }}
+            >
+              <FolderUp size={14} className="text-emerald-400" />
+              <div>
+                <div className="font-medium text-ink">Экспорт в Paper/Folia</div>
+                <div className="text-[10px] text-faint">Maven / Gradle 1.21.x</div>
+              </div>
+            </button>
+            <button
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12px] text-ink/90 hover:bg-raised transition-colors"
+              onClick={() => {
+                setOpen(false);
+                onOpenEventFlow();
+              }}
+            >
+              <GitFork size={14} className="text-purple-400" />
+              <div>
+                <div className="font-medium text-ink">Visual Event Flow</div>
+                <div className="text-[10px] text-faint">Граф @EventHandler Bukkit</div>
+              </div>
+            </button>
+            <button
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12px] text-ink/90 hover:bg-raised transition-colors"
+              onClick={() => {
+                setOpen(false);
+                onOpenDeobfMapping();
+              }}
+            >
+              <BookOpen size={14} className="text-blue-400" />
+              <div>
+                <div className="font-medium text-ink">Справочник маппингов</div>
+                <div className="text-[10px] text-faint">Mojang / Spigot NMS</div>
+              </div>
+            </button>
           </div>
         </>
       )}
@@ -283,7 +408,7 @@ function ToolbarMenu({
   setUpdateModalOpen,
   setBugReportOpen,
 }: {
-  lang: "ru" | "en";
+  lang: string;
   hasUpdate: boolean;
   setUpdateModalOpen: (v: boolean) => void;
   setBugReportOpen: (v: boolean) => void;

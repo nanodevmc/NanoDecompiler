@@ -363,7 +363,7 @@ function Row({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function LibraryNamesValue({ count, names, lang }: { count: number; names: string[]; lang: "ru" | "en" }) {
+function LibraryNamesValue({ count, names, lang }: { count: number; names: string[]; lang: string }) {
   const [expanded, setExpanded] = useState(false);
   const VISIBLE = 3;
   if (names.length <= VISIBLE) {

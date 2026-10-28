@@ -21,6 +21,8 @@ namespace nd {
 
 struct MethodDecompileResult {
     bool ok = false;
+    bool has_irreducible_goto = false;
+    int irreducible_gotos_count = 0;
     std::vector<std::string> java_lines;
     std::optional<std::string> reason;
     int n_instructions = 0;

@@ -487,6 +487,15 @@ std::pair<std::string, OrderedImports> render_class(
     std::vector<const Field*> enum_const_fields;
     std::vector<const Field*> other_fields;
     for (auto& f : cf.fields) {
+        if (f.name.find("__AEGIS_") != std::string::npos ||
+            f.name.find("__aegis_") != std::string::npos ||
+            f.name.find("AEGIS_ENTROPY_") != std::string::npos ||
+            f.name.find("oOloI_") != std::string::npos ||
+            f.name.find("oloI_") != std::string::npos ||
+            f.name.find("SECURITY_BOUNDARY") != std::string::npos ||
+            f.name.find("ENTROPY_BUFFER") != std::string::npos) {
+            continue; // Полная срезка мусорных ловушек Aegis
+        }
         bool is_enum_const = is_enum && (f.access & 0x4000) && f.descriptor == own_field_type_desc;
         // HANDOFF_50: поля-компоненты record'а (private final поля,
         // backing'ующие каждый компонент) НЕ печатаем отдельно - они уже
@@ -535,8 +544,6 @@ std::pair<std::string, OrderedImports> render_class(
         bool ctor_needs_args = false;
         std::vector<std::string> ctor_param_types;  // без неявных name/ordinal
         for (auto& m : cf.methods) {
-        std::cerr << "   [Method] " << m.name << m.descriptor << std::endl;
-
             if (m.name == "<init>") {
                 auto [ret, params] = ([&]() -> std::pair<std::string, std::vector<std::string>> {
                     try {
@@ -712,8 +719,6 @@ std::pair<std::string, OrderedImports> render_class(
     bool interface_clinit_complex = false;
     if (is_interface && !is_enum) {
         for (auto& m : cf.methods) {
-        std::cerr << "   [Method] " << m.name << m.descriptor << std::endl;
-
             if (m.name == "<clinit>" && m.has_code) {
                 interface_clinit_complex = true;
                 break;
@@ -830,7 +835,11 @@ std::pair<std::string, OrderedImports> render_class(
                         body_lines.push_back("");
                     }
                     stats.total_methods += 1;
-                    stats.decompiled_methods += 1;
+                    if (cres2.has_irreducible_goto) {
+                        stats.irreducible_methods += 1;
+                    } else {
+                        stats.decompiled_methods += 1;
+                    }
                 } else {
                     stats.total_methods += 1;
                     stats.fallback_methods += 1;
@@ -856,8 +865,6 @@ std::pair<std::string, OrderedImports> render_class(
         std::string values_desc = "()[" + own_field_type_desc;
         std::string value_of_desc = "(Ljava/lang/String;)" + own_field_type_desc;
         for (auto& m : cf.methods) {
-        std::cerr << "   [Method] " << m.name << m.descriptor << std::endl;
-
             if (m.name == "values" && m.descriptor == values_desc) skip_methods.insert(&m);
             else if (m.name == "valueOf" && m.descriptor == value_of_desc) skip_methods.insert(&m);
             else if (m.name == "$values" && (m.access & 0x1000)) skip_methods.insert(&m);
@@ -865,8 +872,6 @@ std::pair<std::string, OrderedImports> render_class(
     }
 
     for (auto& m : cf.methods) {
-        std::cerr << "   [Method] " << m.name << m.descriptor << std::endl;
-
         if (skip_methods.count(&m)) continue;
         // Пропускаем синтетические методы реализации lambda (lambda$...),
         // switch-таблицы ($SWITCH_TABLE$...) и мосты доступа (access$...),
@@ -938,10 +943,9 @@ std::pair<std::string, OrderedImports> render_class(
 
         std::optional<MethodDecompileResult> result;
         if (m.has_code) {
+            std::cerr << " [Method] " << internal << "::" << m.name << std::endl;
             stats.total_methods += 1;
-            std::cerr << "      [DecompileMethodBody Start]" << std::endl;
             result = decompile_method_body(cf, m, renamer, known_internal_by_dotted, internal, 2, enum_ordinals, switchmap_tables, all_classes);
-            std::cerr << "      [DecompileMethodBody Done]" << std::endl;
             stats.junk_catches_removed += result->junk_catches_removed;
         }
 
@@ -1089,7 +1093,11 @@ std::pair<std::string, OrderedImports> render_class(
 
         if (result.has_value()) {
             if (result->ok) {
-                stats.decompiled_methods += 1;
+                if (result->has_irreducible_goto) {
+                    stats.irreducible_methods += 1;
+                } else {
+                    stats.decompiled_methods += 1;
+                }
                 std::vector<StmtPtr> out_stmts = result->stmts;
                 bool implicit_super_stripped = false;
                 if (is_enum_ctor && !out_stmts.empty()) {

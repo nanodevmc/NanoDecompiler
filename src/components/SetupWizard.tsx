@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, ChevronRight, RefreshCw, Sparkles } from "lucide-react";
+import { Check, ChevronRight, RefreshCw, Sparkles, Shield, Compass, Sliders, CheckCircle2 } from "lucide-react";
 import { useEngine } from "../state/engine";
 import { t } from "../lib/i18n";
 import { cn } from "../utils/cn";
@@ -95,40 +95,39 @@ and agree to be bound by the terms of this Agreement.
 
 function WelcomeArt() {
   return (
-    <svg width="220" height="160" viewBox="0 0 220 160" fill="none" aria-hidden>
-      <rect x="20" y="30" width="180" height="110" rx="10" fill="#12160f" stroke="#2a3324" strokeWidth="1.5" />
-      <rect x="20" y="30" width="180" height="22" rx="10" fill="#181f14" />
-      <circle cx="34" cy="41" r="3" fill="#3a4a30" />
-      <circle cx="44" cy="41" r="3" fill="#3a4a30" />
-      <circle cx="54" cy="41" r="3" fill="#3a4a30" />
-      <path d="M40 78 60 96 40 114" stroke="#9bf246" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-      <rect x="76" y="108" width="60" height="6" rx="3" fill="#eaf0ea" opacity=".85" />
-      <rect x="76" y="90" width="88" height="6" rx="3" fill="#3a4a30" />
-      <rect x="76" y="72" width="72" height="6" rx="3" fill="#3a4a30" />
-      <path d="M150 44 165 44 165 59" stroke="#9bf246" strokeWidth="3" strokeLinecap="round" opacity=".6" />
+    <svg width="240" height="150" viewBox="0 0 240 150" fill="none" aria-hidden className="drop-shadow-[0_8px_24px_rgba(155,242,70,0.15)]">
+      <rect x="20" y="20" width="200" height="120" rx="14" fill="#0d130e" stroke="#253520" strokeWidth="1.5" />
+      <rect x="20" y="20" width="200" height="26" rx="14" fill="#141c15" />
+      <circle cx="36" cy="33" r="3.5" fill="#4d663f" />
+      <circle cx="48" cy="33" r="3.5" fill="#4d663f" />
+      <circle cx="60" cy="33" r="3.5" fill="#4d663f" />
+      <path d="M44 72 66 92 44 112" stroke="#9bf246" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+      <rect x="84" y="104" width="70" height="7" rx="3.5" fill="#eaf0ea" opacity=".9" />
+      <rect x="84" y="86" width="100" height="7" rx="3.5" fill="#3a4d33" />
+      <rect x="84" y="68" width="80" height="7" rx="3.5" fill="#3a4d33" />
+      <path d="M168 34 184 34 184 50" stroke="#9bf246" strokeWidth="3" strokeLinecap="round" opacity=".7" />
     </svg>
   );
 }
 
 function ShieldArt() {
   return (
-    <svg width="120" height="120" viewBox="0 0 120 120" fill="none" aria-hidden>
+    <svg width="110" height="110" viewBox="0 0 120 120" fill="none" aria-hidden className="drop-shadow-[0_8px_24px_rgba(155,242,70,0.2)]">
       <path
         d="M60 12 L100 26 V56 C100 82 84 100 60 108 C36 100 20 82 20 56 V26 Z"
-        fill="#12160f"
+        fill="#0d140e"
         stroke="#9bf246"
-        strokeWidth="2"
-        opacity=".9"
+        strokeWidth="2.5"
       />
-      <path d="M42 58 L54 70 L80 44" stroke="#9bf246" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M42 58 L54 70 L80 44" stroke="#9bf246" strokeWidth="5.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
 
 function DoneArt() {
   return (
-    <svg width="140" height="120" viewBox="0 0 140 120" fill="none" aria-hidden>
-      <circle cx="70" cy="60" r="46" fill="#12160f" stroke="#9bf246" strokeWidth="2" />
+    <svg width="120" height="120" viewBox="0 0 140 120" fill="none" aria-hidden className="drop-shadow-[0_8px_28px_rgba(155,242,70,0.25)]">
+      <circle cx="70" cy="60" r="48" fill="#0d140e" stroke="#9bf246" strokeWidth="2.5" />
       <path d="M48 62 L64 78 L94 42" stroke="#9bf246" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
@@ -140,144 +139,327 @@ export function SetupWizard() {
   const { completeSetup, settings, saveSettings, javaEnv, checkEnv, envIssue } = useEngine();
   const lang = settings.language;
   const [step, setStep] = useState<Step>("welcome");
+  const [isSliding, setIsSliding] = useState(false);
+  const [targetStep, setTargetStep] = useState<Step | null>(null);
   const [accepted, setAccepted] = useState(false);
   const [autoUpdateCheck, setAutoUpdateCheck] = useState(settings.autoUpdateCheck);
   const [legitimacyCheck, setLegitimacyCheck] = useState(settings.legitimacyCheck);
+
+  const stepsList: { id: Step; label: string; icon: any }[] = [
+    { id: "welcome", label: lang === "ru" ? "Введение" : "Welcome", icon: Compass },
+    { id: "eula", label: lang === "ru" ? "Лицензия" : "License", icon: Shield },
+    { id: "options", label: lang === "ru" ? "Параметры" : "Options", icon: Sliders },
+    { id: "done", label: lang === "ru" ? "Готово" : "Finish", icon: CheckCircle2 },
+  ];
+
+  const currentStepIdx = stepsList.findIndex((s) => s.id === step);
+
+  function goToStep(next: Step) {
+    if (isSliding || next === step) return;
+    setIsSliding(true);
+    setTargetStep(next);
+
+    // Запускаем плавный сдвиг влево
+    setTimeout(() => {
+      setStep(next);
+      setIsSliding(false);
+      setTargetStep(null);
+    }, 180);
+  }
 
   const finish = () => {
     saveSettings({ ...settings, autoUpdateCheck, legitimacyCheck });
     completeSetup();
   };
 
+  // Адаптивная ширина под контент каждого шага с комфортным запасом
+  const maxWidthClass =
+    step === "eula"
+      ? "max-w-[720px]"
+      : step === "options"
+      ? "max-w-[620px]"
+      : "max-w-[520px]";
+
   return (
-    <div className="fixed inset-0 z-[100] grid place-items-center bg-black/80 p-4">
-      <div className="animate-rise flex w-[400px] flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl shadow-black/50">
-        <div className="flex flex-col items-center gap-4 px-6 py-7 text-center">
-          {step === "welcome" && (
-            <>
-              <WelcomeArt />
-              <div>
-                <p className="text-[16px] font-semibold text-ink">{t(lang, "setup.welcome")}</p>
-                <p className="mt-2 text-[12.5px] leading-relaxed text-dim">
-                  {lang === "ru"
-                    ? "Декомпилятор и деобфускатор для Bukkit/Spigot/Paper/BungeeCord/Velocity-плагинов. Разработка — NanoDev."
-                    : "Decompiler and deobfuscator for Bukkit/Spigot/Paper/BungeeCord/Velocity plugins. By NanoDev."}
-                </p>
-              </div>
-              <button className="btn btn-acid h-9 w-full text-[12.5px]" onClick={() => setStep("eula")}>
-                {lang === "ru" ? "Далее" : "Next"}
-                <ChevronRight size={14} />
-              </button>
-            </>
-          )}
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 overflow-hidden select-none">
+      {/* 1. Глубокий анимированный фон с сеткой и неоновыми орбитами */}
+      <div className="absolute inset-0 bg-[#050806]/90 backdrop-blur-md" />
+      <div className="absolute inset-0 cyber-grid-pattern opacity-40 pointer-events-none" />
 
-          {step === "eula" && (
-            <>
-              <ShieldArt />
-              <p className="text-[14.5px] font-semibold text-ink">
-                {lang === "ru" ? "Лицензионное соглашение" : "License Agreement"}
-              </p>
-              <div className="mono h-[170px] w-full overflow-y-auto rounded-lg border border-line bg-bg p-3 text-left text-[10.5px] leading-relaxed whitespace-pre-wrap text-dim">
-                {EULA_TEXT}
-              </div>
-              <label className="flex w-full cursor-pointer items-center gap-2 text-left text-[12px] text-ink/90">
-                <input
-                  type="checkbox"
-                  checked={accepted}
-                  onChange={e => setAccepted(e.target.checked)}
-                  className="size-4 accent-acid"
-                />
-                {lang === "ru"
-                  ? "Я прочитал(а) и принимаю условия лицензионного соглашения"
-                  : "I have read and accept the license agreement terms"}
-              </label>
-              <button
-                className={"btn btn-acid h-9 w-full text-[12.5px] " + (!accepted ? "pointer-events-none opacity-40" : "")}
-                onClick={() => setStep("options")}
-                disabled={!accepted}
-              >
-                {t(lang, "setup.accept")}
-                <ChevronRight size={14} />
-              </button>
-            </>
-          )}
+      {/* Неоновые светящиеся туманности */}
+      <div className="absolute top-1/4 left-1/3 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] rounded-full bg-[#9bf246]/10 blur-[130px] pointer-events-none animate-cyber-glow" />
+      <div className="absolute bottom-1/4 right-1/3 translate-x-1/2 translate-y-1/2 w-[480px] h-[480px] rounded-full bg-[#38bdf8]/10 blur-[140px] pointer-events-none animate-cyber-glow-alt" />
 
-          {step === "options" && (
-            <>
-              <Sparkles size={44} className="text-acid" />
-              <p className="text-[14.5px] font-semibold text-ink">
-                {lang === "ru" ? "Пара настроек напоследок" : "A few final settings"}
-              </p>
-              <div className="w-full space-y-2 text-left">
-                <div className="flex items-center justify-between rounded-lg border border-line bg-bg px-3.5 py-2">
-                  <div className="text-left text-[11.5px] truncate mr-2">
-                    <span className="text-ink/90 block font-mono truncate">
-                      {javaEnv ? `Java ${javaEnv.text}` : (envIssue ? (lang === "ru" ? "Java не найдена" : "Java not found") : (lang === "ru" ? "Проверка окружения…" : "Checking environment…"))}
-                    </span>
-                    <span className={cn("text-[10px]", javaEnv ? "text-acid" : "text-err")}>
-                      {javaEnv ? (lang === "ru" ? "Среда выполнения готова" : "Runtime ready") : (lang === "ru" ? "Требуется для декомпиляции" : "Required for decompilation")}
-                    </span>
-                  </div>
+      {/* 2. Карточка мастера с динамической адаптацией ширины */}
+      <div
+        className={cn(
+          "relative z-10 w-full overflow-hidden rounded-3xl border border-line-strong/80 bg-surface/95 backdrop-blur-xl shadow-[0_20px_70px_rgba(0,0,0,0.8)] shadow-black transition-all duration-300 ease-out flex flex-col",
+          maxWidthClass
+        )}
+      >
+        {/* Шапка с прогресс-индикатором */}
+        <div className="px-8 pt-6 pb-4 border-b border-line/40 flex items-center justify-between bg-raised/40">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs font-bold tracking-wider text-acid uppercase">NanoDecompiler</span>
+            <span className="text-[11px] text-faint">| v2.0.2</span>
+          </div>
+
+          {/* Индикатор этапов */}
+          <div className="flex items-center gap-2">
+            {stepsList.map((s, idx) => {
+              const Icon = s.icon;
+              const isActive = s.id === step;
+              const isPassed = idx < currentStepIdx;
+
+              return (
+                <div
+                  key={s.id}
+                  className={cn(
+                    "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all duration-200",
+                    isActive
+                      ? "bg-acid/15 text-acid border border-acid/30 shadow-[0_0_12px_rgba(155,242,70,0.2)]"
+                      : isPassed
+                      ? "text-ink/70 bg-surface/80"
+                      : "text-faint/50"
+                  )}
+                >
+                  <Icon size={12} className={isActive ? "text-acid" : isPassed ? "text-acid/70" : "text-faint/50"} />
+                  <span className="hidden sm:inline">{s.label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 3. Контейнер контента со сдвигом влево (slide transition) */}
+        <div className="relative p-8 overflow-hidden min-h-[380px] flex flex-col justify-center">
+          <div
+            className={cn(
+              "flex flex-col items-center gap-5 text-center transition-all duration-200",
+              isSliding ? "animate-wizard-slide-out" : "animate-wizard-slide-in"
+            )}
+          >
+            {step === "welcome" && (
+              <>
+                <WelcomeArt />
+                <div className="max-w-md space-y-2">
+                  <p className="text-xl font-bold text-ink tracking-tight">{t(lang, "setup.welcome")}</p>
+                  <p className="text-sm leading-relaxed text-dim">
+                    {lang === "ru"
+                      ? "Современный декомпилятор и деобфускатор для Bukkit/Spigot/Paper/BungeeCord/Velocity-плагинов с поддержкой нативных движков C++20 и Rust FastScan. Разработка — NanoDev."
+                      : "Next-generation decompiler and deobfuscator for Bukkit/Spigot/Paper/BungeeCord/Velocity plugins powered by C++20 and Rust FastScan. By NanoDev."}
+                  </p>
+                </div>
+                <div className="w-full pt-4 max-w-sm">
                   <button
-                    type="button"
-                    className="btn btn-ghost h-7 px-2 text-[11px] flex-none"
-                    onClick={checkEnv}
-                    title={lang === "ru" ? "Проверить снова" : "Check again"}
+                    className="btn btn-acid h-11 w-full text-sm font-semibold shadow-[0_0_24px_rgba(155,242,70,0.25)] hover:shadow-[0_0_32px_rgba(155,242,70,0.4)] transition-all flex items-center justify-center gap-2"
+                    onClick={() => goToStep("eula")}
                   >
-                    <RefreshCw size={12} />
+                    <span>{lang === "ru" ? "Приступить к настройке" : "Get Started"}</span>
+                    <ChevronRight size={16} />
                   </button>
                 </div>
-                <label className="flex items-center justify-between rounded-lg border border-line bg-bg px-3.5 py-2.5">
-                  <span className="text-[12px] text-ink/90">
-                    {lang === "ru" ? "Проверять обновления автоматически" : "Check for updates automatically"}
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={autoUpdateCheck}
-                    onChange={e => setAutoUpdateCheck(e.target.checked)}
-                    className="size-4 accent-acid"
-                  />
-                </label>
-                <label className="flex items-center justify-between rounded-lg border border-line bg-bg px-3.5 py-2.5">
-                  <span className="text-[12px] text-ink/90">
-                    {lang === "ru"
-                      ? "Проверка легитимности плагинов (отправляет название плагина в GitHub/Modrinth/Spiget/Hangar)"
-                      : "Plugin legitimacy check (sends the plugin name to GitHub/Modrinth/Spiget/Hangar)"}
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={legitimacyCheck}
-                    onChange={e => setLegitimacyCheck(e.target.checked)}
-                    className="size-4 accent-acid"
-                  />
-                </label>
-              </div>
-              <p className="text-[10.5px] text-faint">
-                {lang === "ru" ? "Всё это можно изменить позже в настройках." : "You can change these anytime in Settings."}
-              </p>
-              <button className="btn btn-acid h-9 w-full text-[12.5px]" onClick={() => setStep("done")}>
-                {lang === "ru" ? "Далее" : "Next"}
-                <ChevronRight size={14} />
-              </button>
-            </>
-          )}
+              </>
+            )}
 
-          {step === "done" && (
-            <>
-              <DoneArt />
-              <p className="text-[14.5px] font-semibold text-ink">
-                {lang === "ru" ? "Всё готово" : "All Set"}
-              </p>
-              <p className="text-[12px] text-dim">
-                {lang === "ru" ? "Обновления и поддержка — " : "Updates and support — "}
-                <span className="text-acid">t.me/NanoDev_mc</span>
-              </p>
-              <button className="btn btn-acid h-9 w-full text-[12.5px]" onClick={finish}>
-                <Check size={14} />
-                {lang === "ru" ? "Начать работу" : "Get Started"}
-              </button>
-            </>
-          )}
+            {step === "eula" && (
+              <>
+                <div className="flex items-center gap-3 mb-1">
+                  <ShieldArt />
+                  <div className="text-left">
+                    <p className="text-lg font-bold text-ink">
+                      {lang === "ru" ? "Лицензионное соглашение" : "License Agreement"}
+                    </p>
+                    <p className="text-xs text-dim">
+                      {lang === "ru"
+                        ? "Пожалуйста, ознакомьтесь с условиями использования перед запуском"
+                        : "Please review the terms of use before proceeding"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mono h-[240px] w-full overflow-y-auto rounded-xl border border-line-strong/60 bg-bg/90 p-4 text-left text-[11px] leading-relaxed whitespace-pre-wrap text-dim select-text shadow-inner">
+                  {EULA_TEXT}
+                </div>
+
+                <label className="flex w-full cursor-pointer items-center gap-3 text-left text-xs text-ink/90 bg-raised/40 p-3 rounded-xl border border-line/40 hover:bg-raised/70 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={accepted}
+                    onChange={(e) => setAccepted(e.target.checked)}
+                    className="size-4 rounded accent-acid cursor-pointer"
+                  />
+                  <span>
+                    {lang === "ru"
+                      ? "Я прочитал(а) и принимаю условия лицензионного соглашения NanoDecompiler"
+                      : "I have read and accept the license agreement terms"}
+                  </span>
+                </label>
+
+                <div className="flex items-center gap-3 w-full pt-2">
+                  <button
+                    className="btn btn-ghost h-10 px-5 text-xs text-ink/70"
+                    onClick={() => goToStep("welcome")}
+                  >
+                    {lang === "ru" ? "Назад" : "Back"}
+                  </button>
+                  <button
+                    className={cn(
+                      "btn btn-acid h-10 flex-1 text-xs font-semibold shadow-[0_0_20px_rgba(155,242,70,0.2)]",
+                      !accepted && "pointer-events-none opacity-40"
+                    )}
+                    onClick={() => goToStep("options")}
+                    disabled={!accepted}
+                  >
+                    {t(lang, "setup.accept")}
+                    <ChevronRight size={15} />
+                  </button>
+                </div>
+              </>
+            )}
+
+            {step === "options" && (
+              <>
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="p-3 rounded-2xl bg-acid/10 text-acid border border-acid/20">
+                    <Sparkles size={28} />
+                  </div>
+                  <div className="text-left">
+                    <p className="text-lg font-bold text-ink">
+                      {lang === "ru" ? "Параметры окружения и работы" : "Environment & Preferences"}
+                    </p>
+                    <p className="text-xs text-dim">
+                      {lang === "ru"
+                        ? "Базовые параметры декомпилятора (можно изменить позже в Настройках)"
+                        : "Initial settings (can be changed anytime in Settings)"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="w-full space-y-2.5 text-left">
+                  {/* Статус Java */}
+                  <div className="flex items-center justify-between rounded-xl border border-line-strong/60 bg-raised/50 p-3.5">
+                    <div className="text-left text-xs truncate mr-3">
+                      <span className="text-ink font-mono font-medium block truncate">
+                        {javaEnv
+                          ? `Java JDK: ${javaEnv.text}`
+                          : envIssue
+                          ? lang === "ru"
+                            ? "Java не найдена"
+                            : "Java not found"
+                          : lang === "ru"
+                          ? "Проверка окружения…"
+                          : "Checking environment…"}
+                      </span>
+                      <span className={cn("text-[11px]", javaEnv ? "text-acid font-medium" : "text-err")}>
+                        {javaEnv
+                          ? lang === "ru"
+                            ? "Среда выполнения готова к сборке и декомпиляции"
+                            : "Runtime environment ready"
+                          : lang === "ru"
+                          ? "Рекомендуется для декомпиляции тяжелых архивов"
+                          : "Recommended for decompilation"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-ghost h-8 px-3 text-xs flex-none border border-line"
+                      onClick={checkEnv}
+                      title={lang === "ru" ? "Проверить снова" : "Check again"}
+                    >
+                      <RefreshCw size={13} className="mr-1" />
+                      <span>{lang === "ru" ? "Обновить" : "Refresh"}</span>
+                    </button>
+                  </div>
+
+                  {/* Автообновления */}
+                  <label className="flex items-center justify-between rounded-xl border border-line/50 bg-raised/30 p-3.5 hover:bg-raised/60 transition-colors cursor-pointer">
+                    <div className="pr-4">
+                      <span className="text-xs font-medium text-ink block">
+                        {lang === "ru" ? "Автоматическая проверка обновлений" : "Check for updates automatically"}
+                      </span>
+                      <span className="text-[11px] text-faint">
+                        {lang === "ru"
+                          ? "Уведомлять о выходе новых стабильных релизов NanoDecompiler"
+                          : "Notify about new stable releases of NanoDecompiler"}
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={autoUpdateCheck}
+                      onChange={(e) => setAutoUpdateCheck(e.target.checked)}
+                      className="size-4 rounded accent-acid cursor-pointer"
+                    />
+                  </label>
+
+                  {/* Проверка легитимности */}
+                  <label className="flex items-center justify-between rounded-xl border border-line/50 bg-raised/30 p-3.5 hover:bg-raised/60 transition-colors cursor-pointer">
+                    <div className="pr-4">
+                      <span className="text-xs font-medium text-ink block">
+                        {lang === "ru" ? "Проверка легитимности плагинов" : "Plugin legitimacy check"}
+                      </span>
+                      <span className="text-[11px] text-faint">
+                        {lang === "ru"
+                          ? "Сверка хеша и названия через базы GitHub, Modrinth и Spiget"
+                          : "Verify hash and title against Modrinth, GitHub, and Spiget"}
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={legitimacyCheck}
+                      onChange={(e) => setLegitimacyCheck(e.target.checked)}
+                      className="size-4 rounded accent-acid cursor-pointer"
+                    />
+                  </label>
+                </div>
+
+                <div className="flex items-center gap-3 w-full pt-3">
+                  <button
+                    className="btn btn-ghost h-10 px-5 text-xs text-ink/70"
+                    onClick={() => goToStep("eula")}
+                  >
+                    {lang === "ru" ? "Назад" : "Back"}
+                  </button>
+                  <button
+                    className="btn btn-acid h-10 flex-1 text-xs font-semibold shadow-[0_0_20px_rgba(155,242,70,0.2)]"
+                    onClick={() => goToStep("done")}
+                  >
+                    {lang === "ru" ? "Продолжить" : "Continue"}
+                    <ChevronRight size={15} />
+                  </button>
+                </div>
+              </>
+            )}
+
+            {step === "done" && (
+              <>
+                <DoneArt />
+                <div className="space-y-2 max-w-sm">
+                  <p className="text-xl font-bold text-ink">
+                    {lang === "ru" ? "Всё готово к работе!" : "All Set!"}
+                  </p>
+                  <p className="text-xs leading-relaxed text-dim">
+                    {lang === "ru"
+                      ? "Настройка завершена. Перетащите любой .jar, .zip или .rar файл в левую панель для запуска декомпиляции."
+                      : "Setup is complete. Drag and drop any .jar, .zip or .rar file into the left panel to decompile."}
+                  </p>
+                  <div className="pt-2 text-[11px] text-faint font-mono">
+                    Telegram: <span className="text-acid">t.me/NanoDev_mc</span> | <span className="text-acid">t.me/WineSquad</span>
+                  </div>
+                </div>
+
+                <div className="w-full pt-4 max-w-sm">
+                  <button
+                    className="btn btn-acid h-11 w-full text-sm font-semibold shadow-[0_0_28px_rgba(155,242,70,0.3)] hover:shadow-[0_0_36px_rgba(155,242,70,0.5)] transition-all flex items-center justify-center gap-2"
+                    onClick={finish}
+                  >
+                    <Check size={16} />
+                    <span>{lang === "ru" ? "Открыть NanoDecompiler" : "Launch NanoDecompiler"}</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>

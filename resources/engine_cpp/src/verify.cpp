@@ -425,6 +425,10 @@ std::string ProjectStats::summary_text() const {
     lines.push_back("  - Полностью восстановлены в структурированный Java "
                      "(if/else, while/for, switch, try/catch, выражения): " +
                      std::to_string(decompiled_methods) + " (" + fmt1(p) + "%)");
+    if (irreducible_methods > 0) {
+        lines.push_back("  - Частично восстановлены с нередуцируемыми переходами (goto): " +
+                         std::to_string(irreducible_methods) + " (" + fmt1(pct(irreducible_methods, total_methods)) + "%)");
+    }
     lines.push_back("  - Не удалось безопасно восстановить -> честный дизассемблированный "
                      "листинг байткода (см. комментарий в самом методе): " +
                      std::to_string(fallback_methods) + " (" + fmt1(pct(fallback_methods, total_methods)) + "%)");
