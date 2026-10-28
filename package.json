@@ -1,6 +1,6 @@
 {
   "name": "NanoDecompiler-client",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Декомпилятор для Java-майнкрафт подобных файлов (.jar моды/плагины)",
   "main": "dist-electron/main.js",
   "author": "NanoDev1488",
