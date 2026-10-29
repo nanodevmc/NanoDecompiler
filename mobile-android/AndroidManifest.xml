@@ -51,5 +51,11 @@
                 <data android:pathPattern=".*\\.class" />
             </intent-filter>
         </activity>
+
+        <provider
+            android:name=".NanoFileProvider"
+            android:authorities="com.nanodev.nanodecompiler.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

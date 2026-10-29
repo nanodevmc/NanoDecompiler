@@ -66,6 +66,33 @@ object DecompilerEngine {
         }
     }
 
+    fun getDecompiledBaseDir(context: Context): File {
+        // Проверяем публичную папку Загрузки/NanoDecompiler (Environment.getExternalStoragePublicDirectory)
+        try {
+            val publicDownloads = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            if (publicDownloads != null) {
+                val appDownloads = File(publicDownloads, "NanoDecompiler")
+                if (!appDownloads.exists()) appDownloads.mkdirs()
+                if (appDownloads.canWrite()) {
+                    return appDownloads
+                }
+            }
+        } catch (_: Exception) {}
+
+        // Fallback: getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        val extDownloads = context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+        if (extDownloads != null) {
+            val appDownloads = File(extDownloads, "NanoDecompiler")
+            if (!appDownloads.exists()) appDownloads.mkdirs()
+            return appDownloads
+        }
+
+        // Fallback: внутреннее хранилище
+        val internalDir = File(context.filesDir, "NanoDecompiler")
+        if (!internalDir.exists()) internalDir.mkdirs()
+        return internalDir
+    }
+
     fun decompile(
         context: Context,
         inputFile: File,
@@ -73,8 +100,7 @@ object DecompilerEngine {
         onLog: (String) -> Unit
     ): DecompileResult {
         val startTime = System.currentTimeMillis()
-        val baseDecompiled = File(context.filesDir, "decompiled")
-        if (!baseDecompiled.exists()) baseDecompiled.mkdirs()
+        val baseDecompiled = getDecompiledBaseDir(context)
 
         val safeName = inputFile.name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val outDir = File(baseDecompiled, safeName)

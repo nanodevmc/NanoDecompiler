@@ -124,6 +124,7 @@ class MainActivity : Activity() {
     private lateinit var tvCodePath: TextView
     private lateinit var tvCodeFooterMeta: TextView
     private lateinit var btnCopyCode: Button
+    private lateinit var btnShareZip: Button
     private lateinit var btnToggleWrap: Button
     private var currentActiveFile: File? = null
 
@@ -242,6 +243,18 @@ class MainActivity : Activity() {
             "delete" -> { // Google Icons: close
                 canvas.drawLine(fSize * 0.28f, fSize * 0.28f, fSize * 0.72f, fSize * 0.72f, paint)
                 canvas.drawLine(fSize * 0.72f, fSize * 0.28f, fSize * 0.28f, fSize * 0.72f, paint)
+            }
+            "share" -> { // Google Icons: share (nodes and links)
+                val r = fSize * 0.12f
+                val c1x = fSize * 0.75f; val c1y = fSize * 0.28f
+                val c2x = fSize * 0.25f; val c2y = fSize * 0.50f
+                val c3x = fSize * 0.75f; val c3y = fSize * 0.72f
+                canvas.drawLine(c2x, c2y, c1x, c1y, paint)
+                canvas.drawLine(c2x, c2y, c3x, c3y, paint)
+                val fillPaint = Paint(paint).apply { style = Paint.Style.FILL }
+                canvas.drawCircle(c1x, c1y, r, fillPaint)
+                canvas.drawCircle(c2x, c2y, r, fillPaint)
+                canvas.drawCircle(c3x, c3y, r, fillPaint)
             }
             "app_logo" -> { // PC Logo (Terminal + Acid Chip)
                 val p = Path().apply {
@@ -649,10 +662,25 @@ class MainActivity : Activity() {
             setCompoundDrawablesWithIntrinsicBounds(createGoogleIcon("copy", 14, Color.BLACK), null, null, null)
             background = liquidGlassDrawable(COLOR_ACID, COLOR_ACID, 8f)
             setPadding(dp(10), dp(4), dp(10), dp(4))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(28))
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(28))
+            lp.marginEnd = dp(6)
+            layoutParams = lp
             setOnClickListener { copyActiveCodeToClipboard() }
         }
         editorToolbar.addView(btnCopyCode)
+
+        btnShareZip = Button(this).apply {
+            text = "ZIP"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            typeface = Typeface.DEFAULT_BOLD
+            setCompoundDrawablesWithIntrinsicBounds(createGoogleIcon("share", 14, Color.WHITE), null, null, null)
+            background = liquidGlassDrawable(Color.parseColor("#1C2A38"), Color.parseColor("#344A60"), 8f)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(28))
+            setOnClickListener { shareActiveProjectZip() }
+        }
+        editorToolbar.addView(btnShareZip)
         layout.addView(editorToolbar)
 
         // Поле быстрого поиска по классам
@@ -1221,6 +1249,54 @@ class MainActivity : Activity() {
         clipboard.setPrimaryClip(clip)
         vibrate(40)
         Toast.makeText(this, "Исходный код скопирован в буфер обмена!", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun shareActiveProjectZip() {
+        val outDir = activeOutDir
+        if (outDir == null || !outDir.exists() || outDir.listFiles().isNullOrEmpty()) {
+            Toast.makeText(this, "Нет декомпилированных файлов для отправки", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        Toast.makeText(this, "Упаковка ZIP-архива с исходниками...", Toast.LENGTH_SHORT).show()
+        vibrate(40)
+
+        bgExecutor.execute {
+            try {
+                // Создаем ZIP рядом с распакованной папкой (в Загрузках или в external files)
+                val baseParent = outDir.parentFile ?: getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS) ?: cacheDir
+                val zipFile = File(baseParent, "${outDir.name}-src.zip")
+                if (zipFile.exists()) zipFile.delete()
+
+                java.util.zip.ZipOutputStream(java.io.FileOutputStream(zipFile)).use { zos ->
+                    val rootPath = outDir.absolutePath
+                    outDir.walkTopDown().filter { it.isFile }.forEach { file ->
+                        val relName = file.absolutePath.removePrefix(rootPath).trimStart(File.separatorChar, '/', '\\').replace('\\', '/')
+                        val entry = java.util.zip.ZipEntry(relName)
+                        zos.putNextEntry(entry)
+                        file.inputStream().use { input -> input.copyTo(zos) }
+                        zos.closeEntry()
+                    }
+                }
+
+                val uri = NanoFileProvider.getUriForFile(this, zipFile)
+                runOnUiThread {
+                    vibrate(60)
+                    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                        type = "application/zip"
+                        putExtra(Intent.EXTRA_STREAM, uri)
+                        putExtra(Intent.EXTRA_SUBJECT, "Исходники ${outDir.name}")
+                        putExtra(Intent.EXTRA_TEXT, "Декомпилированные исходники ${outDir.name} (NanoDecompiler Mobile)")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    startActivity(Intent.createChooser(shareIntent, "Поделиться архивом исходников (.zip)"))
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this, "Ошибка создания ZIP: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     // Быстрый движок подсветки синтаксиса Java
