@@ -28,6 +28,7 @@ private:
     struct StackEntry {
         std::optional<int64_t> header;  // присутствует только для записей циклов
         std::optional<int64_t> exit;
+        std::set<int64_t> all_exits;     // Все допустимые выходы (break) для циклов и switch
         std::optional<std::string> label;
     };
     using StackEntryPtr = std::shared_ptr<StackEntry>;

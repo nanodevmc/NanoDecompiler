@@ -732,7 +732,7 @@ Structurer::JumpKind Structurer::resolve_jump_stmt(int64_t target, const std::se
     }
     for (auto it = breakable_stack_.rbegin(); it != breakable_stack_.rend(); ++it) {
         StackEntryPtr entry = *it;
-        if (entry->exit.has_value() && *entry->exit == target) {
+        if ((entry->exit.has_value() && *entry->exit == target) || entry->all_exits.count(target)) {
             if (entry == breakable_stack_.back()) {
                 out_stmt = std::make_shared<BreakStmt>();
             } else {
@@ -750,7 +750,7 @@ Structurer::JumpKind Structurer::resolve_jump_stmt(int64_t target, const std::se
             (!results_.count(target) || results_.at(target).stmts.empty())) {
             return JumpKind::ContinueLinearly;
         }
-        if (!all_consumed_.count(target) && !stop_addrs.count(target) && tit->second.preds.size() <= 1) {
+        if (!all_consumed_.count(target) && !stop_addrs.count(target)) {
             return JumpKind::ContinueLinearly;
         }
     }
@@ -784,7 +784,7 @@ StmtPtr Structurer::try_resolve_special_target(int64_t target) {
     }
     for (auto it = breakable_stack_.rbegin(); it != breakable_stack_.rend(); ++it) {
         StackEntryPtr entry = *it;
-        if (entry->exit.has_value() && *entry->exit == target) {
+        if ((entry->exit.has_value() && *entry->exit == target) || entry->all_exits.count(target)) {
             if (entry == breakable_stack_.back()) return std::make_shared<BreakStmt>();
             if (!entry->label.has_value()) entry->label = new_label();
             return std::make_shared<BreakStmt>(entry->label);
@@ -941,9 +941,13 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_if_inner(int64_t pc
             merge = find_forward_merge(true_t, false_t, stop_addrs, false);
         }
     }
-    if (was_right_after_try && merge.has_value()) {
+    {
         auto forward = find_forward_merge(true_t, false_t, stop_addrs, false);
-        if (forward.has_value() && *forward < *merge) merge = forward;
+        if (forward.has_value()) {
+            if (!merge.has_value() || *forward < *merge) {
+                merge = forward;
+            }
+        }
     }
     if (merge.has_value()) {
         for (auto& entry : loop_stack_) {
@@ -995,6 +999,14 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_loop(int64_t header
     entry->header = header_pc;
     entry->exit = exit_pc;
     entry->label = std::nullopt;
+    for (int64_t b : body_set) {
+        if (cfg_.blocks.count(b)) {
+            for (int64_t s : cfg_.blocks.at(b).succs) {
+                if (!body_set.count(s)) entry->all_exits.insert(s);
+            }
+        }
+    }
+    if (exit_pc.has_value()) entry->all_exits.insert(*exit_pc);
     loop_stack_.push_back(entry);
     breakable_stack_.push_back(entry);
     std::set<int64_t> local_stop = stop_addrs;
@@ -1002,6 +1014,7 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_loop(int64_t header
     auto body = region(header_pc, local_stop);
     loop_stack_.pop_back();
     breakable_stack_.pop_back();
+    consumed_loop_.erase(header_pc);
     auto stmt = std::make_shared<WhileStmt>(std::make_shared<Const>("true", "boolean"), body, entry->label);
     return {stmt, exit_pc};
 }
@@ -1059,8 +1072,60 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_switch(int64_t pc, 
 
     std::vector<int64_t> case_addrs(label_order.begin(), label_order.end());
     std::sort(case_addrs.begin(), case_addrs.end());
+
+    // Обнаружение целевого выхода (break) из ветвей switch, когда ipdom_ пуст (например из-за throw в default)
+    std::map<int64_t, int> exit_candidates;
+    for (int64_t c_addr : case_addrs) {
+        int64_t cur = c_addr;
+        std::set<int64_t> visited;
+        while (cfg_.blocks.count(cur) && !visited.count(cur)) {
+            visited.insert(cur);
+            const Block& b = cfg_.blocks.at(cur);
+            if (!b.instrs.empty() && (b.instrs.back().mnemonic == "goto" || b.instrs.back().mnemonic == "goto_w")) {
+                if (b.instrs.back().target.has_value()) {
+                    int64_t tgt = *b.instrs.back().target;
+                    if (tgt > pc && !label_map.count(tgt)) {
+                        exit_candidates[tgt]++;
+                        break;
+                    }
+                }
+            }
+            if (b.succs.size() == 1) {
+                int64_t s = b.succs[0];
+                if (s > pc && !label_map.count(s)) {
+                    exit_candidates[s]++;
+                    break;
+                }
+                cur = s;
+            } else {
+                break;
+            }
+        }
+    }
+    if (!exit_candidates.empty()) {
+        int64_t best_tgt = -1;
+        int max_count = -1;
+        for (auto& [tgt, count] : exit_candidates) {
+            if (count > max_count || (count == max_count && tgt < best_tgt)) {
+                max_count = count;
+                best_tgt = tgt;
+            }
+        }
+        if (best_tgt != -1 && (!merge.has_value() || best_tgt < *merge)) {
+            merge = best_tgt;
+            entry->exit = merge;
+        }
+        for (auto& [tgt, count] : exit_candidates) {
+            entry->all_exits.insert(tgt);
+        }
+    }
+    if (merge.has_value()) {
+        entry->all_exits.insert(*merge);
+    }
+
     std::set<int64_t> local_stop_base = stop_addrs;
     if (merge.has_value()) local_stop_base.insert(*merge);
+    for (int64_t ae : entry->all_exits) local_stop_base.insert(ae);
 
     std::vector<SwitchCase> cases;
     for (size_t idx = 0; idx < case_addrs.size(); ++idx) {
@@ -1209,11 +1274,17 @@ bool is_synth_temp(const std::string& name) {
 }
 
 std::optional<std::pair<ExprPtr, ExprPtr>> as_assign(const StmtPtr& stmt) {
-    if (stmt && stmt->kind == StmtKind::ExprStmt) {
+    if (!stmt) return std::nullopt;
+    if (stmt->kind == StmtKind::ExprStmt) {
         auto* es = static_cast<ExprStmtNode*>(stmt.get());
         if (es->expr && es->expr->kind == ExprKind::Assign) {
             auto* a = static_cast<Assign*>(es->expr.get());
             return std::make_pair(a->target, a->value);
+        }
+    } else if (stmt->kind == StmtKind::LocalDecl) {
+        auto* ld = static_cast<LocalDecl*>(stmt.get());
+        if (ld->init) {
+            return std::make_pair(std::make_shared<Local>(ld->name, ld->type), ld->init);
         }
     }
     return std::nullopt;
@@ -2251,10 +2322,11 @@ std::vector<StmtPtr> hoist_common_branch_tail(const std::vector<StmtPtr>& stmts)
                     ExprPtr t1 = a1->first, v1 = a1->second;
                     ExprPtr t2 = a2->first, v2 = a2->second;
                     if (!t1 || !t2 || !v1 || !v2) break;
-                    if (t1->kind == ExprKind::Local && t2->kind == ExprKind::Local &&
-                        static_cast<Local*>(t1.get())->name == static_cast<Local*>(t2.get())->name &&
-                        v1->kind == ExprKind::Local && v2->kind == ExprKind::Local &&
-                        static_cast<Local*>(v1.get())->name == static_cast<Local*>(v2.get())->name) {
+                    if ((t1->kind == ExprKind::Local && t2->kind == ExprKind::Local &&
+                         static_cast<Local*>(t1.get())->name == static_cast<Local*>(t2.get())->name &&
+                         is_same_expr(v1, v2)) ||
+                        (same_target(t1, t2) && is_same_expr(v1, v2)) ||
+                        false) {
                         tail.push_back(tb.back());
                         tb.pop_back();
                         eb.pop_back();
@@ -2262,7 +2334,37 @@ std::vector<StmtPtr> hoist_common_branch_tail(const std::vector<StmtPtr>& stmts)
                     }
                     break;
                 }
-                if (!tail.empty()) {
+                // Hoist common synth temp assignments from anywhere in branches
+                std::vector<StmtPtr> hoisted_common;
+                for (size_t ti = 0; ti < tb.size(); ) {
+                    auto a1 = as_assign(tb[ti]);
+                    if (!a1.has_value() || !a1->first || a1->first->kind != ExprKind::Local ||
+                        !is_synth_temp(static_cast<Local*>(a1->first.get())->name) || has_side_effect(a1->second)) {
+                        ++ti;
+                        continue;
+                    }
+                    std::string loc_name = static_cast<Local*>(a1->first.get())->name;
+                    int match_idx = -1;
+                    for (size_t ei = 0; ei < eb.size(); ++ei) {
+                        auto a2 = as_assign(eb[ei]);
+                        if (a2.has_value() && a2->first && a2->first->kind == ExprKind::Local &&
+                            static_cast<Local*>(a2->first.get())->name == loc_name &&
+                            is_same_expr(a1->second, a2->second)) {
+                            match_idx = static_cast<int>(ei);
+                            break;
+                        }
+                    }
+                    if (match_idx >= 0) {
+                        hoisted_common.push_back(tb[ti]);
+                        tb.erase(tb.begin() + ti);
+                        eb.erase(eb.begin() + match_idx);
+                    } else {
+                        ++ti;
+                    }
+                }
+
+                if (!tail.empty() || !hoisted_common.empty()) {
+                    for (auto& hc : hoisted_common) out.push_back(hc);
                     i->then_body = tb;
                     i->else_body = eb;
                     out.push_back(s);
@@ -2276,10 +2378,25 @@ std::vector<StmtPtr> hoist_common_branch_tail(const std::vector<StmtPtr>& stmts)
     return out;
 }
 
+bool block_always_exits(const std::vector<StmtPtr>& block);
+
 bool is_unconditional_exit(const StmtPtr& s) {
     if (!s) return false;
-    return s->kind == StmtKind::ReturnStmt || s->kind == StmtKind::ThrowStmt ||
-           s->kind == StmtKind::BreakStmt || s->kind == StmtKind::ContinueStmt;
+    if (s->kind == StmtKind::ReturnStmt || s->kind == StmtKind::ThrowStmt ||
+        s->kind == StmtKind::BreakStmt || s->kind == StmtKind::ContinueStmt) return true;
+    if (s->kind == StmtKind::TryStmt) {
+        auto* t = static_cast<TryStmt*>(s.get());
+        if (!block_always_exits(t->body)) return false;
+        for (auto& cat : t->catches) {
+            if (!block_always_exits(cat.body)) return false;
+        }
+        return true;
+    }
+    if (s->kind == StmtKind::IfStmt) {
+        auto* i = static_cast<IfStmt*>(s.get());
+        if (i->else_body.has_value() && block_always_exits(i->then_body) && block_always_exits(*i->else_body)) return true;
+    }
+    return false;
 }
 
 bool block_always_exits(const std::vector<StmtPtr>& block) {
@@ -3572,8 +3689,7 @@ std::vector<StmtPtr> eliminate_dead_code_and_labels(std::vector<StmtPtr> stmts, 
 
         out.push_back(s);
 
-        if (s->kind == StmtKind::ReturnStmt || s->kind == StmtKind::ThrowStmt ||
-            s->kind == StmtKind::BreakStmt || s->kind == StmtKind::ContinueStmt) {
+        if (is_unconditional_exit(s)) {
             terminal_reached = true;
         }
     }
@@ -4266,49 +4382,316 @@ std::vector<StmtPtr> prune_dead_code_pass(std::vector<StmtPtr> stmts) {
 
 }  // namespace
 
+
+// ---------------- substitute_local_in_expr / substitute_local_in_stmt ----------------
+// Полноценная подстановка выражения вместо локальной переменной (устранение tempX стековых мусорных переменных)
+
+void substitute_local_in_expr(ExprPtr& e, const std::string& name, const ExprPtr& replacement);
+void substitute_local_in_stmt(StmtPtr& s, const std::string& name, const ExprPtr& replacement);
+
+void substitute_local_in_expr(ExprPtr& e, const std::string& name, const ExprPtr& replacement) {
+    if (!e || !replacement) return;
+    if (e->kind == ExprKind::Local) {
+        if (static_cast<Local*>(e.get())->name == name) {
+            e = replacement;
+        }
+        return;
+    }
+    switch (e->kind) {
+        case ExprKind::FieldAccess:
+            substitute_local_in_expr(static_cast<FieldAccess*>(e.get())->target, name, replacement);
+            break;
+        case ExprKind::ArrayAccess: {
+            auto* a = static_cast<ArrayAccess*>(e.get());
+            substitute_local_in_expr(a->array, name, replacement);
+            substitute_local_in_expr(a->index, name, replacement);
+            break;
+        }
+        case ExprKind::MethodCall: {
+            auto* m = static_cast<MethodCall*>(e.get());
+            substitute_local_in_expr(m->target, name, replacement);
+            for (auto& a : m->args) substitute_local_in_expr(a, name, replacement);
+            break;
+        }
+        case ExprKind::NewObject:
+            for (auto& a : static_cast<NewObject*>(e.get())->args) substitute_local_in_expr(a, name, replacement);
+            break;
+        case ExprKind::NewArray: {
+            auto* na = static_cast<NewArray*>(e.get());
+            for (auto& d : na->dims) substitute_local_in_expr(d, name, replacement);
+            if (na->initializer.has_value()) {
+                for (auto& item : *na->initializer) substitute_local_in_expr(item, name, replacement);
+            }
+            break;
+        }
+        case ExprKind::Cast:
+            substitute_local_in_expr(static_cast<Cast*>(e.get())->expr, name, replacement);
+            break;
+        case ExprKind::InstanceOf:
+            substitute_local_in_expr(static_cast<InstanceOf*>(e.get())->expr, name, replacement);
+            break;
+        case ExprKind::BinOp: {
+            auto* b = static_cast<BinOp*>(e.get());
+            substitute_local_in_expr(b->left, name, replacement);
+            substitute_local_in_expr(b->right, name, replacement);
+            break;
+        }
+        case ExprKind::UnOp:
+            substitute_local_in_expr(static_cast<UnOp*>(e.get())->expr, name, replacement);
+            break;
+        case ExprKind::Ternary: {
+            auto* t = static_cast<Ternary*>(e.get());
+            substitute_local_in_expr(t->cond, name, replacement);
+            substitute_local_in_expr(t->tval, name, replacement);
+            substitute_local_in_expr(t->fval, name, replacement);
+            break;
+        }
+        case ExprKind::Assign: {
+            auto* as = static_cast<Assign*>(e.get());
+            substitute_local_in_expr(as->target, name, replacement);
+            substitute_local_in_expr(as->value, name, replacement);
+            break;
+        }
+        case ExprKind::Lambda: {
+            auto* lam = static_cast<Lambda*>(e.get());
+            substitute_local_in_expr(lam->body_method_ref, name, replacement);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+void substitute_local_in_stmt(StmtPtr& s, const std::string& name, const ExprPtr& replacement) {
+    if (!s || !replacement) return;
+    switch (s->kind) {
+        case StmtKind::ExprStmt:
+            substitute_local_in_expr(static_cast<ExprStmtNode*>(s.get())->expr, name, replacement);
+            break;
+        case StmtKind::LocalDecl:
+            substitute_local_in_expr(static_cast<LocalDecl*>(s.get())->init, name, replacement);
+            break;
+        case StmtKind::ReturnStmt:
+            substitute_local_in_expr(static_cast<ReturnStmt*>(s.get())->expr, name, replacement);
+            break;
+        case StmtKind::ThrowStmt:
+            substitute_local_in_expr(static_cast<ThrowStmt*>(s.get())->expr, name, replacement);
+            break;
+        case StmtKind::IfStmt: {
+            auto* i = static_cast<IfStmt*>(s.get());
+            substitute_local_in_expr(i->cond, name, replacement);
+            for (auto& sub : i->then_body) substitute_local_in_stmt(sub, name, replacement);
+            if (i->else_body) {
+                for (auto& sub : *i->else_body) substitute_local_in_stmt(sub, name, replacement);
+            }
+            break;
+        }
+        case StmtKind::WhileStmt: {
+            auto* w = static_cast<WhileStmt*>(s.get());
+            substitute_local_in_expr(w->cond, name, replacement);
+            for (auto& sub : w->body) substitute_local_in_stmt(sub, name, replacement);
+            break;
+        }
+        case StmtKind::DoWhileStmt: {
+            auto* dw = static_cast<DoWhileStmt*>(s.get());
+            substitute_local_in_expr(dw->cond, name, replacement);
+            for (auto& sub : dw->body) substitute_local_in_stmt(sub, name, replacement);
+            break;
+        }
+        case StmtKind::ForStmt: {
+            auto* f = static_cast<ForStmt*>(s.get());
+            if (f->init) substitute_local_in_expr(f->init, name, replacement);
+            substitute_local_in_expr(f->cond, name, replacement);
+            if (f->update) substitute_local_in_stmt(f->update, name, replacement);
+            for (auto& sub : f->body) substitute_local_in_stmt(sub, name, replacement);
+            break;
+        }
+        case StmtKind::SwitchStmt: {
+            auto* sw = static_cast<SwitchStmt*>(s.get());
+            substitute_local_in_expr(sw->selector, name, replacement);
+            for (auto& c : sw->cases) {
+                for (auto& sub : c.body) substitute_local_in_stmt(sub, name, replacement);
+            }
+            break;
+        }
+        case StmtKind::TryStmt: {
+            auto* t = static_cast<TryStmt*>(s.get());
+            for (auto& sub : t->body) substitute_local_in_stmt(sub, name, replacement);
+            for (auto& c : t->catches) {
+                for (auto& sub : c.body) substitute_local_in_stmt(sub, name, replacement);
+            }
+            if (t->finally_body) {
+                for (auto& sub : *t->finally_body) substitute_local_in_stmt(sub, name, replacement);
+            }
+            break;
+        }
+        case StmtKind::SyncStmt: {
+            auto* sy = static_cast<SyncStmt*>(s.get());
+            substitute_local_in_expr(sy->expr, name, replacement);
+            for (auto& sub : sy->body) substitute_local_in_stmt(sub, name, replacement);
+            break;
+        }
+        case StmtKind::BlockStmt:
+            for (auto& sub : static_cast<BlockStmt*>(s.get())->stmts) substitute_local_in_stmt(sub, name, replacement);
+            break;
+        default:
+            break;
+    }
+}
+
+std::vector<StmtPtr> inline_single_use_synth_temps(std::vector<StmtPtr> stmts) {
+    // Recurse into child blocks first
+    for (auto& s : stmts) {
+        if (!s) continue;
+        if (s->kind == StmtKind::IfStmt) {
+            auto* i = static_cast<IfStmt*>(s.get());
+            i->then_body = inline_single_use_synth_temps(i->then_body);
+            if (i->else_body) i->else_body = inline_single_use_synth_temps(*i->else_body);
+        } else if (s->kind == StmtKind::WhileStmt) {
+            auto* w = static_cast<WhileStmt*>(s.get());
+            w->body = inline_single_use_synth_temps(w->body);
+        } else if (s->kind == StmtKind::DoWhileStmt) {
+            auto* dw = static_cast<DoWhileStmt*>(s.get());
+            dw->body = inline_single_use_synth_temps(dw->body);
+        } else if (s->kind == StmtKind::ForStmt) {
+            auto* f = static_cast<ForStmt*>(s.get());
+            f->body = inline_single_use_synth_temps(f->body);
+        } else if (s->kind == StmtKind::SwitchStmt) {
+            auto* sw = static_cast<SwitchStmt*>(s.get());
+            for (auto& c : sw->cases) c.body = inline_single_use_synth_temps(c.body);
+        } else if (s->kind == StmtKind::TryStmt) {
+            auto* t = static_cast<TryStmt*>(s.get());
+            t->body = inline_single_use_synth_temps(t->body);
+            for (auto& c : t->catches) c.body = inline_single_use_synth_temps(c.body);
+            if (t->finally_body) t->finally_body = inline_single_use_synth_temps(*t->finally_body);
+        } else if (s->kind == StmtKind::SyncStmt) {
+            auto* sy = static_cast<SyncStmt*>(s.get());
+            sy->body = inline_single_use_synth_temps(sy->body);
+        }
+    }
+    for (int iter = 0; iter < 4; ++iter) {
+        bool changed = false;
+        size_t n = stmts.size();
+        for (size_t i = 0; i < n; ++i) {
+            if (!stmts[i]) continue;
+            auto a = as_assign(stmts[i]);
+            if (!a.has_value()) continue;
+            ExprPtr tgt = a->first, val = a->second;
+            if (!tgt || !(tgt->kind == ExprKind::Local && is_synth_temp(static_cast<Local*>(tgt.get())->name))) continue;
+            std::string tgt_name = static_cast<Local*>(tgt.get())->name;
+
+            size_t max_j = (n > 64) ? std::min(n, i + 32) : n;
+            std::vector<size_t> uses;
+            for (size_t j = i + 1; j < max_j; ++j) {
+                if (stmts[j] && contains_local_ref_stmt(stmts[j], tgt_name)) {
+                    uses.push_back(j);
+                    if (uses.size() > 1) break;
+                }
+            }
+            if (uses.size() != 1) continue;
+            size_t j = uses[0];
+            if (!stmts[j]) continue;
+
+            if (j != i + 1 && has_side_effect(val)) continue;
+
+            substitute_local_in_stmt(stmts[j], tgt_name, val);
+            stmts[i] = nullptr;
+            changed = true;
+        }
+        if (changed) {
+            std::vector<StmtPtr> compacted;
+            compacted.reserve(stmts.size());
+            for (auto& s : stmts) {
+                if (s) compacted.push_back(std::move(s));
+            }
+            stmts = std::move(compacted);
+        } else {
+            break;
+        }
+    }
+    return stmts;
+}
+
+std::vector<StmtPtr> prune_dead_synth_locals(std::vector<StmtPtr> stmts) {
+    for (auto& s : stmts) {
+        if (!s) continue;
+        if (s->kind == StmtKind::IfStmt) {
+            auto* i = static_cast<IfStmt*>(s.get());
+            i->then_body = prune_dead_synth_locals(i->then_body);
+            if (i->else_body) i->else_body = prune_dead_synth_locals(*i->else_body);
+        } else if (s->kind == StmtKind::WhileStmt) {
+            auto* w = static_cast<WhileStmt*>(s.get());
+            w->body = prune_dead_synth_locals(w->body);
+        } else if (s->kind == StmtKind::DoWhileStmt) {
+            auto* dw = static_cast<DoWhileStmt*>(s.get());
+            dw->body = prune_dead_synth_locals(dw->body);
+        } else if (s->kind == StmtKind::ForStmt) {
+            auto* f = static_cast<ForStmt*>(s.get());
+            f->body = prune_dead_synth_locals(f->body);
+        } else if (s->kind == StmtKind::SwitchStmt) {
+            auto* sw = static_cast<SwitchStmt*>(s.get());
+            for (auto& c : sw->cases) c.body = prune_dead_synth_locals(c.body);
+        } else if (s->kind == StmtKind::TryStmt) {
+            auto* t = static_cast<TryStmt*>(s.get());
+            t->body = prune_dead_synth_locals(t->body);
+            for (auto& c : t->catches) c.body = prune_dead_synth_locals(c.body);
+            if (t->finally_body) t->finally_body = prune_dead_synth_locals(*t->finally_body);
+        } else if (s->kind == StmtKind::SyncStmt) {
+            auto* sy = static_cast<SyncStmt*>(s.get());
+            sy->body = prune_dead_synth_locals(sy->body);
+        }
+    }
+    size_t n = stmts.size();
+    for (size_t i = 0; i < n; ++i) {
+        if (!stmts[i] || stmts[i]->kind != StmtKind::LocalDecl) continue;
+        auto* ld = static_cast<LocalDecl*>(stmts[i].get());
+        if (!ld->init && is_synth_temp(ld->name)) {
+            bool used = false;
+            for (size_t j = 0; j < n; ++j) {
+                if (i == j || !stmts[j]) continue;
+                if (contains_local_ref_stmt(stmts[j], ld->name)) {
+                    used = true;
+                    break;
+                }
+            }
+            if (!used) {
+                stmts[i] = nullptr;
+            }
+        }
+    }
+    std::vector<StmtPtr> compacted;
+    for (auto& s : stmts) {
+        if (s) compacted.push_back(std::move(s));
+    }
+    return compacted;
+}
+
 std::vector<StmtPtr> simplify_stmts(const std::vector<StmtPtr>& stmts) {
     nd::g_crash_pass_name = "simplify_stmt_initial";
     std::vector<StmtPtr> out = simplify_stmt_list(stmts, 0);
     for (int iter = 0; iter < 4; ++iter) {
-        std::cerr << " [PASS-ITER " << iter << "]" << std::endl;
-        std::cerr << " [PASS: " << "fold_boolean_materialization";
-        std::cerr << " [PASS: " << nd::g_crash_pass_name << "]" << std::endl;
         out = fold_boolean_materialization(out);
-        std::cerr << " [PASS: " << "collapse_temp_chains" << std::endl;
         out = collapse_temp_chains(out);
-        std::cerr << " [PASS: " << "hoist_common_branch_tail" << std::endl;
+        out = inline_single_use_synth_temps(out);
+        out = prune_dead_synth_locals(out);
         out = hoist_common_branch_tail(out);
-        std::cerr << " [PASS: " << "eliminate_redundant_else_after_return" << std::endl;
         out = eliminate_redundant_else_after_return(out);
-        std::cerr << " [PASS: " << "desugar_return_ternaries" << std::endl;
         out = desugar_return_ternaries(out);
-        std::cerr << " [PASS: " << "propagate_single_use_flags" << std::endl;
         out = propagate_single_use_flags(out);
-        std::cerr << " [PASS: " << "collapse_nested_if_conditions" << std::endl;
         out = collapse_nested_if_conditions(out);
-        std::cerr << " [PASS: " << "merge_sequential_short_circuit_ifs" << std::endl;
         out = merge_sequential_short_circuit_ifs(out);
-        std::cerr << " [PASS: " << "group_multi_catch_blocks" << std::endl;
         out = group_multi_catch_blocks(out);
-        std::cerr << " [PASS: " << "desugar_enhanced_for_loops" << std::endl;
         out = desugar_enhanced_for_loops(out);
-        std::cerr << " [PASS: " << "fold_try_with_resources" << std::endl;
         out = fold_try_with_resources(out);
-        std::cerr << " [PASS: " << "fuse_for_initializers" << std::endl;
         out = fuse_for_initializers(out);
-        std::cerr << " [PASS: " << "propagate_local_constant_arrays" << std::endl;
         out = propagate_local_constant_arrays(out);
-        std::cerr << " [PASS: " << "fold_try_catches" << std::endl;
         out = fold_try_catches(out);
-        std::cerr << " [PASS: " << "prune_opaque_branches" << std::endl;
         out = prune_opaque_branches(out);
-        std::cerr << " [PASS: " << "unflatten_switch_dispatchers" << std::endl;
         out = unflatten_switch_dispatchers(out);
-        std::cerr << " [PASS: " << "restore_assertions_pass" << std::endl;
+        out = inline_single_use_synth_temps(out);
+        out = prune_dead_synth_locals(out);
         out = restore_assertions_pass(out);
-        std::cerr << " [PASS: " << "prune_empty_blocks_pass" << std::endl;
         out = prune_empty_blocks_pass(out);
-        std::cerr << " [PASS: " << "prune_dead_code_pass" << std::endl;
         out = prune_dead_code_pass(out);
     }
     nd::g_crash_pass_name = "clean_synthetic_null_checks";
