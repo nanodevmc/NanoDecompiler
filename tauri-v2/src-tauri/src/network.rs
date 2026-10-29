@@ -39,12 +39,14 @@ impl NetworkService {
             }
         };
 
+        let encoded = query.replace(' ', "%20");
         let url = format!(
             "https://api.github.com/search/repositories?q={}&sort=stars&order=desc&per_page=5",
-            urlencoding::encode(&query)
+            encoded
         );
 
-        let output = match Command::new("curl.exe")
+        let curl_cmd = if cfg!(target_os = "windows") { "curl.exe" } else { "curl" };
+        let output = match Command::new(curl_cmd)
             .arg("-s")
             .arg("-H")
             .arg("User-Agent: NanoDecompiler-Tauri")
@@ -115,7 +117,8 @@ impl NetworkService {
     pub fn download_with_sha256_verify(url: &str, dest_path: &Path, expected_sha256: &str) -> Result<(), String> {
         let temp_path = dest_path.with_extension("tmp_download");
 
-        let status = Command::new("curl.exe")
+        let curl_cmd = if cfg!(target_os = "windows") { "curl.exe" } else { "curl" };
+        let status = Command::new(curl_cmd)
             .arg("-L")
             .arg("-s")
             .arg("-o")

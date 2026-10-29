@@ -21,14 +21,34 @@ impl EditorDetector for VsCodeDetector {
     }
 
     fn detect(&self) -> Option<PathBuf> {
-        let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
-        let program_files = std::env::var("ProgramFiles").unwrap_or_default();
+        let mut candidates = Vec::new();
 
-        let candidates = [
-            PathBuf::from(&local_app_data).join(r"Programs\Microsoft VS Code\Code.exe"),
-            PathBuf::from(&program_files).join(r"Microsoft VS Code\Code.exe"),
-            PathBuf::from(r"C:\Program Files\Microsoft VS Code\Code.exe"),
-        ];
+        // Windows пути
+        #[cfg(target_os = "windows")]
+        {
+            let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+            let program_files = std::env::var("ProgramFiles").unwrap_or_default();
+            candidates.push(PathBuf::from(&local_app_data).join(r"Programs\Microsoft VS Code\Code.exe"));
+            candidates.push(PathBuf::from(&program_files).join(r"Microsoft VS Code\Code.exe"));
+            candidates.push(PathBuf::from(r"C:\Program Files\Microsoft VS Code\Code.exe"));
+        }
+
+        // macOS пути
+        #[cfg(target_os = "macos")]
+        {
+            candidates.push(PathBuf::from("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"));
+            if let Ok(home) = std::env::var("HOME") {
+                candidates.push(PathBuf::from(home).join("Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"));
+            }
+        }
+
+        // Linux пути
+        #[cfg(target_os = "linux")]
+        {
+            candidates.push(PathBuf::from("/usr/bin/code"));
+            candidates.push(PathBuf::from("/usr/local/bin/code"));
+            candidates.push(PathBuf::from("/snap/bin/code"));
+        }
 
         candidates.into_iter().find(|p| p.exists())
     }
@@ -41,14 +61,35 @@ impl EditorDetector for IdeaDetector {
     }
 
     fn detect(&self) -> Option<PathBuf> {
-        let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
-        let program_files = std::env::var("ProgramFiles").unwrap_or_default();
+        let mut candidates = Vec::new();
 
-        let candidates = [
-            PathBuf::from(&local_app_data).join(r"Programs\IntelliJ IDEA Ultimate\bin\idea64.exe"),
-            PathBuf::from(&local_app_data).join(r"Programs\IntelliJ IDEA Community Edition\bin\idea64.exe"),
-            PathBuf::from(&program_files).join(r"JetBrains\IntelliJ IDEA\bin\idea64.exe"),
-        ];
+        // Windows пути
+        #[cfg(target_os = "windows")]
+        {
+            let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_default();
+            let program_files = std::env::var("ProgramFiles").unwrap_or_default();
+            candidates.push(PathBuf::from(&local_app_data).join(r"Programs\IntelliJ IDEA Ultimate\bin\idea64.exe"));
+            candidates.push(PathBuf::from(&local_app_data).join(r"Programs\IntelliJ IDEA Community Edition\bin\idea64.exe"));
+            candidates.push(PathBuf::from(&program_files).join(r"JetBrains\IntelliJ IDEA\bin\idea64.exe"));
+        }
+
+        // macOS пути
+        #[cfg(target_os = "macos")]
+        {
+            candidates.push(PathBuf::from("/Applications/IntelliJ IDEA.app/Contents/MacOS/idea"));
+            candidates.push(PathBuf::from("/Applications/IntelliJ IDEA CE.app/Contents/MacOS/idea"));
+            candidates.push(PathBuf::from("/Applications/IntelliJ IDEA Ultimate.app/Contents/MacOS/idea"));
+        }
+
+        // Linux пути
+        #[cfg(target_os = "linux")]
+        {
+            candidates.push(PathBuf::from("/usr/bin/intellij-idea-community"));
+            candidates.push(PathBuf::from("/usr/bin/idea"));
+            candidates.push(PathBuf::from("/snap/bin/intellij-idea-community"));
+            candidates.push(PathBuf::from("/snap/bin/intellij-idea-ultimate"));
+            candidates.push(PathBuf::from("/opt/intellij-idea/bin/idea.sh"));
+        }
 
         candidates.into_iter().find(|p| p.exists())
     }
@@ -61,13 +102,31 @@ impl EditorDetector for NotepadPlusDetector {
     }
 
     fn detect(&self) -> Option<PathBuf> {
-        let program_files = std::env::var("ProgramFiles").unwrap_or_default();
-        let program_files_x86 = std::env::var("ProgramFiles(x86)").unwrap_or_default();
+        let mut candidates = Vec::new();
 
-        let candidates = [
-            PathBuf::from(&program_files).join(r"Notepad++\notepad++.exe"),
-            PathBuf::from(&program_files_x86).join(r"Notepad++\notepad++.exe"),
-        ];
+        // Windows пути (Notepad++)
+        #[cfg(target_os = "windows")]
+        {
+            let program_files = std::env::var("ProgramFiles").unwrap_or_default();
+            let program_files_x86 = std::env::var("ProgramFiles(x86)").unwrap_or_default();
+            candidates.push(PathBuf::from(&program_files).join(r"Notepad++\notepad++.exe"));
+            candidates.push(PathBuf::from(&program_files_x86).join(r"Notepad++\notepad++.exe"));
+        }
+
+        // Linux редакторы (Kate / Gedit / Mousepad / Nano)
+        #[cfg(target_os = "linux")]
+        {
+            candidates.push(PathBuf::from("/usr/bin/gedit"));
+            candidates.push(PathBuf::from("/usr/bin/kate"));
+            candidates.push(PathBuf::from("/usr/bin/mousepad"));
+            candidates.push(PathBuf::from("/usr/bin/xed"));
+        }
+
+        // macOS редактор (TextEdit)
+        #[cfg(target_os = "macos")]
+        {
+            candidates.push(PathBuf::from("/System/Applications/TextEdit.app"));
+        }
 
         candidates.into_iter().find(|p| p.exists())
     }

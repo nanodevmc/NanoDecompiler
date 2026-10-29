@@ -32,6 +32,53 @@ pub struct DecompileFinishPayload {
     pub error: Option<String>,
 }
 
+/// Определение кроссплатформенного каталога данных приложения (Windows / Linux / macOS / Android)
+pub fn get_app_data_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata).join("NanoDecompiler");
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            return PathBuf::from(local).join("NanoDecompiler");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("NanoDecompiler");
+        }
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        if let Ok(files_dir) = std::env::var("FILES_DIR") {
+            return PathBuf::from(files_dir).join("NanoDecompiler");
+        }
+        return PathBuf::from("/data/data/com.nanodev.nanodecompiler/files");
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "android")))]
+    {
+        if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            return PathBuf::from(xdg).join("NanoDecompiler");
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("NanoDecompiler");
+        }
+    }
+
+    // Fallback: временная папка системы
+    std::env::temp_dir().join("NanoDecompiler")
+}
+
 pub struct MonolithEngine {
     pub base_dir: PathBuf,
     pub ota_dir: PathBuf,
@@ -40,8 +87,7 @@ pub struct MonolithEngine {
 
 impl MonolithEngine {
     pub fn new() -> Self {
-        let app_data = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
-        let ota_dir = PathBuf::from(app_data).join("NanoDecompiler").join("ota-modules");
+        let ota_dir = get_app_data_dir().join("ota-modules");
         let _ = fs::create_dir_all(&ota_dir);
 
         Self {
@@ -67,12 +113,34 @@ impl MonolithEngine {
         let out = PathBuf::from(&out_dir);
         let _ = fs::create_dir_all(&out);
 
-        // Поиск нативного бинарника движка (приоритет: рядом с приложением / resources)
-        let exe_candidates = [
-            PathBuf::from("resources/engine/NanoDecompilerCLI.exe"),
-            PathBuf::from("resources/engine_cpp/build/NanoDecompilerCLI.exe"),
-            PathBuf::from("NanoDecompilerCLI.exe"),
-        ];
+        // Кроссплатформенное имя бинарника движка
+        let bin_name = if cfg!(target_os = "windows") {
+            "NanoDecompilerCLI.exe"
+        } else {
+            "NanoDecompilerCLI"
+        };
+
+        // Кроссплатформенный поиск нативного бинарника движка
+        let mut exe_candidates: Vec<PathBuf> = Vec::new();
+
+        // 1. Рядом с запущенным исполняемым файлом
+        if let Ok(current_exe) = std::env::current_exe() {
+            if let Some(parent) = current_exe.parent() {
+                exe_candidates.push(parent.join(bin_name));
+                exe_candidates.push(parent.join("resources").join("engine").join(bin_name));
+                exe_candidates.push(parent.join("engine").join(bin_name));
+                // macOS app bundle: NanoDecompiler.app/Contents/MacOS/ -> ../Resources/engine/
+                exe_candidates.push(parent.join("../Resources/engine").join(bin_name));
+            }
+        }
+
+        // 2. Стандартные пути проекта / дистрибутива
+        exe_candidates.push(PathBuf::from("resources/engine").join(bin_name));
+        exe_candidates.push(PathBuf::from("resources/engine_cpp/build").join(bin_name));
+        exe_candidates.push(PathBuf::from(bin_name));
+
+        // 3. Каталог данных пользователя
+        exe_candidates.push(get_app_data_dir().join("engine").join(bin_name));
 
         let mut cli_path = None;
         for c in &exe_candidates {

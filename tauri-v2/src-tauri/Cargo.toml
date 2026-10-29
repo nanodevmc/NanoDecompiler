@@ -21,3 +21,4 @@ nanodecompiler-fastscan = { path = "../../crates/nanodecompiler-fastscan" }
 open = "5.3"
 walkdir = "2.5"
 zip = { version = "9.0", default-features = false, features = ["deflate"] }
+sha2 = "0.10"
