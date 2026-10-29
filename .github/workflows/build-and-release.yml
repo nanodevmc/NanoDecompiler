@@ -145,6 +145,13 @@ jobs:
           resources/engine/NanoDecompilerCLI.exe test_jars/user_plugins/NanoCore.jar out_user_nanocore --no-legitimacy-check
           if [ ! -d "out_user_nanocore" ]; then echo "движок: out_user_nanocore не создан"; exit 1; fi
 
+          echo "=== 6. Расширенные тесты плагинов (NanoRTP, NanoSpec, FunnyClans, HeadDatabase, MSG) ==="
+          if [ -f "test_jars/NanoRTP.jar" ]; then resources/engine/NanoDecompilerCLI.exe test_jars/NanoRTP.jar out_test_nanortp --no-legitimacy-check; fi
+          if [ -f "test_jars/NanoSpec-1_16_5.jar" ]; then resources/engine/NanoDecompilerCLI.exe test_jars/NanoSpec-1_16_5.jar out_test_nanospec --no-legitimacy-check; fi
+          if [ -f "test_jars/FunnyClans-3_9.jar" ]; then resources/engine/NanoDecompilerCLI.exe test_jars/FunnyClans-3_9.jar out_test_funnyclans --no-legitimacy-check; fi
+          if [ -f "test_jars/HeadDatabase-4_21_2.jar" ]; then resources/engine/NanoDecompilerCLI.exe test_jars/HeadDatabase-4_21_2.jar out_test_hdb --no-legitimacy-check; fi
+          if [ -f "test_jars/MSG.jar" ]; then resources/engine/NanoDecompilerCLI.exe test_jars/MSG.jar out_test_msg --no-legitimacy-check; fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

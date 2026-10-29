@@ -770,8 +770,6 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     {
         std::set<std::string> seen;
         for (auto& [internal, cf] : class_files) {
-        std::cerr << "[Render] " << internal << std::endl;
-
             for (auto& [idx, entry] : cf.pool) {
                 (void)idx;
                 if (entry.tag == CpTag::Class) {
@@ -837,8 +835,6 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         for (auto& [k, v] : hints_bukkit.method_hints) renamer.method_name_hints[k] = v;
     }
     for (auto& [internal, cf] : class_files) {
-        std::cerr << "[Render] " << internal << std::endl;
-
         renamer.friendly_class(internal);
         for (auto& f : cf.fields) renamer.friendly_field(internal, f.name, f.descriptor);
         for (auto& m : cf.methods) renamer.friendly_method(internal, m.name, m.descriptor);
@@ -847,8 +843,6 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     // --- 11. enum_ordinals. ---
     std::map<std::string, std::vector<std::string>> enum_ordinals;
     for (auto& [internal, cf] : class_files) {
-        std::cerr << "[Render] " << internal << std::endl;
-
         if (!(cf.access & 0x4000)) continue;
         std::string own_desc = "L" + internal + ";";
         std::vector<std::string> names;
@@ -883,10 +877,9 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     const int kProgressBarWidth = 20;
 
     for (auto& [internal, cf] : class_files) {
-        std::cerr << "[Render] " << internal << std::endl;
-
         if (synthetic_switchmap_classes.count(internal)) continue;
         if (is_aegis_trap_class(internal)) continue;
+        std::cout << "##ND_FILE:" << internal << "##" << std::endl;
         g_crash_class_name = internal.c_str();
         std::string text;
         OrderedImports cls_imports;
@@ -985,8 +978,6 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     write_mapping_report(out_dir, renamer);
     int total_methods = 0, total_fields = 0;
     for (auto& [internal, cf] : class_files) {
-        std::cerr << "[Render] " << internal << std::endl;
-
         (void)internal;
         total_methods += static_cast<int>(cf.methods.size());
         total_fields += static_cast<int>(cf.fields.size());

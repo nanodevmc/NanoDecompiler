@@ -925,7 +925,7 @@ class MainActivity : Activity() {
 
         navButtons.clear()
         val tabIcons = arrayOf("folder", "queue", "code", "terminal", "settings")
-        val tabTitles = arrayOf("Главная", "Архивы", "Редактор", "Терминал", "Настройки")
+        val tabTitles = arrayOf("Главная", "Архивы", "Исходники", "Терминал", "Настройки")
         for (i in tabTitles.indices) {
             val btn = Button(this).apply {
                 text = tabTitles[i]
@@ -1008,8 +1008,29 @@ class MainActivity : Activity() {
                     }
                 }
 
-                activeFile = cacheFile
-                if (!queueFiles.contains(cacheFile)) queueFiles.add(cacheFile)
+                // Если это ZIP архив — автоматически распакуем и покажем содержащиеся в нем JAR и CLASS файлы
+                if (fileName.endsWith(".zip", ignoreCase = true) || fileName.endsWith(".tar.gz", ignoreCase = true) || fileName.endsWith(".7z", ignoreCase = true) || fileName.endsWith(".rar", ignoreCase = true)) {
+                    val archiveUnpackDir = File(cacheDir, "extracted_${cacheFile.nameWithoutExtension}")
+                    if (archiveUnpackDir.exists()) archiveUnpackDir.deleteRecursively()
+                    archiveUnpackDir.mkdirs()
+
+                    try {
+                        java.util.zip.ZipFile(cacheFile).use { zf ->
+                            val entries = zf.entries()
+                            while (entries.hasMoreElements()) {
+                                val entry = entries.nextElement()
+                                if (!entry.isDirectory && (entry.name.endsWith(".jar", ignoreCase = true) || entry.name.endsWith(".class", ignoreCase = true))) {
+                                    val safeEntryName = File(entry.name).name
+                                    val extractedFile = File(archiveUnpackDir, safeEntryName)
+                                    zf.getInputStream(entry).use { input ->
+                                        FileOutputStream(extractedFile).use { output -> input.copyTo(output) }
+                                    }
+                                    if (!queueFiles.contains(extractedFile)) queueFiles.add(extractedFile)
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
 
                 val rep = FastScanEngine.scan(cacheFile)
                 activeReport = rep
@@ -1047,6 +1068,20 @@ class MainActivity : Activity() {
                 lp.bottomMargin = dp(8)
                 layoutParams = lp
                 background = liquidGlassDrawable(COLOR_SURFACE_GLASS, COLOR_BORDER, 12f)
+            }
+
+            card.setOnClickListener {
+                activeFile = f
+                val rep = FastScanEngine.scan(f)
+                activeReport = rep
+                tvFileTitle.text = rep.fileName
+                val sizeKb = rep.sizeBytes / 1024
+                tvFileMeta.text = "Размер: $sizeKb КБ • Классов: ${rep.totalClasses} • Энтропия: ${rep.maxEntropy}\n" +
+                        "Плагин: ${rep.pluginName} v${rep.version} • Автор: ${rep.author}\n" +
+                        "Защита: ${if (rep.isNanoGuardProtected) "NanoGuard DETECTED" else "Чисто"} • Угрозы: ${rep.threatLevel}"
+                btnStartDecompile.isEnabled = true
+                btnStartDecompile.alpha = 1.0f
+                switchTab(0) // переходим на главный экран для запуска
             }
 
             val dot = View(this).apply {
@@ -1098,6 +1133,7 @@ class MainActivity : Activity() {
             val res = DecompilerEngine.decompile(
                 this,
                 target,
+                skipLegitimacy = !optLegitimacyCheck,
                 onStage = { stage ->
                     runOnUiThread {
                         when (stage.lowercase()) {
@@ -1121,6 +1157,12 @@ class MainActivity : Activity() {
                                 tvStatus.text = stage
                             }
                         }
+                    }
+                },
+                onFileProcessing = { currentClass ->
+                    runOnUiThread {
+                        val simpleName = currentClass.substringAfterLast('/')
+                        tvStatus.text = "Декомпиляция: $simpleName"
                     }
                 },
                 onLog = { line ->
@@ -1213,7 +1255,7 @@ class MainActivity : Activity() {
 
             val lineCount = rawText.lines().size
             val sizeBytes = file.length()
-            val highlighted = if (optSyntaxHighlight && file.extension == "java") highlightJavaCode(rawText) else SpannableStringBuilder(rawText)
+            val highlighted = if (optSyntaxHighlight) highlightCode(rawText, file.extension) else SpannableStringBuilder(rawText)
 
             val lineNumsBuilder = StringBuilder()
             for (i in 1..lineCount) {
@@ -1299,9 +1341,67 @@ class MainActivity : Activity() {
         }
     }
 
-    // Быстрый движок подсветки синтаксиса Java
-    private fun highlightJavaCode(code: String): SpannableStringBuilder {
+    // Быстрый движок подсветки синтаксиса (Java, YAML, JSON, XML)
+    private fun highlightCode(code: String, extension: String): SpannableStringBuilder {
         val ssb = SpannableStringBuilder(code)
+        val ext = extension.lowercase()
+
+        if (ext == "yml" || ext == "yaml") {
+            // Ключи YAML (word:)
+            val keyPattern = Pattern.compile("(^|\\n)\\s*([A-Za-z0-9_.-]+)\\s*:")
+            val km = keyPattern.matcher(code)
+            while (km.find()) {
+                val start = km.start(2)
+                val end = km.end(2)
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_KEYWORD), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                ssb.setSpan(StyleSpan(Typeface.BOLD), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            // Строки в кавычках ("..." или '...')
+            val strPattern = Pattern.compile("(\"[^\"]*\"|'[^']*')")
+            val sm = strPattern.matcher(code)
+            while (sm.find()) {
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_STRING), sm.start(), sm.end(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            // Комментарии YAML (# ...)
+            val commentPattern = Pattern.compile("#[^\n]*")
+            val cm = commentPattern.matcher(code)
+            while (cm.find()) {
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_COMMENT), cm.start(), cm.end(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            // Булевы и числа
+            val litPattern = Pattern.compile("\\b(true|false|yes|no|null|\\d+(\\.\\d+)?)\\b", Pattern.CASE_INSENSITIVE)
+            val lm = litPattern.matcher(code)
+            while (lm.find()) {
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_NUMBER), lm.start(), lm.end(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            return ssb
+        }
+
+        if (ext == "json") {
+            // Ключи JSON ("key":)
+            val keyPattern = Pattern.compile("\"([^\"]+)\"\\s*:")
+            val km = keyPattern.matcher(code)
+            while (km.find()) {
+                val start = km.start(1)
+                val end = km.end(1)
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_KEYWORD), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            // Строковые значения JSON
+            val strPattern = Pattern.compile(":\\s*\"([^\"]*)\"")
+            val sm = strPattern.matcher(code)
+            while (sm.find()) {
+                val start = sm.start(1)
+                val end = sm.end(1)
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_STRING), start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            // Числа и константы
+            val litPattern = Pattern.compile("\\b(true|false|null|-?\\d+(\\.\\d+)?)\\b")
+            val lm = litPattern.matcher(code)
+            while (lm.find()) {
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_NUMBER), lm.start(), lm.end(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            return ssb
+        }
 
         val KEYWORDS = setOf(
             "package", "import", "public", "private", "protected", "class", "interface", "enum",

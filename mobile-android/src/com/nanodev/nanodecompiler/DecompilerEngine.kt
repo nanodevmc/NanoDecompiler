@@ -96,7 +96,9 @@ object DecompilerEngine {
     fun decompile(
         context: Context,
         inputFile: File,
+        skipLegitimacy: Boolean = false,
         onStage: (String) -> Unit,
+        onFileProcessing: (String) -> Unit,
         onLog: (String) -> Unit
     ): DecompileResult {
         val startTime = System.currentTimeMillis()
@@ -120,14 +122,16 @@ object DecompilerEngine {
 
         var classesCount = 0
         try {
-            val cmd = arrayOf(
+            val cmdList = mutableListOf(
                 engine.absolutePath,
                 inputFile.absolutePath,
-                outDir.absolutePath,
-                "--no-legitimacy-check"
+                outDir.absolutePath
             )
+            if (skipLegitimacy) {
+                cmdList.add("--no-legitimacy-check")
+            }
 
-            val pb = ProcessBuilder(*cmd)
+            val pb = ProcessBuilder(cmdList)
             pb.directory(context.filesDir)
             pb.redirectErrorStream(true)
 
@@ -147,6 +151,13 @@ object DecompilerEngine {
                 if (l.startsWith("##ND_STAGE:") && l.endsWith("##")) {
                     val stage = l.removePrefix("##ND_STAGE:").removeSuffix("##").trim()
                     onStage(stage)
+                    continue
+                }
+
+                // Перехват текущего обрабатываемого файла
+                if (l.startsWith("##ND_FILE:") && l.endsWith("##")) {
+                    val classFile = l.removePrefix("##ND_FILE:").removeSuffix("##").trim()
+                    onFileProcessing(classFile)
                     continue
                 }
 

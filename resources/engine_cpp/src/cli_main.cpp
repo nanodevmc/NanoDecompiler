@@ -149,8 +149,10 @@ void print_usage() {
     }
 }
 
-int run_decompile_console(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool ignore_nanoguard = false) {
-    std::cout << "\n" << banner_text() << "\n\n";
+int run_decompile_console(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool ignore_nanoguard = false, bool suppress_banner = false) {
+    if (!suppress_banner) {
+        std::cout << "\n" << banner_text() << "\n\n";
+    }
 
     std::string lower_path = jar_path;
     for (char& c : lower_path) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -548,14 +550,13 @@ int run_cli(int argc, char** argv) {
                 plugin_out_dir = (fs::u8path(out_dir) / fs::u8path(p.filename).stem()).u8string();
             }
             if (!json_output) {
-                std::cout << "\n=======================================================\n";
-                std::cout << "[archive] [" << (i + 1) << "/" << summary.plugins.size() << "] Декомпиляция: " << p.filename << " (" << p.platform.kind_label() << ")\n";
-                std::cout << "=======================================================\n";
+                std::cout << "\r\033[K[" << (i + 1) << "/" << summary.plugins.size() << "] Декомпилирую: \"" << p.filename << "\"..." << std::flush;
             }
             if (json_output) {
                 ret |= nd::run_json_output(p.full_path, plugin_out_dir, skip_legitimacy, ignore_nanoguard);
             } else {
-                ret |= run_decompile_console(p.full_path, plugin_out_dir, skip_legitimacy, ignore_nanoguard);
+                ret |= run_decompile_console(p.full_path, plugin_out_dir, skip_legitimacy, ignore_nanoguard, /*suppress_banner=*/true);
+                std::cout << "\r\033[K[" << (i + 1) << "/" << summary.plugins.size() << "] Декомпилировано: \"" << p.filename << "\"\n" << std::flush;
             }
         }
         // Распакованный архив больше не нужен (результат лежит в out_dir). Раньше папка в

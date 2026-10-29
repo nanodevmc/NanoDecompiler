@@ -49,6 +49,16 @@ temp_test_jars/
 !test_jars/smoketest_plugin.jar
 !test_jars/large_legit/**
 !test_jars/user_plugins/**
+!test_jars/NanoRTP.jar
+!test_jars/NanoSpec-1_16_5.jar
+!test_jars/FunnyClans-3_9.jar
+!test_jars/HeadDatabase-4_21_2.jar
+!test_jars/MSG.jar
+!test_jars/ChatFilterPlus_v2_3.jar
+!test_jars/DeluxeMenuConstructor-2_0.jar
+!test_jars/TowerClans-2_5_2.jar
+!test_jars/WorldGuard-Translator-1_1_1.jar
+!test_jars/rccooldown-1_2.jar
 out_decompile_test/
 erybuyer_src/
 erybuyer_v3.zip
