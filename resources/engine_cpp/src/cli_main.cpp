@@ -613,7 +613,9 @@ std::vector<std::string> get_utf8_argv() {
 #else
 #include <signal.h>
 #include <unistd.h>
+#if !defined(__ANDROID__)
 #include <execinfo.h>
+#endif
 #include <sys/resource.h>
 
 #include "process_jar.hpp"
@@ -647,8 +649,11 @@ static void sigsegv_handler(int sig) {
         if (write(STDERR_FILENO, "\n", 1) < 0) {}
     }
     void* callstack[64];
+    #if !defined(__ANDROID__)
     int frames = backtrace(callstack, 64);
-    backtrace_symbols_fd(callstack, frames, STDERR_FILENO);
+    
+#endif
+    
     _exit(139);
 }
 

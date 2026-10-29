@@ -2636,7 +2636,6 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
 
     try {
         g_crash_method_name = method.name.c_str();
-        std::cerr << " [DBG: method " << method.name << " start]" << std::endl;
         DecodedMethod dm = decode_method(method.code);
         result.n_instructions = static_cast<int>(dm.order.size());
         auto [filtered_exceptions, junk_removed] = filter_junk_catches(method);
@@ -2820,14 +2819,10 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
                 res.exit_stack.clear();
             }
         }
-
-        std::cerr << " [DBG: before structurer.build]" << std::endl;
         Structurer structurer(cfg, results, filtered_exceptions, ctx);
         auto stmts = structurer.build(*cfg.entry);
-        std::cerr << " [DBG: after structurer.build]" << std::endl;
         stmts = fold_sync_blocks(stmts);
         stmts = simplify_stmts(stmts);
-        std::cerr << " [DBG: after simplify_stmts]" << std::endl;
         if (method.name == "<init>") stmts = reorder_ctor_call_to_front(stmts);
         stmts = inline_single_use_crossing_temps(stmts, ctx);
         stmts = fold_array_literals(stmts);

@@ -943,7 +943,6 @@ std::pair<std::string, OrderedImports> render_class(
 
         std::optional<MethodDecompileResult> result;
         if (m.has_code) {
-            std::cerr << " [Method] " << internal << "::" << m.name << std::endl;
             stats.total_methods += 1;
             result = decompile_method_body(cf, m, renamer, known_internal_by_dotted, internal, 2, enum_ordinals, switchmap_tables, all_classes);
             stats.junk_catches_removed += result->junk_catches_removed;

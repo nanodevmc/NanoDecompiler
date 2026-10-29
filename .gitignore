@@ -90,3 +90,16 @@ fix_structure.py
 inspect_downloads.py
 bump_version_*.py
 test_runner.py
+
+# Mobile Android artifacts & build temp
+*.apk
+*.idsig
+mobile-android/bin/
+mobile-android/dex/
+mobile-android/gen/
+mobile-android/output/
+mobile-android/compiled_res.zip
+mobile-android/unaligned.apk
+resources/engine_cpp/build_android/
+resources/engine_cpp/build/
+
