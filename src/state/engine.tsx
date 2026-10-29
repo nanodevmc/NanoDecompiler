@@ -1194,6 +1194,11 @@ export function EngineProvider({ children }: { children: ReactNode }) {
 
     let cancelled = false;
 
+    // Страховочный тайм-аут против черного экрана на мобильных и в webview
+    const fallbackTimer = setTimeout(() => {
+      if (!cancelled) setSettingsLoaded(true);
+    }, 400);
+
     window.nano
 
       .getSettings()
@@ -1287,9 +1292,8 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       });
 
     return () => {
-
       cancelled = true;
-
+      clearTimeout(fallbackTimer);
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2610,18 +2614,12 @@ export function EngineProvider({ children }: { children: ReactNode }) {
 
 
 
-        if (/\.jar$/i.test(f.name)) {
-
+        if (/\.(jar|class)$/i.test(f.name)) {
           jarPaths.push(filePath);
-
         } else if (/\.(zip|tar\.gz|tgz|tar|7z|7zip|rar)$/i.test(f.name)) {
-
           addArchive(filePath, f.name);
-
         } else {
-
-          toast(`Пропущено: ${f.name} — поддерживаются .jar и архивы (.zip, .tar.gz, .7z, .rar)`, "err");
-
+          toast(`Пропущено: ${f.name} — поддерживаются только .jar, .class и архивы`, "err");
         }
 
       }
@@ -2650,18 +2648,12 @@ export function EngineProvider({ children }: { children: ReactNode }) {
 
           const fileName = p.split(/[/\\]/).pop() ?? p;
 
-          if (/\.jar$/i.test(p)) {
-
+          if (/\.(jar|class)$/i.test(p)) {
             jarPaths.push(p);
-
           } else if (/\.(zip|tar\.gz|tgz|tar|7z|7zip|rar)$/i.test(p)) {
-
             addArchive(p, fileName);
-
           } else {
-
-            jarPaths.push(p);
-
+            toast(`Пропущено: ${fileName} — поддерживаются только .jar, .class и архивы`, "err");
           }
 
         }

@@ -388,9 +388,13 @@ export function Sidebar() {
   const lang = settings.language;
   const [dragActive, setDragActive] = useState(false);
   const onResizeDown = useResizeDrag("x", sidebarWidth, setSidebarWidth, 220, 480);
+  const isMobile = typeof window !== "undefined" && (window.innerWidth < 768 || /Android|iPhone/i.test(navigator.userAgent));
 
   return (
-    <aside className="relative flex flex-none flex-col border-r border-line bg-surface" style={{ width: sidebarWidth }}>
+    <aside
+      className={cn("relative flex flex-none flex-col border-r border-line bg-surface", isMobile ? "w-full border-r-0" : "")}
+      style={{ width: isMobile ? "100%" : sidebarWidth }}
+    >
       <div
         onPointerDown={onResizeDown}
         className="group absolute top-0 right-[-3px] z-10 h-full w-[6px] cursor-col-resize select-none"
@@ -434,9 +438,9 @@ export function Sidebar() {
               : "border-line hover:border-acid/40 hover:bg-raised/60",
           )}
         >
-          {/* 4. Dropzone Radar Sweep Animation */}
-          <div className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-            <div className="radar-vivid" style={{ background: 'conic-gradient(from 0deg, transparent 0 300deg, rgba(155, 242, 70, 0.12) 360deg)' }} />
+          {/* 4. Dropzone Radar Sweep Animation (Active & Vivid) */}
+          <div className="absolute inset-0 pointer-events-none transition-opacity duration-300">
+            <div className="radar-vivid opacity-35 group-hover:opacity-100 transition-opacity" />
           </div>
           <FileArchive size={20} className={cn("transition-transform duration-200 group-hover:scale-110 relative z-10", dragActive ? "text-acid animate-bounce" : "text-faint group-hover:text-acid")} />
           <p className="text-[12.5px] font-medium text-ink/90">

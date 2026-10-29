@@ -55,7 +55,7 @@ export function Titlebar() {
 
       <div className="mono flex-1 truncate text-center text-[11px] text-faint">{center}</div>
 
-      <div className="flex items-center gap-0.5" style={{ WebkitAppRegion: "no-drag" } as CSSProperties}>
+      <div className="hidden sm:flex items-center gap-0.5" style={{ WebkitAppRegion: "no-drag" } as CSSProperties}>
         <button
           className="icon-btn h-7 w-9 rounded-md"
           title="Свернуть"

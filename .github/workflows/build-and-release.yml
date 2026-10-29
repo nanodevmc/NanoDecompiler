@@ -802,11 +802,91 @@ jobs:
           path: NanoDecompiler-Tauri-v2-Linux-x64
           if-no-files-found: error
 
+  build-tauri-android:
+    needs: [resolve-version]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Установить Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "zulu"
+          java-version: "17"
+
+      - name: Настроить Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Установить Android NDK
+        run: |
+          echo "y" | sudo sdkmanager --install "ndk;26.1.10909125"
+
+      - name: Установить Rust toolchain & Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Установить cargo-tauri CLI
+        run: cargo install tauri-cli --version "^2.0" --locked
+
+      - name: Кэш node_modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node20-${{ hashFiles('package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node20-
+
+      - name: npm install & Build Vite
+        run: |
+          npm install
+          npm run build:renderer
+
+      - name: Инициализировать и собрать APK (Tauri v2 Mobile)
+        env:
+          NDK_HOME: /usr/local/lib/android/sdk/ndk/26.1.10909125
+        run: |
+          cd tauri-v2
+          cargo tauri android init --ci --skip-targets-install
+          cargo tauri android build --apk --target aarch64-linux-android
+          mkdir -p ../android-apk
+          find src-tauri/gen/android -name "*.apk" -exec cp {} ../android-apk/NanoDecompiler-Android-arm64.apk \;
+
+      - name: Подписать релизный APK (HONOR / Google Play Keystore)
+        if: env.ANDROID_KEYSTORE_BASE64 != ''
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
+          wget -q https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar
+          java -jar uber-apk-signer-1.3.0.jar -a android-apk/NanoDecompiler-Android-arm64.apk \
+            --ks release.keystore \
+            --ksAlias "${ANDROID_KEY_ALIAS:-nanodev}" \
+            --ksPass "${ANDROID_KEYSTORE_PASSWORD:-regi12345.}" \
+            --ksKeyPass "${ANDROID_KEY_PASSWORD:-regi12345.}" \
+            -o android-apk/signed
+          find android-apk/signed -name "*-signed.apk" -exec cp {} android-apk/NanoDecompiler-Android-arm64.apk \;
+          rm -f release.keystore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tauri-artifact-android
+          path: android-apk/NanoDecompiler-Android-arm64.apk
+          if-no-files-found: warn
+
   publish-release:
     permissions:
       contents: write
     # HANDOFF_54: явно перечислены ВСЕ клиентские, ClApi и Lite job'ы
-    needs: [resolve-version, build-tauri-windows, build-tauri-linux, build-client-windows, build-client-linux, build-client-macos, build-clapi-windows, build-clapi-linux, build-clapi-macos, build-lite-gui]
+    needs: [resolve-version, build-tauri-windows, build-tauri-linux, build-tauri-android, build-client-windows, build-client-linux, build-client-macos, build-clapi-windows, build-clapi-linux, build-clapi-macos, build-lite-gui]
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ needs.resolve-version.outputs.version }}
@@ -855,6 +935,9 @@ jobs:
           mv release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe release-files/NanoDecompiler-Tauri-v2-Windows-x64-${TAG}-Portable.exe
           if [ -f "release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Linux-x64" ]; then
             mv release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Linux-x64 release-files/NanoDecompiler-Tauri-v2-Linux-x64-${TAG}
+          fi
+          if [ -f "release-files-tmp/tauri/NanoDecompiler-Android-arm64.apk" ]; then
+            mv release-files-tmp/tauri/NanoDecompiler-Android-arm64.apk release-files/NanoDecompiler-Android-arm64-${TAG}.apk
           fi
 
           # Главный стандартный файл ведет прямо на быстрый нативный клиент Tauri v2!
@@ -941,6 +1024,7 @@ jobs:
               f"| `NanoDecompiler-Tauri-v2-Windows-x64-{tag_full}.exe` | **⭐ ОСНОВНОЙ КЛИЕНТ** (Tauri v2 Native Desktop, Liquid Glass + MD3) | Windows x64 |",
               f"| `NanoDecompiler-Tauri-v2-Windows-x64-{tag_full}-Portable.exe` | **Портативный нативный клиент** (Tauri v2, без инсталляции) | Windows x64 |",
               f"| `NanoDecompiler-Tauri-v2-Linux-x64-{tag_full}` | **⭐ ОСНОВНОЙ КЛИЕНТ** (Tauri v2 Native Desktop) | Linux x64 |",
+              f"| `NanoDecompiler-Android-arm64-{tag_full}.apk` | **Мобильный клиент** (Android 7.0+ / API 24+, ARM64) | Android ARM64 |",
               f"| `NanoDecompilerLite-Windows-x64-{tag_full}.exe` | **Ультралегкий C# GUI клиент** (быстрый, не лагает) | Windows x64 |",
               f"| `NanoDecompilerLite-Linux-x64-{tag_full}` | **Ультралегкий C# GUI клиент** | Linux x64 |",
               f"| `NanoDecompilerLite-macOS-x64-{tag_full}` | **Ультралегкий C# GUI клиент** | macOS Intel x64 |",
