@@ -801,7 +801,7 @@ jobs:
           fi
           SETUP_CANDIDATE=''
           if [ -f 'resources/installer_tauri.nsi' ] && command -v makensis &>/dev/null; then
-            cd resources && makensis -DPRODUCT_VERSION="$VERSION" installer_tauri.nsi && cd ..
+            (cd resources && makensis -DPRODUCT_VERSION="$VERSION" installer_tauri.nsi) || true
             SETUP_CANDIDATE=$(find . -maxdepth 1 -iname 'NanoDecompiler-Tauri-Setup-*.exe' 2>/dev/null | head -1)
           fi
           if [ -n "$SETUP_CANDIDATE" ]; then

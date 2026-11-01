@@ -58,16 +58,16 @@ Section "MainSection" SEC01
     File "/oname=${PRODUCT_EXE}" "..\tauri-v2\src-tauri\target\release\nanodecompiler-tauri.exe"
 
     ; Нативные движки C++ и Rust
-    File "..\resources\engine\NanoDecompilerCLI.exe"
-    File "..\resources\engine\nanofastscan.exe"
-    File "..\resources\engine\icon.ico"
+    File /nonfatal "..\resources\engine\NanoDecompilerCLI.exe"
+    File /nonfatal "..\resources\engine\nanofastscan.exe"
+    File /nonfatal "..\resources\engine\icon.ico"
 
     ; Вспомогательный каталог ресурсов
     CreateDirectory "$INSTDIR\resources\engine"
     SetOutPath "$INSTDIR\resources\engine"
-    File "..\resources\engine\NanoDecompilerCLI.exe"
-    File "..\resources\engine\nanofastscan.exe"
-    File "..\resources\engine\icon.ico"
+    File /nonfatal "..\resources\engine\NanoDecompilerCLI.exe"
+    File /nonfatal "..\resources\engine\nanofastscan.exe"
+    File /nonfatal "..\resources\engine\icon.ico"
     SetOutPath "$INSTDIR"
 
     ; Запись деинсталлятора
