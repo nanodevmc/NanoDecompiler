@@ -5,6 +5,7 @@
 #include "emit.hpp"
 #include "process_jar.hpp"
 #include "javatypes.hpp"
+#include "stackvm.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -941,14 +942,7 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_if_inner(int64_t pc
             merge = find_forward_merge(true_t, false_t, stop_addrs, false);
         }
     }
-    {
-        auto forward = find_forward_merge(true_t, false_t, stop_addrs, false);
-        if (forward.has_value()) {
-            if (!merge.has_value() || *forward < *merge) {
-                merge = forward;
-            }
-        }
-    }
+    // v2.0.5: ipdom_ is the exact mathematical postdominator; do not override with non-postdominating forward nodes
     if (merge.has_value()) {
         for (auto& entry : loop_stack_) {
             if (entry->header.has_value() && *entry->header == *merge) {
@@ -1476,7 +1470,10 @@ static ExprPtr invert_condition(const ExprPtr& cond) {
 }
 
 ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
-    if (!e || depth > 40) return e;
+    static thread_local int s_simp_expr_depth = 0;
+    s_simp_expr_depth++;
+    struct SimpDepthGuard { ~SimpDepthGuard() { s_simp_expr_depth--; } } s_guard;
+    if (!e || depth > 25 || s_simp_expr_depth > 25) return e;
     switch (e->kind) {
         case ExprKind::Const: {
             auto* c = static_cast<Const*>(e.get());
@@ -1520,11 +1517,33 @@ ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
             if (mc->target) mc->target = simplify_expr(mc->target);
             for (auto& arg : mc->args) arg = simplify_expr(arg);
 
-            // Inlining constant string methods used by obfuscators
+            // Inlining constant string methods used by obfuscators & standard code
             if (mc->target && mc->target->kind == ExprKind::Const) {
                 auto* ct = static_cast<Const*>(mc->target.get());
-                if (ct->type == "String" && ct->literal.size() >= 2 && ct->literal.front() == '"' && ct->literal.back() == '"') {
-                    std::string raw_str = ct->literal.substr(1, ct->literal.size() - 2);
+                if (ct->type == "String" && (ct->raw.has_value() || (ct->literal.size() >= 2 && ct->literal.front() == '"' && ct->literal.back() == '"'))) {
+                    std::string raw_str;
+                    if (ct->raw.has_value()) {
+                        raw_str = *ct->raw;
+                    } else {
+                        // Unescape literal
+                        const std::string& lit = ct->literal;
+                        for (size_t i = 1; i + 1 < lit.size(); ++i) {
+                            if (lit[i] == '\\' && i + 2 < lit.size()) {
+                                char next = lit[i + 1];
+                                if (next == 'n') { raw_str += '\n'; i++; }
+                                else if (next == 'r') { raw_str += '\r'; i++; }
+                                else if (next == 't') { raw_str += '\t'; i++; }
+                                else if (next == 'b') { raw_str += '\b'; i++; }
+                                else if (next == 'f') { raw_str += '\f'; i++; }
+                                else if (next == '\\') { raw_str += '\\'; i++; }
+                                else if (next == '"') { raw_str += '"'; i++; }
+                                else if (next == '\'') { raw_str += '\''; i++; }
+                                else { raw_str += lit[i]; }
+                            } else {
+                                raw_str += lit[i];
+                            }
+                        }
+                    }
                     if (mc->name == "intern" && mc->args.empty()) {
                         return mc->target;
                     }
@@ -1538,8 +1557,8 @@ ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
                         try {
                             int idx = std::stoi(static_cast<Const*>(mc->args[0].get())->literal);
                             if (idx >= 0 && (size_t)idx < raw_str.size()) {
-                                std::string ch_lit = "'" + std::string(1, raw_str[idx]) + "'";
-                                return std::make_shared<Const>(ch_lit, "char");
+                                unsigned char uch = static_cast<unsigned char>(raw_str[idx]);
+                                return std::make_shared<Const>(char_literal(uch), "char");
                             }
                         } catch (...) {}
                     }
@@ -1547,7 +1566,8 @@ ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
                         try {
                             int idx = std::stoi(static_cast<Const*>(mc->args[0].get())->literal);
                             if (idx >= 0 && (size_t)idx <= raw_str.size()) {
-                                return std::make_shared<Const>("\"" + raw_str.substr(idx) + "\"", "String");
+                                std::string sub = raw_str.substr(idx);
+                                return std::make_shared<Const>(java_string_literal(sub), "String", sub);
                             }
                         } catch (...) {}
                     }
@@ -1556,7 +1576,8 @@ ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
                             int start = std::stoi(static_cast<Const*>(mc->args[0].get())->literal);
                             int end = std::stoi(static_cast<Const*>(mc->args[1].get())->literal);
                             if (start >= 0 && end >= start && (size_t)end <= raw_str.size()) {
-                                return std::make_shared<Const>("\"" + raw_str.substr(start, end - start) + "\"", "String");
+                                std::string sub = raw_str.substr(start, end - start);
+                                return std::make_shared<Const>(java_string_literal(sub), "String", sub);
                             }
                         } catch (...) {}
                     }
@@ -1645,6 +1666,7 @@ ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
                         if (method_name.size() >= 2 && method_name.front() == '"' && method_name.back() == '"') {
                             method_name = method_name.substr(1, method_name.size() - 2);
                         }
+                        if (!is_safe_local_name(method_name)) return e;
                         
                         std::string owner_class = "";
                         if (get_m->target) {
@@ -1702,6 +1724,7 @@ ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
                         if (field_name.size() >= 2 && field_name.front() == '"' && field_name.back() == '"') {
                             field_name = field_name.substr(1, field_name.size() - 2);
                         }
+                        if (!is_safe_local_name(field_name)) return e;
                         std::string owner_class = "";
                         if (get_f->target) {
                             if (get_f->target->kind == ExprKind::ClassLiteral) {
@@ -1926,11 +1949,13 @@ ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
                     auto* c = static_cast<Const*>(b->right.get());
                     if (c->literal == "true") return b->left;
                     if (c->literal == "false") return negate(b->left);
+                    if (c->literal == "0" && (b->left->type == "boolean" || b->left->kind == ExprKind::BinOp)) return negate(b->left);
                 }
                 if (b->left && b->left->kind == ExprKind::Const) {
                     auto* c = static_cast<Const*>(b->left.get());
                     if (c->literal == "true") return b->right;
                     if (c->literal == "false") return negate(b->right);
+                    if (c->literal == "0" && (b->right->type == "boolean" || b->right->kind == ExprKind::BinOp)) return negate(b->right);
                 }
             }
             if (b->op == "!=") {
@@ -1938,11 +1963,13 @@ ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
                     auto* c = static_cast<Const*>(b->right.get());
                     if (c->literal == "true") return negate(b->left);
                     if (c->literal == "false") return b->left;
+                    if (c->literal == "0" && (b->left->type == "boolean" || b->left->kind == ExprKind::BinOp)) return b->left;
                 }
                 if (b->left && b->left->kind == ExprKind::Const) {
                     auto* c = static_cast<Const*>(b->left.get());
                     if (c->literal == "true") return negate(b->right);
                     if (c->literal == "false") return b->right;
+                    if (c->literal == "0" && (b->right->type == "boolean" || b->right->kind == ExprKind::BinOp)) return b->right;
                 }
             }
             if (b->op == "&") {
@@ -2198,6 +2225,31 @@ std::vector<StmtPtr> fold_boolean_materialization(const std::vector<StmtPtr>& st
         if (!s) continue;
         if (s->kind == StmtKind::IfStmt) {
             auto* i = static_cast<IfStmt*>(s.get());
+            i->then_body = fold_boolean_materialization(i->then_body);
+            if (i->else_body) i->else_body = fold_boolean_materialization(*i->else_body);
+        } else if (s->kind == StmtKind::WhileStmt) {
+            auto* w = static_cast<WhileStmt*>(s.get());
+            w->body = fold_boolean_materialization(w->body);
+        } else if (s->kind == StmtKind::DoWhileStmt) {
+            auto* dw = static_cast<DoWhileStmt*>(s.get());
+            dw->body = fold_boolean_materialization(dw->body);
+        } else if (s->kind == StmtKind::ForStmt) {
+            auto* f = static_cast<ForStmt*>(s.get());
+            f->body = fold_boolean_materialization(f->body);
+        } else if (s->kind == StmtKind::BlockStmt) {
+            auto* b = static_cast<BlockStmt*>(s.get());
+            b->stmts = fold_boolean_materialization(b->stmts);
+        } else if (s->kind == StmtKind::TryStmt) {
+            auto* t = static_cast<TryStmt*>(s.get());
+            t->body = fold_boolean_materialization(t->body);
+            for (auto& c : t->catches) c.body = fold_boolean_materialization(c.body);
+            if (t->finally_body) t->finally_body = fold_boolean_materialization(*t->finally_body);
+        } else if (s->kind == StmtKind::SyncStmt) {
+            auto* sy = static_cast<SyncStmt*>(s.get());
+            sy->body = fold_boolean_materialization(sy->body);
+        }
+        if (s->kind == StmtKind::IfStmt) {
+            auto* i = static_cast<IfStmt*>(s.get());
             if (!i->then_body.empty() && i->then_body.size() == 1 && i->else_body.has_value() && i->else_body->size() == 1) {
                 if (!i->then_body[0] || !(*i->else_body)[0]) {
                     out.push_back(s);
@@ -2218,6 +2270,24 @@ std::vector<StmtPtr> fold_boolean_materialization(const std::vector<StmtPtr>& st
                         if (b1.has_value() && b2.has_value() && ((*b1 == 0 && *b2 == 1) || (*b1 == 1 && *b2 == 0))) {
                             ExprPtr cond = (*b1 == 1) ? i->cond : negate(i->cond);
                             out.push_back(std::make_shared<ExprStmtNode>(std::make_shared<Assign>(tgt1, cond)));
+                            continue;
+                        }
+                        // v2.0.5: Boolean short-circuit folding
+                        if (b2.has_value() && *b2 == 0) {
+                            ExprPtr folded = std::make_shared<BinOp>("&&", i->cond, v1, "boolean");
+                            out.push_back(std::make_shared<ExprStmtNode>(std::make_shared<Assign>(tgt1, folded)));
+                            continue;
+                        } else if (b2.has_value() && *b2 == 1) {
+                            ExprPtr folded = std::make_shared<BinOp>("||", negate(i->cond), v1, "boolean");
+                            out.push_back(std::make_shared<ExprStmtNode>(std::make_shared<Assign>(tgt1, folded)));
+                            continue;
+                        } else if (b1.has_value() && *b1 == 0) {
+                            ExprPtr folded = std::make_shared<BinOp>("&&", negate(i->cond), v2, "boolean");
+                            out.push_back(std::make_shared<ExprStmtNode>(std::make_shared<Assign>(tgt1, folded)));
+                            continue;
+                        } else if (b1.has_value() && *b1 == 1) {
+                            ExprPtr folded = std::make_shared<BinOp>("||", i->cond, v2, "boolean");
+                            out.push_back(std::make_shared<ExprStmtNode>(std::make_shared<Assign>(tgt1, folded)));
                             continue;
                         }
                         std::string t1_type = v1->type;
@@ -2253,6 +2323,34 @@ std::vector<StmtPtr> fold_boolean_materialization(const std::vector<StmtPtr>& st
 }
 
 std::vector<StmtPtr> collapse_temp_chains(std::vector<StmtPtr> stmts) {
+    for (auto& s : stmts) {
+        if (!s) continue;
+        if (s->kind == StmtKind::IfStmt) {
+            auto* i = static_cast<IfStmt*>(s.get());
+            i->then_body = collapse_temp_chains(i->then_body);
+            if (i->else_body) i->else_body = collapse_temp_chains(*i->else_body);
+        } else if (s->kind == StmtKind::WhileStmt) {
+            auto* w = static_cast<WhileStmt*>(s.get());
+            w->body = collapse_temp_chains(w->body);
+        } else if (s->kind == StmtKind::DoWhileStmt) {
+            auto* dw = static_cast<DoWhileStmt*>(s.get());
+            dw->body = collapse_temp_chains(dw->body);
+        } else if (s->kind == StmtKind::ForStmt) {
+            auto* f = static_cast<ForStmt*>(s.get());
+            f->body = collapse_temp_chains(f->body);
+        } else if (s->kind == StmtKind::BlockStmt) {
+            auto* b = static_cast<BlockStmt*>(s.get());
+            b->stmts = collapse_temp_chains(b->stmts);
+        } else if (s->kind == StmtKind::TryStmt) {
+            auto* t = static_cast<TryStmt*>(s.get());
+            t->body = collapse_temp_chains(t->body);
+            for (auto& c : t->catches) c.body = collapse_temp_chains(c.body);
+            if (t->finally_body) t->finally_body = collapse_temp_chains(*t->finally_body);
+        } else if (s->kind == StmtKind::SyncStmt) {
+            auto* sy = static_cast<SyncStmt*>(s.get());
+            sy->body = collapse_temp_chains(sy->body);
+        }
+    }
     for (int iter = 0; iter < 4; ++iter) {
         bool changed = false;
         size_t n = stmts.size();
@@ -2264,10 +2362,6 @@ std::vector<StmtPtr> collapse_temp_chains(std::vector<StmtPtr> stmts) {
             if (!tgt || !(tgt->kind == ExprKind::Local && is_synth_temp(static_cast<Local*>(tgt.get())->name))) continue;
             std::string tgt_name = static_cast<Local*>(tgt.get())->name;
 
-            // Специфика synth temps в Java bytecode: временные переменные стека
-            // живут локально (в 99% случаев потребляются в следующем же операторе i + 1).
-            // Ограничиваем окно поиска до 32 операторов, чтобы избежать O(N^2) сканирования
-            // на гигантских методах (<clinit> с тысячами enum-констант).
             size_t max_j = (n > 64) ? std::min(n, i + 32) : n;
             std::vector<size_t> uses;
             for (size_t j = i + 1; j < max_j; ++j) {
@@ -2283,12 +2377,14 @@ std::vector<StmtPtr> collapse_temp_chains(std::vector<StmtPtr> stmts) {
             if (!b.has_value()) continue;
             ExprPtr tgt2 = b->first, val2 = b->second;
             if (!val2 || !(val2->kind == ExprKind::Local && static_cast<Local*>(val2.get())->name == tgt_name)) continue;
-            // Если между i и j есть другие операторы, нельзя переносить выражение с побочными эффектами
             if (j != i + 1 && has_side_effect(val)) continue;
 
-            // In-place замена: не копируем весь stmts вектор на каждую замену!
             stmts[i] = nullptr;
-            stmts[j] = std::make_shared<ExprStmtNode>(std::make_shared<Assign>(tgt2, val));
+            if (stmts[j]->kind == StmtKind::LocalDecl) {
+                static_cast<LocalDecl*>(stmts[j].get())->init = val;
+            } else {
+                stmts[j] = std::make_shared<ExprStmtNode>(std::make_shared<Assign>(tgt2, val));
+            }
             changed = true;
         }
         if (changed) {
@@ -2610,7 +2706,10 @@ StmtPtr simplify_while_true(const std::shared_ptr<WhileStmt>& s) {
 static StmtPtr simplify_stmt(StmtPtr s, int depth);
 
 static std::vector<StmtPtr> simplify_stmt_list(const std::vector<StmtPtr>& stmts, int depth = 0) {
-    if (depth > 60) return stmts;
+    static thread_local int s_simp_stmt_depth = 0;
+    s_simp_stmt_depth++;
+    struct SimpStmtGuard { ~SimpStmtGuard() { s_simp_stmt_depth--; } } s_stmt_guard;
+    if (depth > 30 || s_simp_stmt_depth > 30) return stmts;
     std::vector<StmtPtr> res;
     res.reserve(stmts.size());
     for (auto& s : stmts) {
@@ -2620,7 +2719,9 @@ static std::vector<StmtPtr> simplify_stmt_list(const std::vector<StmtPtr>& stmts
 }
 
 static StmtPtr simplify_stmt(StmtPtr s, int depth) {
-    if (!s || depth > 60) return s;
+    if (!s) return s;
+    
+    if (depth > 60) return s;
     if (s->kind == StmtKind::ExprStmt) {
         auto* es = static_cast<ExprStmtNode*>(s.get());
         if (es->expr) es->expr = simplify_expr(es->expr);
@@ -2697,6 +2798,14 @@ static StmtPtr simplify_stmt(StmtPtr s, int depth) {
             i->cond = negate(i->cond);
             i->then_body = *i->else_body;
             i->else_body = std::nullopt;
+        } else if (i->else_body.has_value() && !i->else_body->empty()) {
+            bool cond_is_negated = (i->cond && i->cond->kind == ExprKind::UnOp && static_cast<UnOp*>(i->cond.get())->op == "!");
+            bool then_is_if = (!i->then_body.empty() && i->then_body[0]->kind == StmtKind::IfStmt);
+            bool else_is_not_if = (i->else_body->size() != 1 || (*i->else_body)[0]->kind != StmtKind::IfStmt);
+            if (cond_is_negated || (then_is_if && else_is_not_if)) {
+                i->cond = negate(i->cond);
+                std::swap(i->then_body, *i->else_body);
+            }
         }
         return s;
     }
@@ -4003,10 +4112,34 @@ static const std::map<std::string, std::string> kBukkitTypeNames = {
     {"Random", "random"},
     {"Class", "clazz"},
     {"List", "list"},
+    {"ArrayList", "list"},
+    {"LinkedList", "list"},
     {"Map", "map"},
+    {"HashMap", "map"},
+    {"LinkedHashMap", "map"},
+    {"TreeMap", "map"},
     {"Set", "set"},
+    {"HashSet", "set"},
+    {"LinkedHashSet", "set"},
+    {"TreeSet", "set"},
     {"JsonObject", "json"},
-    {"JsonArray", "jsonArray"}
+    {"JsonArray", "jsonArray"},
+    {"JsonElement", "jsonElement"},
+    {"RegionQuery", "query"},
+    {"RegionAssociable", "associable"},
+    {"RegionManager", "regionManager"},
+    {"ProtectedRegion", "region"},
+    {"ApplicableRegionSet", "regions"},
+    {"StateFlag", "flag"},
+    {"StateFlag[]", "flags"},
+    {"Flag", "flag"},
+    {"EntityType", "entityType"},
+    {"CommandContext", "context"},
+    {"CommandSourceStack", "source"},
+    {"WorldConfiguration", "worldConfig"},
+    {"RegionPermissionModel", "permissionModel"},
+    {"SessionManager", "sessionManager"},
+    {"Session", "session"}
 };
 
 void rename_ident_in_expr(ExprPtr& e, const std::string& old_name, const std::string& new_name) {
@@ -4124,6 +4257,37 @@ std::vector<StmtPtr> smart_rename_locals(std::vector<StmtPtr> stmts) {
                 if (is_generic) {
                     candidates.push_back({ld->name, ld->type});
                 }
+            } else if (s->kind == StmtKind::ExprStmt) {
+                auto* es = static_cast<ExprStmtNode*>(s.get());
+                if (es->expr && es->expr->kind == ExprKind::Assign) {
+                    auto* a = static_cast<Assign*>(es->expr.get());
+                    if (a->target && a->target->kind == ExprKind::Local) {
+                        auto* loc = static_cast<Local*>(a->target.get());
+                        all_names.insert(loc->name);
+                        bool is_generic = (loc->name.rfind("var", 0) == 0 || loc->name.rfind("loc", 0) == 0 ||
+                                           loc->name.rfind("obj", 0) == 0 || (loc->name.size() == 1 && std::islower(static_cast<unsigned char>(loc->name[0]))));
+                        if (is_generic) {
+                            std::string typ = !loc->type.empty() ? loc->type : (a->value ? a->value->type : "");
+                            if (a->value && (a->value->type == "boolean" || a->value->kind == ExprKind::BinOp)) {
+                                typ = "boolean";
+                                loc->type = "boolean";
+                            }
+                            // Check if boolean expression has hints (isFire, isLava, testBuild)
+                            std::string hint_name;
+                            if (a->value && (typ == "boolean" || loc->type == "boolean")) {
+                                std::string vstr = emit_expr(a->value);
+                                if (vstr.find("isFire") != std::string::npos) hint_name = "isFire";
+                                else if (vstr.find("isLava") != std::string::npos) hint_name = "isLava";
+                                else if (vstr.find("testBuild") != std::string::npos) hint_name = "allowed";
+                            }
+                            if (!hint_name.empty()) {
+                                candidates.push_back({loc->name, "@HINT:" + hint_name});
+                            } else {
+                                candidates.push_back({loc->name, typ});
+                            }
+                        }
+                    }
+                }
             } else if (s->kind == StmtKind::IfStmt) {
                 auto* i = static_cast<IfStmt*>(s.get());
                 scan(i->then_body);
@@ -4152,9 +4316,39 @@ std::vector<StmtPtr> smart_rename_locals(std::vector<StmtPtr> stmts) {
         size_t dot_pos = simple_t.find_last_of('.');
         if (dot_pos != std::string::npos) simple_t = simple_t.substr(dot_pos + 1);
 
-        auto it = kBukkitTypeNames.find(simple_t);
-        if (it != kBukkitTypeNames.end()) {
-            std::string base_n = it->second;
+        std::string base_n;
+        if (typ.rfind("@HINT:", 0) == 0) {
+            base_n = typ.substr(6);
+        } else {
+            auto it = kBukkitTypeNames.find(simple_t);
+            if (it != kBukkitTypeNames.end()) {
+                base_n = it->second;
+            } else if (simple_t.size() > 5 && simple_t.rfind("Event") == simple_t.size() - 5) {
+                base_n = "event";
+            } else if (simple_t.size() > 8 && simple_t.rfind("Listener") == simple_t.size() - 8) {
+                base_n = "listener";
+            } else if (simple_t.size() > 9 && simple_t.rfind("Exception") == simple_t.size() - 9) {
+                base_n = "e";
+            } else if (simple_t.size() > 7 && simple_t.rfind("Builder") == simple_t.size() - 7) {
+                base_n = "builder";
+            } else if (simple_t.size() > 7 && simple_t.rfind("Manager") == simple_t.size() - 7) {
+                base_n = "manager";
+            } else if (simple_t.size() > 6 && simple_t.rfind("Config") == simple_t.size() - 6) {
+                base_n = "config";
+            } else if (simple_t.size() >= 2 && std::isupper(static_cast<unsigned char>(simple_t[0]))) {
+                base_n = simple_t;
+                base_n[0] = std::tolower(static_cast<unsigned char>(base_n[0]));
+            } else if (typ == "boolean") {
+                base_n = "flag";
+            } else if (typ == "int" || typ == "short" || typ == "byte") {
+                base_n = "n";
+            } else if (typ == "long") {
+                base_n = "l";
+            } else if (typ == "String") {
+                base_n = "s";
+            }
+        }
+        if (!base_n.empty()) {
             int idx = ++base_counts[base_n];
             std::string suggested = (idx == 1 && !all_names.count(base_n)) ? base_n : (base_n + std::to_string(idx));
             while (all_names.count(suggested)) {
@@ -4645,7 +4839,7 @@ std::vector<StmtPtr> prune_dead_synth_locals(std::vector<StmtPtr> stmts) {
     for (size_t i = 0; i < n; ++i) {
         if (!stmts[i] || stmts[i]->kind != StmtKind::LocalDecl) continue;
         auto* ld = static_cast<LocalDecl*>(stmts[i].get());
-        if (!ld->init && is_synth_temp(ld->name)) {
+        if (is_synth_temp(ld->name)) {
             bool used = false;
             for (size_t j = 0; j < n; ++j) {
                 if (i == j || !stmts[j]) continue;
@@ -4654,7 +4848,7 @@ std::vector<StmtPtr> prune_dead_synth_locals(std::vector<StmtPtr> stmts) {
                     break;
                 }
             }
-            if (!used) {
+            if (!used && (!ld->init || !has_side_effect(ld->init))) {
                 stmts[i] = nullptr;
             }
         }
@@ -4667,6 +4861,7 @@ std::vector<StmtPtr> prune_dead_synth_locals(std::vector<StmtPtr> stmts) {
 }
 
 std::vector<StmtPtr> simplify_stmts(const std::vector<StmtPtr>& stmts) {
+    
     nd::g_crash_pass_name = "simplify_stmt_initial";
     std::vector<StmtPtr> out = simplify_stmt_list(stmts, 0);
     for (int iter = 0; iter < 4; ++iter) {

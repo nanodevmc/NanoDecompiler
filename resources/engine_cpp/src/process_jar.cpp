@@ -288,7 +288,7 @@ const char* g_crash_class_name = nullptr;
 const char* g_crash_method_name = nullptr;
 const char* g_crash_pass_name = nullptr;
 
-JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool print_progress, bool ignore_nanoguard) {
+JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool print_progress, bool ignore_nanoguard, bool skip_malware_scan) {
     JarProcessResult jr;
     jr.out_dir = out_dir;
     ProjectStats& stats = jr.stats;
@@ -327,111 +327,28 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
             jr.rejected_reason = "Не удалось прочитать файл: " + fec.message();
             return jr;
         }
-        if (fsize < 1024) {
+        if (fsize < 22) {
             jr.rejected = true;
             jr.rejected_reason =
                 "Файл слишком маленький (" + std::to_string(fsize) +
-                " байт) для настоящего скомпилированного плагина - минимальный реальный плагин в тестах весит "
-                "около 4.8 КБ. Похоже, это не тот файл (переименованный текст, пустышка, битая загрузка).";
+                " байт) для архива ZIP/JAR.";
             return jr;
         }
     }
 
-    // --- 0.1. Мгновенная комплексная проверка защиты NanoGuard (ДО всех тяжёлых этапов)
-    // Выполняется сразу при открытии ZIP, чтобы не тратить CPU и память на сканирование вредоносов и распаковку.
+    // --- 0.1. Проверка NanoGuard отключена пользователем ---
     ZipReader zr(jar_path);
     std::vector<std::string> all_names = zr.namelist();
 
     bool nanoguard_detected = false;
     std::string nanoguard_stage_info;
-
-    // Этап 1-4: Проверка файловых маркеров (NANOGUARD.INF, NANOGUARD.BIN, NANOGUARD.SIG, META-INF/nanoguard)
-    for (const auto& entry_name : all_names) {
-        std::string upper_name = entry_name;
-        for (char& c : upper_name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        if (upper_name == "NANOGUARD.INF" || upper_name.find("NANOGUARD.INF") != std::string::npos ||
-            upper_name == "NANOGUARD.BIN" || upper_name.find("NANOGUARD.BIN") != std::string::npos ||
-            upper_name == "META-INF/NANOGUARD" || upper_name.find("META-INF/NANOGUARD.SIG") != std::string::npos ||
-            upper_name.find(".nanoguard") != std::string::npos) {
-            nanoguard_detected = true;
-            nanoguard_stage_info = "маркер файла " + entry_name;
-            break;
-        }
-    }
-
-    // Этап 5-10: Проверка манифеста и атрибутов JAR (NanoGuard-Build, Protected-By-NanoGuard, X-Anti-Decompile)
-    if (!nanoguard_detected && zr.has_file("META-INF/MANIFEST.MF")) {
-        try {
-            auto mf_bytes = zr.read("META-INF/MANIFEST.MF");
-            std::string mf_str(mf_bytes.begin(), mf_bytes.end());
-            if (mf_str.find("NanoGuard") != std::string::npos ||
-                mf_str.find("nanoguard") != std::string::npos ||
-                mf_str.find("X-Nano-Protection") != std::string::npos ||
-                mf_str.find("Anti-Decompile: NanoGuard") != std::string::npos ||
-                mf_str.find("Protected-By: NanoGuard") != std::string::npos) {
-                nanoguard_detected = true;
-                nanoguard_stage_info = "атрибут MANIFEST.MF";
-            }
-        } catch (...) {}
-    }
-
-    // Этап 11-18: Эвристический анализ constant pool первых .class файлов (вшитые токены и кастомные загрузчики)
-    if (!nanoguard_detected) {
-        size_t checked_classes = 0;
-        for (const auto& entry_name : all_names) {
-            if (entry_name.size() >= 6 && entry_name.substr(entry_name.size() - 6) == ".class") {
-                if (checked_classes++ > 15) break;
-                try {
-                    auto cdata = zr.read(entry_name);
-                    std::string cstr(cdata.begin(), cdata.end());
-                    if (cstr.find("NANOGUARD") != std::string::npos ||
-                        cstr.find("NanoGuardCore") != std::string::npos ||
-                        cstr.find("NanoGuardLoader") != std::string::npos ||
-                        cstr.find("dev.nano.guard") != std::string::npos ||
-                        cstr.find("NanoAntiDump") != std::string::npos ||
-                        cstr.find("NanoIntegrityCheck") != std::string::npos ||
-                        cstr.find("NANOGUARD_ENCRYPTED_PAYLOAD") != std::string::npos ||
-                        cstr.find("NANOGUARD_NATIVE_VM") != std::string::npos) {
-                        nanoguard_detected = true;
-                        nanoguard_stage_info = "байткод/пул констант " + entry_name;
-                        break;
-                    }
-                } catch (...) {}
-            }
-        }
-    }
-
-    // Этап 19-25: Проверка специфических секций и скрытых нативных мостов NanoGuard
-    if (!nanoguard_detected) {
-        for (const auto& entry_name : all_names) {
-            if (entry_name.find("libnanoguard") != std::string::npos ||
-                entry_name.find("nanoguard.dll") != std::string::npos ||
-                entry_name.find("nanoguard.so") != std::string::npos ||
-                entry_name.find("assets/nanoguard/") != std::string::npos ||
-                entry_name.find(".ng_stub") != std::string::npos ||
-                entry_name.find(".nanoprotect") != std::string::npos) {
-                nanoguard_detected = true;
-                nanoguard_stage_info = "нативный модуль/ресурс " + entry_name;
-                break;
-            }
-        }
-    }
-
-    if (nanoguard_detected) {
-        jr.is_nanoguard = true;
-        jr.nanoguard_detail = nanoguard_stage_info;
-        if (ignore_nanoguard) {
-            std::cerr << "[!] ПРЕДУПРЕЖДЕНИЕ: обнаружен маркер NanoGuard (" << nanoguard_stage_info << "), продолжаю декомпиляцию (--ignore-nanoguard)..." << std::endl;
-        } else {
-            jr.rejected = true;
-            jr.rejected_reason = "Файл защищен NanoGuard (этап защиты: " + nanoguard_stage_info + "), декомпиляция невозможна!";
-            return jr;
-        }
-    }
+    jr.is_nanoguard = false;
 
     // --- 1. Сканирование на подозрительное содержимое (см. HANDOFF_31) ---
-    print_stage("scanning");
-    jr.malware_findings = scan_jar(jar_path);
+    if (!skip_malware_scan) {
+        print_stage("scanning");
+        jr.malware_findings = scan_jar(jar_path);
+    }
 
     std::string src_dir = (fs::u8path(out_dir) / "src" / "main" / "java").u8string();
     fs::create_directories(fs::u8path(src_dir));
@@ -558,11 +475,30 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     relocated_prefixes.insert(relocated_prefixes.end(), sig_prefixes.begin(), sig_prefixes.end());
     // --- 5. Известные библиотеки - убираем из class_files (см. HANDOFF_40). ---
     std::string main_class_pkg;
+    std::string plugin_root_pkg;
+    std::string plugin_name_lower;
+    if (jr.platform.name.has_value()) {
+        plugin_name_lower = *jr.platform.name;
+        for (char& c : plugin_name_lower) c = std::tolower(static_cast<unsigned char>(c));
+    }
     if (jr.platform.main_class.has_value()) {
         std::string mc = *jr.platform.main_class;
         for (char& c : mc) if (c == '.') c = '/';
         auto slash = mc.rfind('/');
-        if (slash != std::string::npos) main_class_pkg = mc.substr(0, slash);
+        if (slash != std::string::npos) {
+            main_class_pkg = mc.substr(0, slash);
+            auto last_seg = main_class_pkg.substr(main_class_pkg.rfind('/') + 1);
+            if (last_seg == "bukkit" || last_seg == "spigot" || last_seg == "paper" ||
+                last_seg == "core" || last_seg == "common" || last_seg == "plugin" ||
+                last_seg == "internal" || last_seg == "impl") {
+                auto second_slash = main_class_pkg.rfind('/');
+                if (second_slash != std::string::npos) {
+                    plugin_root_pkg = main_class_pkg.substr(0, second_slash);
+                }
+            } else {
+                plugin_root_pkg = main_class_pkg;
+            }
+        }
     }
     std::vector<std::string> library_internal_names;
     std::set<std::string> library_hit_labels;
@@ -571,9 +507,18 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
             it = class_files.erase(it);
             continue;
         }
-        bool is_own_plugin_pkg = (!main_class_pkg.empty() && it->first.rfind(main_class_pkg, 0) == 0);
+        bool is_own_plugin_pkg = (!main_class_pkg.empty() && it->first.rfind(main_class_pkg, 0) == 0) ||
+                                 (!plugin_root_pkg.empty() && it->first.rfind(plugin_root_pkg, 0) == 0);
         auto hit = known_library_coords(it->first, relocated_prefixes);
-        if (hit.has_value() && !is_own_plugin_pkg) {
+        bool is_same_as_plugin = false;
+        if (hit.has_value() && !plugin_name_lower.empty()) {
+            std::string art_lower = hit->second.artifact;
+            for (char& c : art_lower) c = std::tolower(static_cast<unsigned char>(c));
+            if (art_lower.find(plugin_name_lower) != std::string::npos || plugin_name_lower.find(art_lower) != std::string::npos) {
+                is_same_as_plugin = true;
+            }
+        }
+        if (hit.has_value() && !is_own_plugin_pkg && !is_same_as_plugin) {
             library_internal_names.push_back(it->first);
             library_hit_labels.insert(hit->second.group + ":" + hit->second.artifact);
             it = class_files.erase(it);
@@ -723,9 +668,35 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
             if (is_library_service) continue;
         }
         bool skip = false;
-        // Пропускаем внутренние мусорные файлы обфускатора Aegis (.aeg, aegis/*, defaults/*)
-        if (n.size() >= 4 && n.substr(n.size() - 4) == ".aeg") skip = true;
-        else if (n.rfind("aegis/", 0) == 0 || n.rfind("defaults/", 0) == 0 || n.rfind("dev/aegisforge", 0) == 0) skip = true;
+        std::string lower_n = n;
+        std::transform(lower_n.begin(), lower_n.end(), lower_n.begin(), ::tolower);
+
+        auto ends_with_check = [](const std::string& str, const std::string& suff) {
+            return str.size() >= suff.size() && str.compare(str.size() - suff.size(), suff.size(), suff) == 0;
+        };
+
+        // 1. Нативные библиотеки (JNI / Aegis)
+        if (ends_with_check(lower_n, ".so") || ends_with_check(lower_n, ".dll") || ends_with_check(lower_n, ".dylib") ||
+            lower_n.find("natives/") != std::string::npos || lower_n.find("/natives/") != std::string::npos ||
+            lower_n.rfind("meta-inf/natives/", 0) == 0) {
+            continue;
+        }
+
+        // 2. Внутренние мусорные файлы обфускатора Aegis / NanoGuard / Titan
+        if (ends_with_check(lower_n, ".aeg") ||
+            lower_n.find("aegis") != std::string::npos ||
+            lower_n.find("nanoguard") != std::string::npos ||
+            lower_n.find("titan") != std::string::npos ||
+            lower_n.find("core.dat") != std::string::npos ||
+            lower_n.rfind("defaults/", 0) == 0 ||
+            lower_n.rfind("dev/aegisforge", 0) == 0) {
+            continue;
+        }
+
+        // 3. Библиотека Khelekore / PRTree (только через pom.xml)
+        if (lower_n.find("khelekore") != std::string::npos || lower_n.find("prtree") != std::string::npos) {
+            continue;
+        }
         if (!skip) {
             for (auto& p : skip_res_prefixes)
                 if (starts_with(n, p)) {
@@ -879,6 +850,13 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     for (auto& [internal, cf] : class_files) {
         if (synthetic_switchmap_classes.count(internal)) continue;
         if (is_aegis_trap_class(internal)) continue;
+        if (internal.find('$') != std::string::npos) {
+            std::string parent_internal = internal.substr(0, internal.find('$'));
+            if (class_files.count(parent_internal)) {
+                // Вложенные классы рендерятся внутри файла родительского класса
+                continue;
+            }
+        }
         std::cout << "##ND_FILE:" << internal << "##" << std::endl;
         g_crash_class_name = internal.c_str();
         std::string text;

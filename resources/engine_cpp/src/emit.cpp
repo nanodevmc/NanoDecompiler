@@ -12,16 +12,26 @@ namespace {
 const std::string IND = "    ";
 std::set<std::string> g_shadowed_names;
 std::optional<std::string> g_current_class_dotted;
+std::optional<std::string> g_current_method_return_type;
 
 std::string simple(const std::string& dotted) {
-    // Не сводим к simple-имени прямо сейчас: mark_type оборачивает в
-    // маркер \x01...\x02, решение simple vs FQN - финальным проходом по
-    // всему файлу класса (см. javatypes.hpp resolve_type_markers,
-    // render_class.cpp - портирован, HANDOFF_42).
-    return mark_type(dotted);
+    if (!dotted.empty() && dotted[0] == '[') {
+        try {
+            return field_descriptor_to_java(dotted);
+        } catch (...) {}
+    }
+    std::string clean = dotted;
+    if (!clean.empty() && clean.back() == ';') {
+        clean.pop_back();
+        if (!clean.empty() && clean.front() == 'L') {
+            clean.erase(clean.begin());
+        }
+    }
+    return mark_type(clean);
 }
 
 std::string paren(const ExprPtr& sub, const Expr* parent, char side = 0) {
+    if (!sub) return "";
     std::string txt = emit_expr(sub);
     int sp = sub->prec();
     int pp = parent->prec();
@@ -37,6 +47,7 @@ std::string paren(const ExprPtr& sub, const Expr* parent, char side = 0) {
 
 // paren_at() проверяет приоритет операнда sub относительно порогового значения threshold.
 std::string paren_at(const ExprPtr& sub, int threshold) {
+    if (!sub) return "";
     std::string txt = emit_expr(sub);
     return sub->prec() < threshold ? ("(" + txt + ")") : txt;
 }
@@ -53,6 +64,7 @@ std::string join(const std::vector<std::string>& parts, const std::string& sep) 
 }  // namespace
 
 void set_current_class(const std::optional<std::string>& dotted) { g_current_class_dotted = dotted; }
+void set_current_method_return_type(const std::optional<std::string>& ret_type) { g_current_method_return_type = ret_type; }
 
 void set_shadow_context(const std::vector<std::string>& local_names) {
     g_shadowed_names = std::set<std::string>(local_names.begin(), local_names.end());
@@ -91,12 +103,19 @@ std::string emit_expr(const ExprPtr& e) {
                 if (owner_str.rfind("java.lang.", 0) == 0 && owner_str.find('.', 10) == std::string::npos) {
                     owner_str = owner_str.substr(10);
                 }
-                return simple(owner_str) + "." + f->name;
+                std::string disp = simple(owner_str);
+                std::string curr_simple = simple(g_current_class_dotted.value_or(""));
+                if (disp.empty() || disp == curr_simple || (f->owner.has_value() && f->owner == g_current_class_dotted)) {
+                    return f->name;
+                }
+                return disp + "." + f->name;
             }
             if (f->target && f->target->kind == ExprKind::This && !g_shadowed_names.count(f->name)) {
                 return f->name;
             }
-            return paren(f->target, f) + "." + f->name;
+            std::string target_p = paren(f->target, f);
+            if (target_p.empty() || target_p == "null") return f->name;
+            return target_p + "." + f->name;
         }
         case ExprKind::ArrayAccess: {
             const auto* a = static_cast<const ArrayAccess*>(e.get());
@@ -114,17 +133,27 @@ std::string emit_expr(const ExprPtr& e) {
                 if (owner_str.rfind("java.lang.", 0) == 0 && owner_str.find('.', 10) == std::string::npos) {
                     owner_str = owner_str.substr(10);
                 }
-                return simple(owner_str) + "." + m->name + "(" + args + ")";
+                std::string disp = simple(owner_str);
+                std::string curr_simple = simple(g_current_class_dotted.value_or(""));
+                if (disp.empty() || disp == curr_simple || (m->owner.has_value() && m->owner == g_current_class_dotted)) {
+                    return m->name + "(" + args + ")";
+                }
+                return disp + "." + m->name + "(" + args + ")";
             }
             if (m->is_super) return "super." + m->name + "(" + args + ")";
             if (m->target && m->target->kind == ExprKind::This) return m->name + "(" + args + ")";
-            return paren(m->target, m) + "." + m->name + "(" + args + ")";
+            std::string target_p = paren(m->target, m);
+            if (target_p.empty() || target_p == "null") return m->name.empty() ? "" : (m->name + "(" + args + ")");
+            if (m->name.empty()) return target_p;
+            return target_p + "." + m->name + "(" + args + ")";
         }
         case ExprKind::NewObject: {
             const auto* n = static_cast<const NewObject*>(e.get());
             std::vector<std::string> arg_strs;
             for (auto& a : n->args) arg_strs.push_back(emit_expr(a));
-            return "new " + simple(n->type) + "(" + join(arg_strs, ", ") + ")";
+            std::string n_type = simple(n->type);
+            if (n_type.empty()) n_type = "IllegalArgumentException";
+            return "new " + n_type + "(" + join(arg_strs, ", ") + ")";
         }
         case ExprKind::NewArray: {
             const auto* n = static_cast<const NewArray*>(e.get());
@@ -138,7 +167,17 @@ std::string emit_expr(const ExprPtr& e) {
             for (int i = 0; i < extra; ++i) extra_brackets += "[]";
             if (n->initializer.has_value()) {
                 std::vector<std::string> item_strs;
-                for (auto& v : *n->initializer) item_strs.push_back(emit_expr(v));
+                for (auto& v : *n->initializer) {
+                    if (!v) {
+                        std::string def_v = "null";
+                        if (base == "double" || base == "float") def_v = "0.0";
+                        else if (base == "int" || base == "long" || base == "short" || base == "byte" || base == "char") def_v = "0";
+                        else if (base == "boolean") def_v = "false";
+                        item_strs.push_back(def_v);
+                    } else {
+                        item_strs.push_back(emit_expr(v));
+                    }
+                }
                 std::string body = item_strs.empty() ? "{}" : "{ " + join(item_strs, ", ") + " }";
                 return "new " + simple(base) + "[]" + extra_brackets + body;
             }
@@ -163,7 +202,7 @@ std::string emit_expr(const ExprPtr& e) {
         }
         case ExprKind::BinOp: {
             const auto* b = static_cast<const BinOp*>(e.get());
-            if ((b->op == "&" || b->op == "|" || b->op == "^") && b->right->kind == ExprKind::Const) {
+            if (b->right && (b->op == "&" || b->op == "|" || b->op == "^") && b->right->kind == ExprKind::Const) {
                 const auto* c = static_cast<const Const*>(b->right.get());
                 if (c->type == "int" || c->type == "long") {
                     if (c->value == "255") {
@@ -175,7 +214,37 @@ std::string emit_expr(const ExprPtr& e) {
                     }
                 }
             }
-            return paren(b->left, b, 'l') + " " + b->op + " " + paren(b->right, b, 'r');
+            std::string left_s = paren(b->left, b, 'l');
+            std::string right_s = paren(b->right, b, 'r');
+            if (b->op == "!=" && (right_s == "0" || right_s == "false")) {
+                if (b->left && (b->left->type == "boolean" || b->left->kind == ExprKind::BinOp ||
+                    (b->left->kind == ExprKind::Local && (
+                        static_cast<const Local*>(b->left.get())->name.rfind("is", 0) == 0 ||
+                        static_cast<const Local*>(b->left.get())->name.rfind("has", 0) == 0 ||
+                        static_cast<const Local*>(b->left.get())->name.rfind("flag", 0) == 0 ||
+                        static_cast<const Local*>(b->left.get())->name == "allowed"
+                    )))) {
+                    return left_s;
+                }
+            } else if (b->op == "==" && (right_s == "0" || right_s == "false")) {
+                if (b->left && (b->left->type == "boolean" || b->left->kind == ExprKind::BinOp ||
+                    (b->left->kind == ExprKind::Local && (
+                        static_cast<const Local*>(b->left.get())->name.rfind("is", 0) == 0 ||
+                        static_cast<const Local*>(b->left.get())->name.rfind("has", 0) == 0 ||
+                        static_cast<const Local*>(b->left.get())->name.rfind("flag", 0) == 0 ||
+                        static_cast<const Local*>(b->left.get())->name == "allowed"
+                    )))) {
+                    return "!" + paren(b->left, b, 'l');
+                }
+            }
+            if (b->op == "+") {
+                if (left_s.empty() || left_s == """") return right_s;
+                if (right_s.empty() || right_s == """") return left_s;
+            } else {
+                if (left_s.empty()) return right_s;
+                if (right_s.empty()) return left_s;
+            }
+            return left_s + " " + b->op + " " + right_s;
         }
         case ExprKind::UnOp: {
             const auto* u = static_cast<const UnOp*>(e.get());
@@ -197,6 +266,27 @@ std::string emit_expr(const ExprPtr& e) {
             return simple(static_cast<const ClassLiteral*>(e.get())->type_name) + ".class";
         case ExprKind::Lambda: {
             const auto* l = static_cast<const Lambda*>(e.get());
+            if (l->params.size() == 1 && l->body_method_ref) {
+                if (l->body_method_ref->kind == ExprKind::NewArray) {
+                    const auto* na = static_cast<const NewArray*>(l->body_method_ref.get());
+                    return simple(na->elem_type) + "[]::new";
+                }
+                if (l->body_method_ref->kind == ExprKind::MethodCall) {
+                    const auto* mc = static_cast<const MethodCall*>(l->body_method_ref.get());
+                    if (mc->name.rfind("lambda$", 0) == 0 || mc->name.rfind("lambda_", 0) == 0) {
+                        if (!mc->type.empty() && mc->type[0] == '[') {
+                            std::string elem_t = mc->type.substr(1);
+                            if (!elem_t.empty() && elem_t.front() == 'L' && elem_t.back() == ';') {
+                                elem_t = elem_t.substr(1, elem_t.size() - 2);
+                            }
+                            return simple(elem_t) + "[]::new";
+                        } else if (mc->type.size() > 2 && mc->type.rfind("[]") == mc->type.size() - 2) {
+                            std::string elem_t = mc->type.substr(0, mc->type.size() - 2);
+                            return simple(elem_t) + "[]::new";
+                        }
+                    }
+                }
+            }
             if (l->is_method_ref && l->body_method_ref) {
                 if (l->body_method_ref->kind == ExprKind::MethodCall) {
                     const auto* mc = static_cast<const MethodCall*>(l->body_method_ref.get());
@@ -352,10 +442,23 @@ std::vector<std::string> emit_stmt(const StmtPtr& s, int indent) {
         case StmtKind::ReturnStmt: {
             const auto* r = static_cast<const ReturnStmt*>(s.get());
             if (!r->expr) return {pad + "return;"};
+            if (g_current_method_return_type && *g_current_method_return_type == "boolean") {
+                if (r->expr->kind == ExprKind::Const) {
+                    const auto* c = static_cast<const Const*>(r->expr.get());
+                    if (c->literal == "0") return {pad + "return false;"};
+                    if (c->literal == "1") return {pad + "return true;"};
+                }
+            }
             return {pad + "return " + emit_expr(r->expr) + ";"};
         }
-        case StmtKind::ThrowStmt:
-            return {pad + "throw " + emit_expr(static_cast<const ThrowStmt*>(s.get())->expr) + ";"};
+        case StmtKind::ThrowStmt: {
+            const auto* ts = static_cast<const ThrowStmt*>(s.get());
+            std::string ex = emit_expr(ts->expr);
+            if (!ex.empty() && ex[0] == '"') {
+                return {pad + "throw new IllegalStateException(" + ex + ");"};
+            }
+            return {pad + "throw " + ex + ";"};
+        }
         case StmtKind::BreakStmt: {
             const auto* b = static_cast<const BreakStmt*>(s.get());
             return {pad + "break" + (b->label.has_value() ? (" " + *b->label) : "") + ";"};
@@ -366,15 +469,33 @@ std::vector<std::string> emit_stmt(const StmtPtr& s, int indent) {
         }
         case StmtKind::IfStmt: {
             const auto* i = static_cast<const IfStmt*>(s.get());
-            std::vector<std::string> out = {pad + "if (" + emit_expr(i->cond) + ") {"};
-            auto then_lines = emit_stmts(i->then_body, indent + 1);
-            out.insert(out.end(), then_lines.begin(), then_lines.end());
-            if (i->else_body.has_value() && !i->else_body->empty()) {
-                out.push_back(pad + "} else {");
-                auto else_lines = emit_stmts(*i->else_body, indent + 1);
-                out.insert(out.end(), else_lines.begin(), else_lines.end());
-            }
-            out.push_back(pad + "}");
+            std::vector<std::string> out;
+
+            auto emit_branch = [&](auto self, const IfStmt* branch, bool is_first) -> void {
+                if (is_first) {
+                    out.push_back(pad + "if (" + emit_expr(branch->cond) + ") {");
+                } else {
+                    out.push_back(pad + "} else if (" + emit_expr(branch->cond) + ") {");
+                }
+                auto then_lines = emit_stmts(branch->then_body, indent + 1);
+                out.insert(out.end(), then_lines.begin(), then_lines.end());
+
+                if (branch->else_body.has_value() && !branch->else_body->empty()) {
+                    if (branch->else_body->size() == 1 && (*branch->else_body)[0]->kind == StmtKind::IfStmt) {
+                        const auto* next_if = static_cast<const IfStmt*>((*branch->else_body)[0].get());
+                        self(self, next_if, false);
+                    } else {
+                        out.push_back(pad + "} else {");
+                        auto else_lines = emit_stmts(*branch->else_body, indent + 1);
+                        out.insert(out.end(), else_lines.begin(), else_lines.end());
+                        out.push_back(pad + "}");
+                    }
+                } else {
+                    out.push_back(pad + "}");
+                }
+            };
+
+            emit_branch(emit_branch, i, true);
             return out;
         }
         case StmtKind::WhileStmt: {

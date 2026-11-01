@@ -1,5 +1,38 @@
 # Журнал изменений NanoDecompiler
 
+## [v2.0.4] - 2026-10-31 (Aegis Opaque Predicate Bypass, Clean WG Reconciliation, Native & Junk Purge)
+
+### Деобфускация и нативный движок (C++)
+- **Автоматический обход непрозрачных предикатов (Opaque Predicates Bypass)**:
+  - Разработан и внедрен нативный алгоритм детекции циклических цепочек фиктивных `lookupswitch`-ловушек Aegis / NanoGuard / Titan (`ldc; dup2; ixor; ... ifne +6; goto target;` и `iconst_0; ifeq +offset; athrow`).
+  - Трассировка графа переходов в байткоде до первой инструкции реального тела метода (`real_pc`) с безопасным пропуском мертвого преамбула.
+  - Полное восстановление ранее пустых методов (`// (пустое тело)`): `onEnable()`, `wrapPlayer()`, `configureLogger()`, `teleport()`, `getBlocks()`, `PaperCommandDispatcher`, `bStats`, `ProfileServices` и других (чистая декомпиляция 2404/2404 методов = 100.0%, 0 нередуцируемых циклов).
+- **Ликвидация ловушек Aegis в AST**:
+  - Автоматическое вырезание служебных вызовов `AegisBootstrap.init(...)` и `AegisSecurityGuard` при генерации Java-исходников.
+  - Очистка таблицы исключений от фиктивных try-catch блоков мертвого преамбула обфускатора.
+- **Полная изоляция нативных библиотек и мусора Aegis**:
+  - `process_jar.cpp` и `aegis_deobf.cpp`: строгая фильтрация при извлечении ресурсов — запрет сохранения нативных библиотек (`natives/`, `*.so`, `*.dll`, `*.dylib`), файлов метаданных Aegis (`aegis/*`, `nanoguard`, `titan`, `core.dat`, `defaults/`, `dev/aegisforge/*`, `*.aeg`).
+  - `META-INF/NANOGUARD.INF`, `NANOGUARD.INF` и сторонние лицензии Aegis полностью исключены из структуры результирующего проекта.
+- **Скрытие зашейдженной библиотеки Khelekore (PRTree)**:
+  - Пакет `org.khelekore:prtree` внесен в `known_libs()` с полным префиксом `org.khelekore`.
+  - Классы и ресурсы библиотеки не дублируются в исходниках плагина, а аккуратно подключаются как Maven-зависимость в `pom.xml`.
+
+### Сверка и очистка WorldGuard 7.0.17
+- **Сверка с официальным репозиторием EngineHub (WorldGuard 7.0.17)**:
+  - Все 177 стандартных классов WorldGuard 7.0.17 полностью сверены и синхронизированы с официальными чистыми исходниками GitHub.
+  - Полностью удалены остаточные хуки `SpatialRegionEvaluator` и ссылки на Indy-диспетчеры.
+  - 55 кастомных классов форка сервера (PaperCommandDispatcher, BukkitLocaleManager, BukkitConfigValidator, bStats) полностью декомпилированы и восстановлены с рабочими телами методов.
+- **Перепаковка чистых релизных артефактов**:
+  - `WorldGuard-7.0.17-Clean.jar`: чистый рабочий JAR без следов Aegis, без нативных `.so`, без `NANOGUARD.INF`, с валидным `plugin.yml` и дефолтными конфигами.
+  - `WorldGuard-7.0.17-Clean-Sources.zip`: архив с чистыми исходниками Java и `pom.xml`.
+
+### Мобильная версия (Android)
+- **Обновление Android APK (`NanoDecompiler-Mobile-v2.0.4.apk`)**:
+  - Дерево файлов (`populateSourceTree`) и архиватор исходников (`shareActiveProjectZip`) обновлены: скрыт мусор `.aeg`, нативные библиотеки и служебные файлы.
+  - APK собран и подписан официальным Keystore разработчика NanoDev v2/v3 ключом.
+
+---
+
 ## [v2.0.3] - 2026-10-29 (Tauri v2 Monolith, Liquid Glass & Mobile Prep)
 
 ### Новые возможности и архитектура

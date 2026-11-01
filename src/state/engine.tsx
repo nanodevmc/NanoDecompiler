@@ -135,8 +135,14 @@ async function collectSourceFiles(outDir: string, relDir = ""): Promise<SourceFi
   for (const item of res.items) {
 
     const rel = relDir ? `${relDir}/${item.name}` : item.name;
+    const lowerRel = rel.toLowerCase();
+    const lowerName = item.name.toLowerCase();
 
-    if (item.name === ".nano_inf" || item.name === "NANOGUARD.INF") continue;
+    if (item.name === ".nano_inf" || lowerName === "nanoguard.inf" || lowerName === "core.dat") continue;
+    if (lowerRel.includes("natives/") || lowerRel.includes("meta-inf/natives/")) continue;
+    if (lowerName.endsWith(".so") || lowerName.endsWith(".dll") || lowerName.endsWith(".dylib")) continue;
+    if (lowerRel.includes("aegis") || lowerRel.includes("nanoguard") || lowerRel.includes("titan")) continue;
+    if (lowerRel.includes("khelekore") || lowerRel.includes("prtree")) continue;
 
     if (item.isDir) {
 

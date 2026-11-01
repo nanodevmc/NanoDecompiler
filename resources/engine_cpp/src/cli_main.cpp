@@ -149,7 +149,7 @@ void print_usage() {
     }
 }
 
-int run_decompile_console(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool ignore_nanoguard = false, bool suppress_banner = false) {
+int run_decompile_console(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool ignore_nanoguard = false, bool suppress_banner = false, bool skip_malware_scan = false) {
     if (!suppress_banner) {
         std::cout << "\n" << banner_text() << "\n\n";
     }
@@ -163,7 +163,7 @@ int run_decompile_console(const std::string& jar_path, const std::string& out_di
         if (is_single_class) {
             jr = nd::process_single_class(jar_path, out_dir);
         } else {
-            jr = nd::process_jar_with_stats(jar_path, out_dir, skip_legitimacy, /*print_progress=*/true, ignore_nanoguard);
+            jr = nd::process_jar_with_stats(jar_path, out_dir, skip_legitimacy, /*print_progress=*/true, ignore_nanoguard, skip_malware_scan);
         }
     } catch (const std::exception& e) {
         std::cerr << "[!] ОШИБКА: " << e.what() << "\n";
@@ -448,11 +448,14 @@ int run_cli(int argc, char** argv) {
     bool json_output = false;
     bool keep_archive_temp = false;
     bool ignore_nanoguard = false;
+    bool skip_malware_scan = false;
     std::string explicit_out_dir;
     std::vector<std::string> positional_rest;
     for (size_t i = 1; i < args.size(); ++i) {
         if (args[i] == "--no-legitimacy-check") {
             skip_legitimacy = true;
+        } else if (args[i] == "--skip-scan" || args[i] == "--no-scan" || args[i] == "--no-malware-scan") {
+            skip_malware_scan = true;
         } else if (args[i] == "--ignore-nanoguard" || args[i] == "--force" || args[i] == "-f") {
             ignore_nanoguard = true;
         } else if (args[i] == "--json-output" || args[i] == "--api") {
@@ -555,7 +558,7 @@ int run_cli(int argc, char** argv) {
             if (json_output) {
                 ret |= nd::run_json_output(p.full_path, plugin_out_dir, skip_legitimacy, ignore_nanoguard);
             } else {
-                ret |= run_decompile_console(p.full_path, plugin_out_dir, skip_legitimacy, ignore_nanoguard, /*suppress_banner=*/true);
+                ret |= run_decompile_console(p.full_path, plugin_out_dir, skip_legitimacy, ignore_nanoguard, /*suppress_banner=*/true, skip_malware_scan);
                 std::cout << "\r\033[K[" << (i + 1) << "/" << summary.plugins.size() << "] Декомпилировано: \"" << p.filename << "\"\n" << std::flush;
             }
         }
@@ -567,7 +570,7 @@ int run_cli(int argc, char** argv) {
 
     if (json_output) return nd::run_json_output(jar_path, out_dir, skip_legitimacy, ignore_nanoguard);
 
-    return run_decompile_console(jar_path, out_dir, skip_legitimacy, ignore_nanoguard);
+    return run_decompile_console(jar_path, out_dir, skip_legitimacy, ignore_nanoguard, /*suppress_banner=*/false, skip_malware_scan);
 }
 
 // БАГ-ФИКС v1.7.4 (реальный краш на Windows - необработанное исключение

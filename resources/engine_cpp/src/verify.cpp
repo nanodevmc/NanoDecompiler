@@ -113,6 +113,48 @@ std::vector<std::string> check_brackets(const std::string& text, const std::stri
     return issues;
 }
 
+namespace {
+std::string mask_literals_and_comments(const std::string& line) {
+    std::string out = line;
+    bool in_str = false, in_chr = false;
+    for (size_t i = 0; i < out.size(); ++i) {
+        char c = out[i];
+        if (in_str) {
+            if (c == '\\' && i + 1 < out.size()) {
+                out[i] = ' ';
+                out[i + 1] = ' ';
+                i++;
+                continue;
+            }
+            if (c == '"') in_str = false;
+            out[i] = ' ';
+        } else if (in_chr) {
+            if (c == '\\' && i + 1 < out.size()) {
+                out[i] = ' ';
+                out[i + 1] = ' ';
+                i++;
+                continue;
+            }
+            if (c == '\'') in_chr = false;
+            out[i] = ' ';
+        } else {
+            if (c == '/' && i + 1 < out.size() && out[i + 1] == '/') {
+                std::fill(out.begin() + i, out.end(), ' ');
+                break;
+            }
+            if (c == '"') {
+                in_str = true;
+                out[i] = ' ';
+            } else if (c == '\'') {
+                in_chr = true;
+                out[i] = ' ';
+            }
+        }
+    }
+    return out;
+}
+}  // namespace
+
 std::vector<std::string> verify_class_text(const std::string& text, const std::string& filename) {
     // 1-6. Проверка баланса скобок (), {}, [] и незакрытых литералов
     std::vector<std::string> issues = check_brackets(text, filename);
@@ -122,7 +164,8 @@ std::vector<std::string> verify_class_text(const std::string& text, const std::s
     std::string line;
     int line_num = 0;
     int brace_depth = 0;
-    int loop_or_switch_depth = 0;
+    std::vector<int> loop_brace_levels;
+    bool pending_loop = false;
 
     while (std::getline(stream, line)) {
         line_num++;
@@ -134,21 +177,45 @@ std::vector<std::string> verify_class_text(const std::string& text, const std::s
         std::string trimmed = s.substr(first, last - first + 1);
 
         if (trimmed.rfind("//", 0) == 0) continue;
+        std::string masked = mask_literals_and_comments(s);
+        std::string trimmed_masked;
+        {
+            size_t mf = masked.find_first_not_of(" \t\r\n");
+            if (mf != std::string::npos) {
+                size_t ml = masked.find_last_not_of(" \t\r\n");
+                trimmed_masked = masked.substr(mf, ml - mf + 1);
+            }
+        }
 
-        // 7. Проверка \u unicode escape (должно быть 4 hex-символа)
+        // 7. Проверка \u unicode escape (должно быть 4 hex-символа, JLS 3.3)
         size_t u_pos = 0;
         while ((u_pos = s.find("\\u", u_pos)) != std::string::npos) {
-            if (u_pos + 6 > s.size()) {
+            size_t slash_count = 0;
+            size_t p = u_pos;
+            while (p > 0 && s[p - 1] == '\\') {
+                slash_count++;
+                p--;
+            }
+            // Если перед \u стоит нечётное число слэшей (например, \\\\u), это экранированный слэш + буква 'u', а не unicode escape
+            if (slash_count % 2 == 1) {
+                u_pos += 2;
+                continue;
+            }
+            size_t u_end = u_pos + 2;
+            while (u_end < s.size() && s[u_end] == 'u') u_end++;
+            if (u_end + 4 > s.size()) {
                 issues.push_back(filename + ":" + std::to_string(line_num) + ": некорректный unicode escape \\u (слишком короткий)");
                 break;
             }
-            for (size_t k = u_pos + 2; k < u_pos + 6; ++k) {
+            bool hex_ok = true;
+            for (size_t k = u_end; k < u_end + 4; ++k) {
                 if (!std::isxdigit(static_cast<unsigned char>(s[k]))) {
-                    issues.push_back(filename + ":" + std::to_string(line_num) + ": недопустимый символ в unicode escape: " + s.substr(u_pos, 6));
+                    issues.push_back(filename + ":" + std::to_string(line_num) + ": недопустимый символ в unicode escape: " + s.substr(u_pos, u_end + 4 - u_pos));
+                    hex_ok = false;
                     break;
                 }
             }
-            u_pos += 6;
+            u_pos = u_end + 4;
         }
 
         // 8. package декларация
@@ -176,46 +243,52 @@ std::vector<std::string> verify_class_text(const std::string& text, const std::s
             "abstract abstract", "volatile volatile", "transient transient"
         };
         for (const auto& dm : dup_modifiers) {
-            if (s.find(dm) != std::string::npos) {
+            if (masked.find(dm) != std::string::npos) {
                 issues.push_back(filename + ":" + std::to_string(line_num) + ": конфликт или дублирование модификаторов доступа: '" + dm + "'");
             }
         }
 
         // 11-12. break / continue вне контекста цикла
-        if (s.find("for (") != std::string::npos || s.find("for(") != std::string::npos ||
-            s.find("while (") != std::string::npos || s.find("while(") != std::string::npos ||
-            s.find("switch (") != std::string::npos || s.find("switch(") != std::string::npos) {
-            loop_or_switch_depth++;
+        bool has_loop_kw = (masked.find("for (") != std::string::npos || masked.find("for(") != std::string::npos ||
+                            masked.find("while (") != std::string::npos || masked.find("while(") != std::string::npos ||
+                            masked.find("switch (") != std::string::npos || masked.find("switch(") != std::string::npos ||
+                            masked.find("do ") != std::string::npos || masked.find("do{") != std::string::npos);
+        if (has_loop_kw) pending_loop = true;
+
+        int opens_line = static_cast<int>(std::count(masked.begin(), masked.end(), '{'));
+        int closes_line = static_cast<int>(std::count(masked.begin(), masked.end(), '}'));
+        if (pending_loop && opens_line > 0) {
+            loop_brace_levels.push_back(brace_depth + 1);
+            pending_loop = false;
         }
-        if (trimmed == "continue;" && loop_or_switch_depth == 0) {
+
+        if (trimmed == "continue;" && loop_brace_levels.empty()) {
             issues.push_back(filename + ":" + std::to_string(line_num) + ": continue вне тела цикла");
         }
-        if (trimmed == "break;" && loop_or_switch_depth == 0) {
+        if (trimmed == "break;" && loop_brace_levels.empty()) {
             issues.push_back(filename + ":" + std::to_string(line_num) + ": break вне цикла или switch");
         }
 
         // 13. Двойная точка с запятой (;; вне for)
-        if (s.find(";;") != std::string::npos && s.find("for") == std::string::npos) {
+        if (masked.find(";;") != std::string::npos && masked.find("for") == std::string::npos) {
             issues.push_back(filename + ":" + std::to_string(line_num) + ": лишняя точка с запятой ;;");
         }
 
-        // 14. Несбалансированные дженерики < > в сигнатуре
-        if ((trimmed.rfind("class ", 0) == 0 || trimmed.rfind("interface ", 0) == 0 || trimmed.find("public ") != std::string::npos) &&
-            trimmed.find("<<") == std::string::npos && trimmed.find(">>") == std::string::npos) {
-            int open_angles = std::count(trimmed.begin(), trimmed.end(), '<');
-            int close_angles = std::count(trimmed.begin(), trimmed.end(), '>');
-            if (open_angles != close_angles && trimmed.find(";") != std::string::npos) {
-                if (trimmed.back() == ';' || trimmed.back() == '{') {
+        // 14. Несбалансированные дженерики < > в сигнатуре (проверяем по masked без строковых литералов)
+        if ((trimmed_masked.rfind("class ", 0) == 0 || trimmed_masked.rfind("interface ", 0) == 0 || trimmed_masked.find("public ") != std::string::npos) &&
+            trimmed_masked.find("<<") == std::string::npos && trimmed_masked.find(">>") == std::string::npos) {
+            int open_angles = std::count(trimmed_masked.begin(), trimmed_masked.end(), '<');
+            int close_angles = std::count(trimmed_masked.begin(), trimmed_masked.end(), '>');
+            if (open_angles != close_angles && trimmed_masked.find(";") != std::string::npos) {
+                if (!trimmed_masked.empty() && (trimmed_masked.back() == ';' || trimmed_masked.back() == '{')) {
                     issues.push_back(filename + ":" + std::to_string(line_num) + ": возможное несовпадение угловых скобок дженериков < >");
                 }
             }
         }
 
-        // 15. Утечка сырого байткод-дескриптора в идентификаторах
-        if (s.find("Ljava/lang/") != std::string::npos || s.find("Lorg/") != std::string::npos || s.find("Lcom/") != std::string::npos) {
-            if (s.find("//") == std::string::npos && s.find("/*") == std::string::npos) {
-                issues.push_back(filename + ":" + std::to_string(line_num) + ": утечка сырого JVM-дескриптора в коде");
-            }
+        // 15. Утечка сырого байткод-дескриптора в идентификаторах (вне строк и комментариев)
+        if (masked.find("Ljava/lang/") != std::string::npos || masked.find("Lorg/") != std::string::npos || masked.find("Lcom/") != std::string::npos) {
+            issues.push_back(filename + ":" + std::to_string(line_num) + ": утечка сырого JVM-дескриптора в коде");
         }
 
         // 16. Висячие инфиксные операторы перед концом блока
@@ -227,7 +300,7 @@ std::vector<std::string> verify_class_text(const std::string& text, const std::s
         }
 
         // 17. Некорректный числовой литерал
-        if (s.find("0x;") != std::string::npos || s.find("0b;") != std::string::npos) {
+        if (masked.find("0x;") != std::string::npos || masked.find("0b;") != std::string::npos) {
             issues.push_back(filename + ":" + std::to_string(line_num) + ": неполный шестнадцатеричный или бинарный литерал");
         }
 
@@ -290,11 +363,11 @@ std::vector<std::string> verify_class_text(const std::string& text, const std::s
             issues.push_back(filename + ":" + std::to_string(line_num) + ": возврат значения в конструкторе");
         }
 
-        int closes = std::count(trimmed.begin(), trimmed.end(), '}');
-        int opens = std::count(trimmed.begin(), trimmed.end(), '{');
+        int closes = static_cast<int>(std::count(masked.begin(), masked.end(), '}'));
+        int opens = static_cast<int>(std::count(masked.begin(), masked.end(), '{'));
         brace_depth += opens - closes;
-        if (closes > 0 && loop_or_switch_depth > 0) {
-            loop_or_switch_depth = std::max(0, loop_or_switch_depth - closes);
+        while (!loop_brace_levels.empty() && brace_depth < loop_brace_levels.back()) {
+            loop_brace_levels.pop_back();
         }
     }
 
@@ -346,7 +419,10 @@ void ProjectStats::record_method(bool ok, const std::optional<std::string>& reas
 }
 
 double ProjectStats::pct(int part, int whole) const {
-    return whole ? (static_cast<double>(part) / static_cast<double>(whole) * 100.0) : 0.0;
+    if (whole == 0) {
+        return (classes_parsed > 0 && classes_parsed == classes_total) ? 100.0 : 0.0;
+    }
+    return static_cast<double>(part) / static_cast<double>(whole) * 100.0;
 }
 
 std::string quality_rating(double p) {

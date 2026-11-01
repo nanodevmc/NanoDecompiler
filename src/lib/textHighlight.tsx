@@ -199,14 +199,18 @@ function tokenizeJsonLine(line: string): Token[] {
   return tokenizeJsonValuePart(line);
 }
 
-// XML: <!-- комментарий -->, <tag>, </tag>, атрибуты, строки-значения.
+// XML: расширенный четкий токенизатор: пролог (<?xml...?>), CDATA, теги, скобки, атрибуты, строки и entity (&amp;)
 const XML_TOKEN_RE = new RegExp(
   [
     String.raw`(<!--[\s\S]*?-->)`,
-    String.raw`(<\/?[A-Za-z][\w:.\-]*)`,
+    String.raw`(<!\[CDATA\[[\s\S]*?\]\]>)`,
+    String.raw`(<!DOCTYPE[\s\S]*?>)`,
+    String.raw`(<\?[A-Za-z][\w:.\-]*|\?>)`,
+    String.raw`(<\/?[A-Za-z_:][\w:.\-]*)`,
     String.raw`(\/?>)`,
-    String.raw`("(?:[^"\\\n]|\\.)*")`,
-    String.raw`\b([A-Za-z_][\w:.\-]*)(?=\s*=)`,
+    String.raw`("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')`,
+    String.raw`\b([A-Za-z_:][\w:.\-]*)(?=\s*=)`,
+    String.raw`(&[#\w]+;)`,
   ].join("|"),
   "g",
 );
@@ -220,21 +224,39 @@ function tokenizeXmlLine(line: string): Token[] {
     if (m.index > last) {
       const interstitial = line.slice(last, m.index);
       const isWhitespace = /^\s*$/.test(interstitial);
-      out.push({ text: interstitial, cls: isWhitespace ? null : "text-ink/80" });
+      out.push({ text: interstitial, cls: isWhitespace ? null : "text-ink font-medium" });
     }
-    const [, comment, tag, close, str, attr] = m;
-    let cls: string | null = null;
-    if (comment) cls = "tok-c";
-    else if (tag || close) cls = "tok-k";
-    else if (str) cls = "tok-s";
-    else if (attr) cls = "tok-a";
-    out.push({ text: m[0], cls });
+    const [, comment, cdata, doctype, pi, tag, close, str, attr, entity] = m;
+    if (comment) {
+      out.push({ text: m[0], cls: "tok-c" });
+    } else if (cdata || doctype) {
+      out.push({ text: m[0], cls: "tok-c" });
+    } else if (pi) {
+      out.push({ text: m[0], cls: "tok-k" });
+    } else if (tag) {
+      // Split < or </ from tag name for perfect bracket punctuation styling
+      const slashIdx = tag.startsWith("</") ? 2 : 1;
+      const bracket = tag.slice(0, slashIdx);
+      const name = tag.slice(slashIdx);
+      out.push({ text: bracket, cls: "tok-punct" });
+      out.push({ text: name, cls: "tok-tag" });
+    } else if (close) {
+      out.push({ text: m[0], cls: "tok-punct" });
+    } else if (str) {
+      out.push({ text: m[0], cls: "tok-s" });
+    } else if (attr) {
+      out.push({ text: m[0], cls: "tok-a" });
+    } else if (entity) {
+      out.push({ text: m[0], cls: "tok-entity" });
+    } else {
+      out.push({ text: m[0], cls: null });
+    }
     last = m.index + m[0].length;
   }
   if (last < line.length) {
     const trailing = line.slice(last);
     const isWhitespace = /^\s*$/.test(trailing);
-    out.push({ text: trailing, cls: isWhitespace ? null : "text-ink/80" });
+    out.push({ text: trailing, cls: isWhitespace ? null : "text-ink font-medium" });
   }
   return out;
 }

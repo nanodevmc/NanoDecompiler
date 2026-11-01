@@ -128,6 +128,7 @@ const std::vector<KnownLibEntry>& known_libs() {
         {"net.objecthunter.exp4j", "net.objecthunter", "exp4j", "парсер математических выражений (exp4j)"},
         {"com.google.re2j", "com.google.re2j", "re2j", "линейные регулярные выражения RE2/J"},
         {"com.esotericsoftware.yamlbeans", "com.esotericsoftware.yamlbeans", "yamlbeans", "парсер YAML в Java-объекты"},
+        {"org.khelekore", "org.khelekore", "prtree", "PRTree spatial indexing library (shaded in WorldGuard/WorldEdit)"},
         {"org.khelekore.prtree", "org.khelekore", "prtree", "PRTree spatial indexing library (shaded in WorldGuard/WorldEdit)"},
         {"javax.annotation", "javax.annotation", "jsr305", ""},
         {"com.mojang.brigadier", "com.mojang", "brigadier", ""},
@@ -642,12 +643,18 @@ PomBuildResult build_pom(const std::string& jar_path, const std::string& plugin_
         << "    </properties>\n\n"
         << "    <repositories>\n"
         << "        <repository>\n"
-        << "            <id>spigotmc-repo</id>\n"
-        << "            <url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>\n"
-        << "        </repository>\n"
-        << "        <repository>\n"
         << "            <id>papermc</id>\n"
         << "            <url>https://repo.papermc.io/repository/maven-public/</url>\n"
+        << "        </repository>\n"
+        << "        <repository>\n"
+        << "            <id>enginehub</id>\n"
+        << "            <url>https://maven.enginehub.org/repo/</url>\n"
+        << "        </repository>\n"
+        << "        <repository>\n"
+        << "            <id>spigotmc-repo</id>\n"
+        << "            <url>https://hub.spigotmc.org/nexus/content/repositories/snapshots/</url>\n"
+        << "            <releases><enabled>false</enabled></releases>\n"
+        << "            <snapshots><enabled>true</enabled></snapshots>\n"
         << "        </repository>\n"
         << "    </repositories>\n\n"
         << "    <dependencies>\n"

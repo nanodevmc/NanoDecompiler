@@ -41,6 +41,7 @@ private:
     std::vector<std::string> order_;
     std::map<std::string, ZipEntryInfo> entries_;
     std::map<std::string, uint64_t> local_header_offset_;
+    std::vector<uint8_t> jar_data_;
 };
 
 }  // namespace nd

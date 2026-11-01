@@ -31,6 +31,7 @@ struct MonitorMarkerStmt : public Stmt {
 // это перед рендерингом каждого класса) - влияет на самоквалификацию
 // static-полей/методов.
 void set_current_class(const std::optional<std::string>& dotted);
+void set_current_method_return_type(const std::optional<std::string>& ret_type);
 
 // Задаёт множество имён локальных переменных/параметров текущего метода -
 // влияет на то, нужен ли `this.` перед полем.

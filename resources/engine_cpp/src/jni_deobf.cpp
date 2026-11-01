@@ -256,7 +256,7 @@ std::string JniDeobfuscator::generate_decompiled_java(const std::string& class_n
         out << "package " << pkg << ";\n\n";
     }
 
-    out << "/**\n * Деобфусцировано NanoDecompiler JNI Engine v2.0.2\n";
+    out << "/**\n * Деобфусцировано NanoDecompiler JNI Engine v2.0.3\n";
     out << " * Точность восстановления нативного слоя: 89.4%+\n */\n";
     out << "public class " << simple_name << " {\n\n";
 

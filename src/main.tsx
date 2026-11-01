@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
 import { LogWindow } from "./components/LogWindow";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { initTauriBridge } from "./lib/tauriBridge";
 
 // Инициализация нативного моста Tauri v2 (если запущено под Tauri)
@@ -13,5 +14,9 @@ initTauriBridge();
 // #/logs в хэше - здесь решаем, что рендерить, вместо отдельного
 // HTML-файла (проще: один бандл, одна точка входа).
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>{location.hash === "#/logs" ? <LogWindow /> : <App />}</StrictMode>,
+  <StrictMode>
+    <ErrorBoundary>
+      {location.hash === "#/logs" ? <LogWindow /> : <App />}
+    </ErrorBoundary>
+  </StrictMode>,
 );

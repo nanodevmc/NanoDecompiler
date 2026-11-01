@@ -107,7 +107,7 @@ export const CodeView = memo(function CodeView({
   jobId?: string;
   outDir?: string;
 }) {
-  const { copyText, selectFile, toast, settings, addJarPaths } = useEngine();
+  const { copyText, selectFile, toast, settings, addJarPaths, jobs } = useEngine();
   const lang = settings.language;
   const [wrap, setWrap] = useState(false);
   const codeContainerRef = useRef<HTMLDivElement>(null);
@@ -202,7 +202,7 @@ export const CodeView = memo(function CodeView({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const job = jobId ? useEngine().jobs.find(j => j.id === jobId) : undefined;
+  const job = jobId ? jobs.find(j => j.id === jobId) : undefined;
   const platformVersion = undefined;
 
   const displayCode = useMemo(() => {
@@ -227,7 +227,8 @@ export const CodeView = memo(function CodeView({
     );
   }
 
-  const crumbs = [...file.pkg.split("/").filter(Boolean), file.name];
+  const pkgStr = file.pkg || "";
+  const crumbs = [...pkgStr.split("/").filter(Boolean), file.name || ""];
   const CodeComponent = codeComponentFor(file.name);
 
   return (

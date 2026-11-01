@@ -14,7 +14,7 @@ BUILD_DIR = os.path.join(ENGINE_DIR, "build_android")
 os.makedirs(BUILD_DIR, exist_ok=True)
 
 # Исходники без бэкапов
-cpp_files = [f for f in glob.glob(os.path.join(SRC_DIR, "*.cpp")) if not f.endswith(".bak")]
+cpp_files = [f for f in glob.glob(os.path.join(SRC_DIR, "*.cpp")) if ".bak" not in os.path.basename(f)]
 
 print(f"Compiling {len(cpp_files)} C++ engine sources for aarch64-linux-android with -static-libstdc++ ...")
 

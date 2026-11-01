@@ -142,6 +142,7 @@ std::string mark_type(const std::optional<std::string>& dotted) {
     if (dotted->empty()) return "";
     std::string arr;
     std::string base = *dotted;
+    for (char& c : base) if (c == '/') c = '.';
     while (base.size() >= 2 && base.substr(base.size() - 2) == "[]") {
         arr += "[]";
         base = base.substr(0, base.size() - 2);
@@ -475,9 +476,11 @@ bool looks_obfuscated(const std::optional<std::string>& name_opt, const std::str
         base = name;
     }
 
-    // 1. Check for non-ASCII, unprintable, or invalid identifier characters
-    for (unsigned char c : base) {
-        if (c < 0x20 || c == 0x7F || c >= 0x80) return true;
+    // 1. Check for non-ASCII, unprintable, or invalid Java identifier characters
+    if (base.empty()) return true;
+    if (!is_ident_char_first(base[0])) return true;
+    for (size_t i = 1; i < base.size(); ++i) {
+        if (!is_ident_char_rest(base[i])) return true;
     }
 
     // 2. Check for ProGuard 1-3 character obfuscated names

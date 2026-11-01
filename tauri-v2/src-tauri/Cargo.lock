@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "nanodecompiler-fastscan"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "rayon",
  "serde",
@@ -2102,7 +2102,7 @@ dependencies = [
 
 [[package]]
 name = "nanodecompiler-tauri"
-version = "2.0.3"
+version = "2.0.4"
 dependencies = [
  "nanodecompiler-fastscan",
  "open",

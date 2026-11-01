@@ -720,10 +720,18 @@ jobs:
       - name: Собрать инсталлятор Tauri v2 (NSIS / Bundle)
         shell: bash
         run: |
-          npx --yes @tauri-apps/cli@2 build --config tauri-v2/src-tauri/tauri.conf.json || true
-          SETUP_FILE=$(find tauri-v2/src-tauri/target/release/bundle -iname "*.exe" 2>/dev/null | head -1)
-          if [ -n "$SETUP_FILE" ]; then
-            cp "$SETUP_FILE" NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          if command -v makensis &>/dev/null; then
+            cd resources && makensis -DPRODUCT_VERSION="$VERSION" installer_tauri.nsi && cd ..
+          elif [ -f "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
+            cd resources && "/c/Program Files (x86)/NSIS/makensis.exe" -DPRODUCT_VERSION="$VERSION" installer_tauri.nsi && cd ..
+          else
+            choco install nsis -y --no-progress
+            cd resources && makensis -DPRODUCT_VERSION="$VERSION" installer_tauri.nsi && cd ..
+          fi
+          SETUP_CANDIDATE=$(find . -maxdepth 1 -iname "NanoDecompiler-Tauri-Setup-*.exe" 2>/dev/null | head -1)
+          if [ -n "$SETUP_CANDIDATE" ]; then
+            cp "$SETUP_CANDIDATE" NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe
           else
             cp NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe
           fi

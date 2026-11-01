@@ -14,6 +14,7 @@
 #include "javatypes.hpp"
 #include "str_decrypt.hpp"
 #include "aegis_deobf.hpp"
+#include <iostream>
 
 namespace nd {
 
@@ -143,8 +144,12 @@ std::optional<HashCaseInfo> match_hash_case_body(const std::vector<StmtPtr>& bod
 // индексу) в один switch(String). Возвращает true и мутирует stmts, если
 // форма совпала полностью; иначе false и stmts не тронут.
 bool try_collapse_string_switch(std::vector<StmtPtr>& stmts, size_t i) {
-    if (i + 1 >= stmts.size() || stmts[i + 1]->kind != StmtKind::SwitchStmt) return false;
-    auto* sw2 = static_cast<SwitchStmt*>(stmts[i + 1].get());
+    size_t next_sw_pos = i + 1;
+    while (next_sw_pos < stmts.size() && stmts[next_sw_pos]->kind == StmtKind::LocalDecl) {
+        next_sw_pos++;
+    }
+    if (next_sw_pos >= stmts.size() || stmts[next_sw_pos]->kind != StmtKind::SwitchStmt) return false;
+    auto* sw2 = static_cast<SwitchStmt*>(stmts[next_sw_pos].get());
     if (!sw2->selector || sw2->selector->kind != ExprKind::Local) return false;
     std::string index_var = static_cast<Local*>(sw2->selector.get())->name;
 
@@ -227,7 +232,7 @@ bool try_collapse_string_switch(std::vector<StmtPtr>& stmts, size_t i) {
     }
 
     if (any_collapsed) {
-        stmts.erase(stmts.begin() + static_cast<long>(i) + 1);
+        stmts.erase(stmts.begin() + static_cast<long>(next_sw_pos));
         return true;
     }
     return false;
@@ -1084,7 +1089,8 @@ ExprPtr build_object_methods(const ClassFile& cf, const std::vector<uint16_t>& b
 }
 
 ExprPtr handle_invokedynamic(const ClassFile& cf, const Instruction& ins, MethodCtx& ctx,
-                              const std::function<std::vector<ExprPtr>(size_t)>& pop_n) {
+                              const std::function<std::vector<ExprPtr>(size_t)>& pop_n,
+                              const std::function<void(StmtPtr)>& emit = nullptr) {
     auto it = cf.pool.find(static_cast<uint16_t>(*ins.cp_index));
     if (it == cf.pool.end() || it->second.tag != CpTag::InvokeDynamic) {
         return std::make_shared<Const>("/* bad-indy */", "Object");
@@ -1122,44 +1128,70 @@ ExprPtr handle_invokedynamic(const ClassFile& cf, const Instruction& ins, Method
         if (bsm_owner == "java/lang/runtime/ObjectMethods" && bsm_name == "bootstrap") {
             return build_object_methods(cf, bm.args, call_args, indy_name, ctx);
         }
-        if (bsm_owner.find("Aegis") != std::string::npos || bsm_owner == "dev/aegisforge/vm/AegisIndyBootstrap") {
-            if (!bm.args.empty()) {
-                uint16_t arg_cp = bm.args[0];
-                auto cp_it = cf.pool.find(arg_cp);
-                if (cp_it != cf.pool.end()) {
-                    uint64_t token = 0;
-                    if (cp_it->second.tag == CpTag::Long) {
-                        token = cp_it->second.long_value;
-                    } else if (cp_it->second.tag == CpTag::Integer) {
-                        token = static_cast<uint64_t>(cp_it->second.int_value);
-                    }
-                    if (auto vm_m = get_aegis_vm_method(token)) {
-                        std::vector<ExprPtr> actual_args;
-                        if (call_args.size() == 1 && call_args[0]->kind == ExprKind::NewArray) {
-                            auto arr = std::dynamic_pointer_cast<NewArray>(call_args[0]);
-                            if (arr && arr->initializer.has_value() && !arr->initializer->empty()) {
-                                actual_args = *arr->initializer;
-                            }
-                        } else if (call_args.size() > 1) {
-                            actual_args = call_args;
-                        }
+        bool is_potential_aegis = (bsm_owner.find("Aegis") != std::string::npos ||
+                                   bsm_owner == "dev/aegisforge/vm/AegisIndyBootstrap" ||
+                                   bsm_owner.find("SpatialRegionEvaluator") != std::string::npos ||
+                                   bsm_owner.find("RegionDispatcher") != std::string::npos ||
+                                   bsm_name == "dispatch" || bsm_name == "evaluate" || bsm_name == "execute");
 
-                        // Если аргументы не удалось распаковать из массива вызова, берем параметры текущего метода
-                        if (actual_args.empty()) {
-                            bool is_static_m = (ctx.method.access & 0x0008) != 0;
-                            if (!is_static_m) {
-                                actual_args.push_back(std::make_shared<This>());
+        if (is_potential_aegis && !bm.args.empty()) {
+            uint16_t arg_cp = bm.args[0];
+            auto cp_it = cf.pool.find(arg_cp);
+            if (cp_it != cf.pool.end()) {
+                uint64_t token = 0;
+                if (cp_it->second.tag == CpTag::Long) {
+                    token = cp_it->second.long_value;
+                } else if (cp_it->second.tag == CpTag::Integer) {
+                    token = static_cast<uint64_t>(cp_it->second.int_value);
+                } else if (cp_it->second.tag == CpTag::String) {
+                    if (const std::string* s_ptr = cf.utf8(cp_it->second.idx1)) {
+                        try {
+                            const auto& s = *s_ptr;
+                            if (s.size() > 2 && (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))) {
+                                token = std::stoull(s.substr(2), nullptr, 16);
+                            } else if (s.find_first_not_of("0123456789") != std::string::npos) {
+                                token = std::stoull(s, nullptr, 16);
+                            } else {
+                                token = std::stoull(s, nullptr, 10);
                             }
-                            for (auto& [slot, info] : ctx.locals) {
-                                if (info.is_param && (is_static_m || slot != 0)) {
-                                    actual_args.push_back(std::make_shared<Local>(info.name, info.type));
-                                }
+                        } catch (...) {}
+                    }
+                }
+                if (auto vm_m = get_aegis_vm_method(token)) {
+                    std::vector<ExprPtr> actual_args;
+                    if (call_args.size() == 1 && call_args[0]->kind == ExprKind::NewArray) {
+                        auto arr = std::dynamic_pointer_cast<NewArray>(call_args[0]);
+                        if (arr && arr->initializer.has_value() && !arr->initializer->empty()) {
+                            actual_args = *arr->initializer;
+                        }
+                    } else if (call_args.size() > 1) {
+                        actual_args = call_args;
+                    }
+
+                    // Если аргументы не удалось распаковать из массива вызова, берем параметры текущего метода
+                    if (actual_args.empty()) {
+                        bool is_static_m = (ctx.method.access & 0x0008) != 0;
+                        if (!is_static_m) {
+                            actual_args.push_back(std::make_shared<This>());
+                        }
+                        for (auto& [slot, info] : ctx.locals) {
+                            if (info.is_param && (is_static_m || slot != 0)) {
+                                actual_args.push_back(std::make_shared<Local>(info.name, info.type));
                             }
                         }
-
-                        auto expr = translate_aegis_ir_method(*vm_m, actual_args, ctx);
-                        if (expr) return expr;
                     }
+
+                    std::vector<StmtPtr> ir_stmts;
+                    auto expr = translate_aegis_ir_method(*vm_m, actual_args, ctx, &ir_stmts);
+                    if (emit) {
+                        for (auto& s : ir_stmts) emit(s);
+                    }
+                    
+                    if (expr) return expr;
+                    if (indy_ret != "void" && !indy_ret.empty()) {
+                        return std::make_shared<Const>("null", indy_ret);
+                    }
+                    return std::make_shared<Raw>("");
                 }
             }
         }
@@ -1167,8 +1199,13 @@ ExprPtr handle_invokedynamic(const ClassFile& cf, const Instruction& ins, Method
         // Safe fallback for custom or non-standard BSMs
     }
     std::string ret_type = indy_ret.empty() ? "Object" : indy_ret;
+    std::string receiver_name = indy_name;
+    if (!bsm_owner.empty()) {
+        auto slash = bsm_owner.rfind('/');
+        receiver_name = (slash != std::string::npos) ? bsm_owner.substr(slash + 1) : bsm_owner;
+    }
     return std::make_shared<MethodCall>(
-        std::make_shared<Raw>("/* indy: " + bsm_owner + "." + bsm_name + " */ " + indy_name),
+        std::make_shared<Raw>(receiver_name),
         indy_name, call_args, ret_type, false);
 }
 
@@ -1864,7 +1901,7 @@ BlockResult simulate_block(const Block& block, const std::vector<ExprPtr>& entry
             for (size_t k = 0; k < args.size(); ++k) args[k] = coerce_arg(args[k], ctx.map_type(params[k]));
 
             if (mn == "invokestatic") {
-                if (owner.find("AegisVM") != std::string::npos || owner.find("aegisforge") != std::string::npos) {
+                if (owner.find("AegisVM") != std::string::npos || owner.find("aegisforge") != std::string::npos || owner.find("SpatialRegionEvaluator") != std::string::npos) {
                     if (name == "toBool" || name == "toInt" || name == "toLong" || name == "toDouble" ||
                         name == "toShort" || name == "toByte" || name == "toChar" || name == "cast") {
                         if (!args.empty()) {
@@ -1876,6 +1913,76 @@ BlockResult simulate_block(const Block& block, const std::vector<ExprPtr>& entry
                     if (name == "checkSecurity" || name == "verifyIntegrity") {
                         i += 1;
                         continue;
+                    }
+                    if (name == "decryptString" && args.size() == 2) {
+                        if (args[0]->kind == ExprKind::Const && args[1]->kind == ExprKind::Const) {
+                            auto* c0 = static_cast<Const*>(args[0].get());
+                            auto* c1 = static_cast<Const*>(args[1].get());
+                            std::string enc = c0->raw.value_or(c0->literal);
+                            if (enc.size() >= 2 && enc.front() == '"' && enc.back() == '"') {
+                                enc = enc.substr(1, enc.size() - 2);
+                            }
+                            int32_t k = 0;
+                            try { k = std::stoi(c1->literal); } catch (...) {}
+                            auto dec_str = aegis_decrypt_string_fast(enc, k);
+                            if (dec_str.has_value()) {
+                                push(std::make_shared<Const>(java_string_literal(*dec_str), "String", *dec_str));
+                                i += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    if ((name == "execute" || name == "evaluate") && !args.empty()) {
+                        uint64_t token = 0;
+                        if (args[0]->kind == ExprKind::Const) {
+                            auto* c = static_cast<Const*>(args[0].get());
+                            std::string t_txt = c->raw.value_or(c->literal);
+                            if (t_txt.size() >= 2 && t_txt.front() == '"' && t_txt.back() == '"') {
+                                t_txt = t_txt.substr(1, t_txt.size() - 2);
+                            }
+                            if (!t_txt.empty() && (t_txt.back() == 'L' || t_txt.back() == 'l')) t_txt.pop_back();
+                            try {
+                                if (t_txt.size() > 2 && (t_txt[0] == '0' && (t_txt[1] == 'x' || t_txt[1] == 'X'))) {
+                                    token = std::stoull(t_txt.substr(2), nullptr, 16);
+                                } else if (t_txt.size() == 8) {
+                                    token = std::stoull(t_txt, nullptr, 16);
+                                } else {
+                                    uint64_t htok = 0;
+                                    try { htok = std::stoull(t_txt, nullptr, 16); } catch (...) {}
+                                    if (htok != 0 && get_aegis_vm_method(htok)) {
+                                        token = htok;
+                                    } else {
+                                        token = std::stoull(t_txt, nullptr, 10);
+                                    }
+                                }
+                            } catch (...) {}
+                        }
+                        if (auto vm_m = get_aegis_vm_method(token)) {
+                            std::vector<ExprPtr> actual_args;
+                            if (args.size() > 1) {
+                                if (args[1]->kind == ExprKind::NewArray) {
+                                    auto arr = std::dynamic_pointer_cast<NewArray>(args[1]);
+                                    if (arr && arr->initializer.has_value()) actual_args = *arr->initializer;
+                                }
+                            }
+                            if (actual_args.empty()) {
+                                bool is_static_m = (ctx.method.access & 0x0008) != 0;
+                                if (!is_static_m) actual_args.push_back(std::make_shared<This>());
+                                for (auto& [slot, info] : ctx.locals) {
+                                    if (info.is_param && (is_static_m || slot != 0)) {
+                                        actual_args.push_back(std::make_shared<Local>(info.name, info.type));
+                                    }
+                                }
+                            }
+                            std::vector<StmtPtr> ir_stmts;
+                            auto expr = translate_aegis_ir_method(*vm_m, actual_args, ctx, &ir_stmts);
+                            for (auto& s : ir_stmts) emit(s);
+                            if (expr && (expr->kind != ExprKind::Raw || !static_cast<const Raw*>(expr.get())->text.empty())) {
+                                push(expr);
+                            }
+                            i += 1;
+                            continue;
+                        }
                     }
                 }
                 auto& active = str_decrypt_get_active();
@@ -2115,8 +2222,16 @@ BlockResult simulate_block(const Block& block, const std::vector<ExprPtr>& entry
         }
 
         if (mn == "invokedynamic") {
-            ExprPtr expr = handle_invokedynamic(cf, ins, ctx, pop_n);
-            push(expr);
+            ExprPtr expr = handle_invokedynamic(cf, ins, ctx, pop_n, emit);
+            if (!res.stmts.empty() && res.stmts.back()->kind == StmtKind::LocalDecl) {
+                auto* ld = static_cast<LocalDecl*>(res.stmts.back().get());
+                if (ld && ld->name.find("__obj") != std::string::npos) {
+                    res.stmts.pop_back();
+                }
+            }
+            if (expr && (expr->kind != ExprKind::Raw || !static_cast<const Raw*>(expr.get())->text.empty())) {
+                push(expr);
+            }
             i += 1;
             continue;
         }

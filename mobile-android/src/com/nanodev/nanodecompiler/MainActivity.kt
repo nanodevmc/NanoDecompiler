@@ -37,7 +37,7 @@ import java.util.regex.Pattern
 
 class MainActivity : Activity() {
 
-    private val bgExecutor = Executors.newSingleThreadExecutor()
+    private val bgExecutor = Executors.newFixedThreadPool(2)
     private var vibrator: Vibrator? = null
 
     // Liquid Glass & Material Design 3 Цветовая Палитра
@@ -68,6 +68,9 @@ class MainActivity : Activity() {
     private var activeOutDir: File? = null
     private val decompiledFilesList = ArrayList<File>()
     private var isDecompiling = false
+    private var isBatchMode = false
+    private val completedFiles = LinkedHashSet<File>()
+    private val decompiledOutputs = HashMap<File, File>()
 
     private fun resetDecompileButton() {
         isDecompiling = false
@@ -92,8 +95,8 @@ class MainActivity : Activity() {
 
     // Настройки приложения (ПК 1:1)
     private var optDeobfuscateStrings = true
-    private var optLegitimacyCheck = true
-    private var optVulnerabilityScan = true
+    private var optLegitimacyCheck = false
+    private var optVulnerabilityScan = false
     private var optRestoreControlFlow = true
     private var optVibration = true
     private var optSyntaxHighlight = true
@@ -155,7 +158,7 @@ class MainActivity : Activity() {
 
         val fSize = px.toFloat()
         when (iconType) {
-            "folder" -> { // Google Icons: folder_open
+            "folder" -> {
                 val p = Path().apply {
                     moveTo(fSize * 0.15f, fSize * 0.35f)
                     lineTo(fSize * 0.40f, fSize * 0.35f)
@@ -163,6 +166,18 @@ class MainActivity : Activity() {
                     lineTo(fSize * 0.85f, fSize * 0.45f)
                     lineTo(fSize * 0.85f, fSize * 0.75f)
                     lineTo(fSize * 0.15f, fSize * 0.75f)
+                    close()
+                }
+                canvas.drawPath(p, paint)
+            }
+            "folder_open" -> {
+                val p = Path().apply {
+                    moveTo(fSize * 0.15f, fSize * 0.35f)
+                    lineTo(fSize * 0.38f, fSize * 0.35f)
+                    lineTo(fSize * 0.48f, fSize * 0.45f)
+                    lineTo(fSize * 0.85f, fSize * 0.45f)
+                    lineTo(fSize * 0.75f, fSize * 0.75f)
+                    lineTo(fSize * 0.10f, fSize * 0.75f)
                     close()
                 }
                 canvas.drawPath(p, paint)
@@ -591,6 +606,28 @@ class MainActivity : Activity() {
         }
         headerLayout.addView(tvQueueTitle)
 
+        val btnDecompileAll = Button(this).apply {
+            text = "Декомпилировать всё"
+            setTextColor(Color.BLACK)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            typeface = Typeface.DEFAULT_BOLD
+            background = liquidGlassDrawable(COLOR_ACID, COLOR_ACID, 8f)
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.marginEnd = dp(8)
+            layoutParams = lp
+            setOnClickListener {
+                if (queueFiles.isEmpty()) {
+                    Toast.makeText(this@MainActivity, "Очередь архивов пуста!", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                isBatchMode = true
+                val firstPending = queueFiles.firstOrNull { !completedFiles.contains(it) } ?: queueFiles.first()
+                activeFile = firstPending
+                startDecompilation()
+            }
+        }
+        headerLayout.addView(btnDecompileAll)
+
         val btnClear = Button(this).apply {
             text = "Очистить"
             setTextColor(COLOR_TEXT_MUTED)
@@ -683,7 +720,15 @@ class MainActivity : Activity() {
         editorToolbar.addView(btnShareZip)
         layout.addView(editorToolbar)
 
-        // Поле быстрого поиска по классам
+        // Панель быстрого поиска и управления деревом исходников
+        val searchRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.bottomMargin = dp(6)
+            layoutParams = lp
+        }
+
         etClassFilter = EditText(this).apply {
             hint = "Поиск класса в плагине..."
             setHintTextColor(COLOR_TEXT_MUTED)
@@ -692,9 +737,7 @@ class MainActivity : Activity() {
             typeface = Typeface.MONOSPACE
             background = liquidGlassDrawable(COLOR_SURFACE_GLASS, COLOR_BORDER, 8f)
             setPadding(dp(10), dp(6), dp(10), dp(6))
-            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            lp.bottomMargin = dp(6)
-            layoutParams = lp
+            layoutParams = LinearLayout.LayoutParams(0, dp(32), 1.0f)
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -703,7 +746,45 @@ class MainActivity : Activity() {
                 override fun afterTextChanged(s: Editable?) {}
             })
         }
-        layout.addView(etClassFilter)
+        searchRow.addView(etClassFilter)
+
+        val btnCollapseAll = Button(this).apply {
+            text = "▼ Свернуть"
+            setTextColor(COLOR_TEXT_MUTED)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            background = liquidGlassDrawable(COLOR_CARD_GLASS, COLOR_BORDER, 6f)
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(32))
+            lp.marginStart = dp(6)
+            layoutParams = lp
+            setPadding(dp(8), 0, dp(8), 0)
+            setOnClickListener {
+                rootSourceNode?.let {
+                    setAllNodesExpanded(it, false)
+                    filterClassTree(etClassFilter.text.toString())
+                }
+            }
+        }
+        searchRow.addView(btnCollapseAll)
+
+        val btnExpandAll = Button(this).apply {
+            text = "▶ Развернуть"
+            setTextColor(COLOR_TEXT_MUTED)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            background = liquidGlassDrawable(COLOR_CARD_GLASS, COLOR_BORDER, 6f)
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(32))
+            lp.marginStart = dp(4)
+            layoutParams = lp
+            setPadding(dp(8), 0, dp(8), 0)
+            setOnClickListener {
+                rootSourceNode?.let {
+                    setAllNodesExpanded(it, true)
+                    filterClassTree(etClassFilter.text.toString())
+                }
+            }
+        }
+        searchRow.addView(btnExpandAll)
+
+        layout.addView(searchRow)
 
         // Сплит-панель: Список классов (вверху) + Текст кода с номерами строк (внизу)
         val splitLayout = LinearLayout(this).apply {
@@ -1008,12 +1089,19 @@ class MainActivity : Activity() {
                     }
                 }
 
+                // Устанавливаем активный файл и добавляем в очередь архивов
+                activeFile = cacheFile
+                if (!queueFiles.contains(cacheFile)) {
+                    queueFiles.add(cacheFile)
+                }
+
                 // Если это ZIP архив — автоматически распакуем и покажем содержащиеся в нем JAR и CLASS файлы
                 if (fileName.endsWith(".zip", ignoreCase = true) || fileName.endsWith(".tar.gz", ignoreCase = true) || fileName.endsWith(".7z", ignoreCase = true) || fileName.endsWith(".rar", ignoreCase = true)) {
                     val archiveUnpackDir = File(cacheDir, "extracted_${cacheFile.nameWithoutExtension}")
                     if (archiveUnpackDir.exists()) archiveUnpackDir.deleteRecursively()
                     archiveUnpackDir.mkdirs()
 
+                    val extractedJars = ArrayList<File>()
                     try {
                         java.util.zip.ZipFile(cacheFile).use { zf ->
                             val entries = zf.entries()
@@ -1025,14 +1113,24 @@ class MainActivity : Activity() {
                                     zf.getInputStream(entry).use { input ->
                                         FileOutputStream(extractedFile).use { output -> input.copyTo(output) }
                                     }
+                                    extractedJars.add(extractedFile)
                                     if (!queueFiles.contains(extractedFile)) queueFiles.add(extractedFile)
                                 }
                             }
                         }
                     } catch (_: Exception) {}
+
+                    if (extractedJars.isNotEmpty()) {
+                        queueFiles.remove(cacheFile)
+                        activeFile = extractedJars.firstOrNull { it.name.endsWith(".jar", ignoreCase = true) } ?: extractedJars.first()
+                        if (queueFiles.size > 1) {
+                            isBatchMode = true
+                        }
+                    }
                 }
 
-                val rep = FastScanEngine.scan(cacheFile)
+                val targetToScan = activeFile ?: cacheFile
+                val rep = FastScanEngine.scan(targetToScan)
                 activeReport = rep
 
                 runOnUiThread {
@@ -1040,7 +1138,7 @@ class MainActivity : Activity() {
                     val sizeKb = rep.sizeBytes / 1024
                     tvFileMeta.text = "Размер: $sizeKb КБ • Классов: ${rep.totalClasses} • Энтропия: ${rep.maxEntropy}\n" +
                             "Плагин: ${rep.pluginName} v${rep.version} • Автор: ${rep.author}\n" +
-                            "Защита: ${if (rep.isNanoGuardProtected) "NanoGuard DETECTED" else "Чисто"} • Угрозы: ${rep.threatLevel}"
+                            "Защита: Чисто • Угрозы: ${rep.threatLevel}"
                     btnStartDecompile.isEnabled = true
                     btnStartDecompile.alpha = 1.0f
                     tvStatus.text = "в очереди"
@@ -1059,33 +1157,62 @@ class MainActivity : Activity() {
 
     private fun refreshQueueView() {
         queueContainer.removeAllViews()
+        if (queueFiles.isEmpty()) {
+            val emptyTv = TextView(this).apply {
+                text = "Очередь архивов пуста\nДобавьте .jar или архив на главном экране"
+                setTextColor(COLOR_TEXT_MUTED)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                typeface = Typeface.MONOSPACE
+                gravity = Gravity.CENTER
+                setPadding(0, dp(40), 0, dp(40))
+            }
+            queueContainer.addView(emptyTv)
+            return
+        }
         for (f in queueFiles) {
+            val isDone = completedFiles.contains(f)
+            val isCurrent = (f == activeFile && isDecompiling)
+
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(14), dp(12), dp(14), dp(12))
+                setPadding(dp(14), dp(10), dp(10), dp(10))
                 val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 lp.bottomMargin = dp(8)
                 layoutParams = lp
-                background = liquidGlassDrawable(COLOR_SURFACE_GLASS, COLOR_BORDER, 12f)
+                background = liquidGlassDrawable(
+                    if (isCurrent) COLOR_CARD_GLASS else COLOR_SURFACE_GLASS,
+                    if (isCurrent) COLOR_ACID else if (isDone) COLOR_CYAN else COLOR_BORDER,
+                    12f
+                )
             }
 
             card.setOnClickListener {
                 activeFile = f
-                val rep = FastScanEngine.scan(f)
-                activeReport = rep
-                tvFileTitle.text = rep.fileName
-                val sizeKb = rep.sizeBytes / 1024
-                tvFileMeta.text = "Размер: $sizeKb КБ • Классов: ${rep.totalClasses} • Энтропия: ${rep.maxEntropy}\n" +
-                        "Плагин: ${rep.pluginName} v${rep.version} • Автор: ${rep.author}\n" +
-                        "Защита: ${if (rep.isNanoGuardProtected) "NanoGuard DETECTED" else "Чисто"} • Угрозы: ${rep.threatLevel}"
-                btnStartDecompile.isEnabled = true
-                btnStartDecompile.alpha = 1.0f
-                switchTab(0) // переходим на главный экран для запуска
+                if (isDone && decompiledOutputs.containsKey(f)) {
+                    activeOutDir = decompiledOutputs[f]
+                    populateSourceTree(activeOutDir!!)
+                    switchTab(2)
+                    Toast.makeText(this, "Открыты исходники: ${f.name}", Toast.LENGTH_SHORT).show()
+                } else {
+                    val rep = FastScanEngine.scan(f)
+                    activeReport = rep
+                    tvFileTitle.text = rep.fileName
+                    val sizeKb = rep.sizeBytes / 1024
+                    tvFileMeta.text = "Размер: $sizeKb КБ • Классов: ${rep.totalClasses} • Энтропия: ${rep.maxEntropy}\n" +
+                            "Плагин: ${rep.pluginName} v${rep.version} • Автор: ${rep.author}\n" +
+                            "Защита: Чисто • Угрозы: ${rep.threatLevel}"
+                    btnStartDecompile.isEnabled = true
+                    btnStartDecompile.alpha = 1.0f
+                    tvStatus.text = "в очереди"
+                    statusDot.background = liquidGlassDrawable(COLOR_CYAN, COLOR_CYAN, 4f)
+                    switchTab(0)
+                }
             }
 
+            val dotColor = if (isDone) COLOR_ACID else if (isCurrent) COLOR_CYAN else COLOR_TEXT_MUTED
             val dot = View(this).apply {
-                background = liquidGlassDrawable(COLOR_ACID, COLOR_ACID, 4f)
+                background = liquidGlassDrawable(dotColor, dotColor, 4f)
                 val lp = LinearLayout.LayoutParams(dp(8), dp(8))
                 lp.marginEnd = dp(10)
                 layoutParams = lp
@@ -1093,19 +1220,38 @@ class MainActivity : Activity() {
             card.addView(dot)
 
             val tvName = TextView(this).apply {
-                text = "${f.name} (${f.length() / 1024} КБ)"
-                setTextColor(COLOR_TEXT)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                val badge = if (isDone) " [✔ Готово]" else if (isCurrent) " [⚡ В процессе]" else ""
+                text = "${f.name} (${f.length() / 1024} КБ)$badge"
+                setTextColor(if (isDone) COLOR_ACID else COLOR_TEXT)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                 typeface = Typeface.MONOSPACE
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f)
             }
             card.addView(tvName)
 
+            if (!isDone && !isDecompiling) {
+                val btnRunOne = ImageButton(this).apply {
+                    setImageDrawable(createGoogleIcon("play", 16, COLOR_ACID))
+                    background = null
+                    setPadding(dp(6), dp(6), dp(6), dp(6))
+                    setOnClickListener {
+                        activeFile = f
+                        isBatchMode = false
+                        startDecompilation()
+                    }
+                }
+                card.addView(btnRunOne)
+            }
+
             val btnDel = ImageButton(this).apply {
                 setImageDrawable(createGoogleIcon("delete", 16, COLOR_DANGER))
                 background = null
+                setPadding(dp(6), dp(6), dp(6), dp(6))
                 setOnClickListener {
                     queueFiles.remove(f)
+                    completedFiles.remove(f)
+                    decompiledOutputs.remove(f)
+                    if (activeFile == f) activeFile = queueFiles.firstOrNull { !completedFiles.contains(it) } ?: queueFiles.firstOrNull()
                     refreshQueueView()
                 }
             }
@@ -1115,8 +1261,16 @@ class MainActivity : Activity() {
     }
 
     private fun startDecompilation() {
-        val target = activeFile ?: return
+        val target = activeFile ?: queueFiles.firstOrNull { !completedFiles.contains(it) } ?: queueFiles.firstOrNull() ?: run {
+            Toast.makeText(this, "Сначала выберите файл для декомпиляции!", Toast.LENGTH_SHORT).show()
+            return
+        }
+        activeFile = target
+        if (queueFiles.size > 1 && !isBatchMode) {
+            isBatchMode = true
+        }
         isDecompiling = true
+        refreshQueueView()
         btnStartDecompile.text = "  Остановить"
         btnStartDecompile.setTextColor(Color.WHITE)
         btnStartDecompile.setCompoundDrawablesWithIntrinsicBounds(createGoogleIcon("stop", 16, Color.WHITE), null, null, null)
@@ -1125,8 +1279,8 @@ class MainActivity : Activity() {
         btnStartDecompile.alpha = 1.0f
 
         pbDecompile.visibility = View.VISIBLE
-        pbDecompile.progress = 10
-        tvStatus.text = "декомпиляция..."
+        pbDecompile.progress = 5
+        tvStatus.text = if (isBatchMode) "[${completedFiles.size + 1}/${queueFiles.size}] декомпиляция..." else "декомпиляция..."
         statusDot.background = liquidGlassDrawable(COLOR_ACID, COLOR_ACID, 4f)
 
         bgExecutor.execute {
@@ -1134,19 +1288,28 @@ class MainActivity : Activity() {
                 this,
                 target,
                 skipLegitimacy = !optLegitimacyCheck,
+                skipMalwareScan = !optVulnerabilityScan,
                 onStage = { stage ->
                     runOnUiThread {
                         when (stage.lowercase()) {
+                            "validating" -> {
+                                tvStatus.text = "[1/5] Проверка архива"
+                                pbDecompile.progress = 10
+                            }
+                            "scanning" -> {
+                                tvStatus.text = "[1/4] Экспресс-сканирование"
+                                pbDecompile.progress = 15
+                            }
                             "pass1" -> {
-                                tvStatus.text = "[1/3] Чтение классов"
-                                pbDecompile.progress = 33
+                                tvStatus.text = "[2/4] Чтение классов"
+                                pbDecompile.progress = 35
                             }
                             "pass2" -> {
-                                tvStatus.text = "[2/3] Анализ AST"
-                                pbDecompile.progress = 66
+                                tvStatus.text = "[3/4] Анализ AST"
+                                pbDecompile.progress = 65
                             }
                             "pass3" -> {
-                                tvStatus.text = "[3/3] Генерация Java"
+                                tvStatus.text = "[4/4] Генерация Java"
                                 pbDecompile.progress = 90
                             }
                             "done" -> {
@@ -1175,13 +1338,28 @@ class MainActivity : Activity() {
                 resetDecompileButton()
 
                 if (res.ok) {
+                    completedFiles.add(target)
+                    activeOutDir = File(res.outDir)
+                    decompiledOutputs[target] = activeOutDir!!
+                    populateSourceTree(activeOutDir!!)
+                    refreshQueueView()
+
+                    val nextPending = queueFiles.firstOrNull { !completedFiles.contains(it) }
+                    if (nextPending != null && (isBatchMode || queueFiles.size > 1)) {
+                        isBatchMode = true
+                        tvStatus.text = "[${completedFiles.size}/${queueFiles.size}] Готово: ${target.name}"
+                        Toast.makeText(this, "[${completedFiles.size}/${queueFiles.size}] Готово: ${target.name}", Toast.LENGTH_SHORT).show()
+                        activeFile = nextPending
+                        startDecompilation()
+                        return@runOnUiThread
+                    }
+
+                    isBatchMode = false
                     tvStatus.text = "готов к работе"
                     statusDot.background = liquidGlassDrawable(COLOR_ACID, COLOR_ACID, 4f)
-                    activeOutDir = File(res.outDir)
-                    populateSourceTree(activeOutDir!!)
                     vibrate(50)
                     Toast.makeText(this, "Готово: ${target.name} — ${String.format("%.2f", res.elapsedSeconds)} s", Toast.LENGTH_LONG).show()
-                    switchTab(2) // Переход к вкладке Редактора
+                    switchTab(2) // Переход к вкладке Исходников
                 } else {
                     tvStatus.text = "ошибка"
                     statusDot.background = liquidGlassDrawable(COLOR_DANGER, COLOR_DANGER, 4f)
@@ -1192,11 +1370,91 @@ class MainActivity : Activity() {
         }
     }
 
+    data class SourceTreeNode(
+        val name: String,
+        val fullRelPath: String,
+        val isDirectory: Boolean,
+        val file: File? = null,
+        var isExpanded: Boolean = true,
+        val children: ArrayList<SourceTreeNode> = ArrayList()
+    )
+
+    private var rootSourceNode: SourceTreeNode? = null
+
+    private fun setAllNodesExpanded(node: SourceTreeNode, expanded: Boolean) {
+        if (node.isDirectory) {
+            node.isExpanded = expanded
+            for (child in node.children) {
+                setAllNodesExpanded(child, expanded)
+            }
+        }
+    }
+
+    private fun buildSourceTree(outDir: File): SourceTreeNode {
+        val root = SourceTreeNode("root", "", true, null, true)
+        for (file in decompiledFilesList) {
+            val rel = file.relativeTo(outDir).path.replace('\\', '/')
+            val segments = rel.split('/')
+            var curr = root
+            var currentPath = ""
+            for (i in 0 until segments.size - 1) {
+                val seg = segments[i]
+                currentPath = if (currentPath.isEmpty()) seg else "$currentPath/$seg"
+                var found = curr.children.firstOrNull { it.isDirectory && it.name == seg }
+                if (found == null) {
+                    val expandByDefault = (i <= 1)
+                    found = SourceTreeNode(seg, currentPath, true, null, expandByDefault)
+                    curr.children.add(found)
+                }
+                curr = found
+            }
+            val fileName = segments.last()
+            curr.children.add(SourceTreeNode(fileName, rel, false, file, false))
+        }
+        sortTreeNode(root)
+        return root
+    }
+
+    private fun sortTreeNode(node: SourceTreeNode) {
+        node.children.sortWith(Comparator { a, b ->
+            if (a.isDirectory != b.isDirectory) {
+                if (a.isDirectory) -1 else 1
+            } else {
+                a.name.compareTo(b.name, ignoreCase = true)
+            }
+        })
+        for (child in node.children) {
+            if (child.isDirectory) {
+                sortTreeNode(child)
+            }
+        }
+    }
+
+    private fun countFilesInNode(node: SourceTreeNode): Int {
+        if (!node.isDirectory) return 1
+        var sum = 0
+        for (c in node.children) sum += countFilesInNode(c)
+        return sum
+    }
+
     private fun populateSourceTree(outDir: File) {
         decompiledFilesList.clear()
-        outDir.walkTopDown().filter { it.isFile && (it.extension == "java" || it.extension == "yml" || it.extension == "json") }.forEach {
+        outDir.walkTopDown().filter { file ->
+            if (!file.isFile) return@filter false
+            val ext = file.extension.lowercase()
+            if (ext !in listOf("java", "yml", "yaml", "json", "xml", "txt", "mf", "properties")) return@filter false
+            val lowerName = file.name.lowercase()
+            val lowerRel = file.relativeTo(outDir).path.replace('\\', '/').lowercase()
+            if (lowerName == "nanoguard.inf" || lowerName == "core.dat" || lowerName.endsWith(".aeg")) return@filter false
+            if (lowerRel.contains("natives/") || lowerRel.contains("meta-inf/natives/")) return@filter false
+            if (lowerName.endsWith(".so") || lowerName.endsWith(".dll") || lowerName.endsWith(".dylib")) return@filter false
+            if (lowerRel.contains("aegis") || lowerRel.contains("nanoguard") || lowerRel.contains("titan")) return@filter false
+            if (lowerRel.contains("khelekore") || lowerRel.contains("prtree")) return@filter false
+            true
+        }.forEach {
             decompiledFilesList.add(it)
         }
+        rootSourceNode = buildSourceTree(outDir)
         filterClassTree("")
         if (decompiledFilesList.isNotEmpty()) {
             openFileInEditor(decompiledFilesList.first(), outDir)
@@ -1206,39 +1464,119 @@ class MainActivity : Activity() {
     private fun filterClassTree(query: String) {
         sourceFilesContainer.removeAllViews()
         val outDir = activeOutDir ?: return
-        val filtered = if (query.isEmpty()) decompiledFilesList else decompiledFilesList.filter {
-            it.name.contains(query, ignoreCase = true) || it.relativeTo(outDir).path.contains(query, ignoreCase = true)
-        }
+        val root = rootSourceNode ?: return
 
-        for (file in filtered) {
-            val relPath = file.relativeTo(outDir).path.replace('\\', '/')
-            val itemLayout = LinearLayout(this).apply {
+        if (query.isNotEmpty()) {
+            val filtered = decompiledFilesList.filter {
+                it.name.contains(query, ignoreCase = true) || it.relativeTo(outDir).path.contains(query, ignoreCase = true)
+            }
+            for (file in filtered) {
+                renderFileRow(file, file.relativeTo(outDir).path.replace('\\', '/'), outDir, 0)
+            }
+        } else {
+            for (child in root.children) {
+                renderTreeNode(child, outDir, 0)
+            }
+        }
+    }
+
+    private fun renderTreeNode(node: SourceTreeNode, outDir: File, depth: Int) {
+        if (node.isDirectory) {
+            val dirLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(6), dp(4), dp(6), dp(4))
-                background = if (file == currentActiveFile) liquidGlassDrawable(COLOR_CARD_GLASS, COLOR_ACID, 6f) else null
+                setPadding(dp(8 + depth * 14), dp(4), dp(8), dp(4))
+                background = liquidGlassDrawable(COLOR_CARD_GLASS, Color.TRANSPARENT, 4f)
                 setOnClickListener {
-                    openFileInEditor(file, outDir)
+                    node.isExpanded = !node.isExpanded
+                    filterClassTree(etClassFilter.text.toString())
                 }
             }
 
-            val iconCode = ImageView(this).apply {
-                setImageDrawable(createGoogleIcon("code", 14, if (relPath.endsWith(".java")) COLOR_ACID else COLOR_CYAN))
+            val tvArrow = TextView(this).apply {
+                text = if (node.isExpanded) "▼ " else "▶ "
+                setTextColor(COLOR_TEXT_MUTED)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            }
+            dirLayout.addView(tvArrow)
+
+            val ivFolder = ImageView(this).apply {
+                val iconName = if (node.isExpanded) "folder_open" else "folder"
+                setImageDrawable(createGoogleIcon(iconName, 14, COLOR_CYAN))
                 val lp = LinearLayout.LayoutParams(dp(16), dp(16))
                 lp.marginEnd = dp(6)
                 layoutParams = lp
             }
-            itemLayout.addView(iconCode)
+            dirLayout.addView(ivFolder)
 
-            val tvItem = TextView(this).apply {
-                text = relPath
-                setTextColor(if (file == currentActiveFile) COLOR_ACID else COLOR_TEXT)
+            val tvName = TextView(this).apply {
+                text = node.name
+                setTextColor(COLOR_TEXT)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                typeface = Typeface.MONOSPACE
+                typeface = Typeface.DEFAULT_BOLD
             }
-            itemLayout.addView(tvItem)
-            sourceFilesContainer.addView(itemLayout)
+            dirLayout.addView(tvName)
+
+            val count = countFilesInNode(node)
+            val tvCount = TextView(this).apply {
+                text = " ($count)"
+                setTextColor(COLOR_TEXT_MUTED)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            }
+            dirLayout.addView(tvCount)
+
+            sourceFilesContainer.addView(dirLayout)
+
+            if (node.isExpanded) {
+                for (child in node.children) {
+                    renderTreeNode(child, outDir, depth + 1)
+                }
+            }
+        } else {
+            val file = node.file ?: return
+            renderFileRow(file, node.name, outDir, depth)
         }
+    }
+
+    private fun renderFileRow(file: File, displayName: String, outDir: File, depth: Int) {
+        val relPath = file.relativeTo(outDir).path.replace('\\', '/')
+        val isCurrent = (file == currentActiveFile)
+
+        val itemLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8 + depth * 14), dp(4), dp(8), dp(4))
+            background = if (isCurrent) liquidGlassDrawable(COLOR_CARD_GLASS, COLOR_ACID, 6f) else null
+            setOnClickListener {
+                openFileInEditor(file, outDir)
+            }
+        }
+
+        val iconCode = ImageView(this).apply {
+            val iconColor = when {
+                relPath.endsWith(".java") -> COLOR_ACID
+                relPath.endsWith(".xml") || relPath.endsWith(".pom") -> COLOR_CYAN
+                relPath.endsWith(".aeg") -> COLOR_SYNTAX_ANNOTATION
+                relPath.endsWith(".yml") || relPath.endsWith(".yaml") -> COLOR_SYNTAX_ANNOTATION
+                relPath.endsWith(".json") -> COLOR_SYNTAX_KEYWORD
+                else -> COLOR_TEXT_MUTED
+            }
+            setImageDrawable(createGoogleIcon("code", 14, iconColor))
+            val lp = LinearLayout.LayoutParams(dp(16), dp(16))
+            lp.marginEnd = dp(6)
+            layoutParams = lp
+        }
+        itemLayout.addView(iconCode)
+
+        val tvItem = TextView(this).apply {
+            text = displayName
+            setTextColor(if (isCurrent) COLOR_ACID else COLOR_TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            typeface = Typeface.MONOSPACE
+        }
+        itemLayout.addView(tvItem)
+
+        sourceFilesContainer.addView(itemLayout)
     }
 
     private fun openFileInEditor(file: File, outDir: File) {
@@ -1312,7 +1650,17 @@ class MainActivity : Activity() {
 
                 java.util.zip.ZipOutputStream(java.io.FileOutputStream(zipFile)).use { zos ->
                     val rootPath = outDir.absolutePath
-                    outDir.walkTopDown().filter { it.isFile }.forEach { file ->
+                    outDir.walkTopDown().filter { file ->
+                        if (!file.isFile) return@filter false
+                        val lowerName = file.name.lowercase()
+                        val lowerRel = file.relativeTo(outDir).path.replace('\\', '/').lowercase()
+                        if (lowerName == "nanoguard.inf" || lowerName == "core.dat" || lowerName.endsWith(".aeg")) return@filter false
+                        if (lowerRel.contains("natives/") || lowerRel.contains("meta-inf/natives/")) return@filter false
+                        if (lowerName.endsWith(".so") || lowerName.endsWith(".dll") || lowerName.endsWith(".dylib")) return@filter false
+                        if (lowerRel.contains("aegis") || lowerRel.contains("nanoguard") || lowerRel.contains("titan")) return@filter false
+                        if (lowerRel.contains("khelekore") || lowerRel.contains("prtree")) return@filter false
+                        true
+                    }.forEach { file ->
                         val relName = file.absolutePath.removePrefix(rootPath).trimStart(File.separatorChar, '/', '\\').replace('\\', '/')
                         val entry = java.util.zip.ZipEntry(relName)
                         zos.putNextEntry(entry)
@@ -1346,7 +1694,70 @@ class MainActivity : Activity() {
         val ssb = SpannableStringBuilder(code)
         val ext = extension.lowercase()
 
-        if (ext == "yml" || ext == "yaml") {
+        if (ext == "xml" || ext == "pom") {
+            // XML Комментарии (<!-- ... -->)
+            val commentPattern = Pattern.compile("<!--[\\s\\S]*?-->")
+            val cm = commentPattern.matcher(code)
+            while (cm.find()) {
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_COMMENT), cm.start(), cm.end(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+
+            // XML Декларация (<?xml ... ?>) и DOCTYPE
+            val declPattern = Pattern.compile("<\\?[^?]*\\?>|<!DOCTYPE[^>]*>", Pattern.CASE_INSENSITIVE)
+            val dm = declPattern.matcher(code)
+            while (dm.find()) {
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_ANNOTATION), dm.start(), dm.end(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+
+            // XML Теги (<tag>, </tag>, <tag ... />) с подсветкой скобок
+            val tagPattern = Pattern.compile("(</?)([A-Za-z0-9_.:-]+)(\\s+[^>]*)?(/?>)")
+            val tm = tagPattern.matcher(code)
+            while (tm.find()) {
+                val openBracketStart = tm.start(1)
+                val openBracketEnd = tm.end(1)
+                ssb.setSpan(ForegroundColorSpan(Color.parseColor("#5C7C99")), openBracketStart, openBracketEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+
+                val tagStart = tm.start(2)
+                val tagEnd = tm.end(2)
+                ssb.setSpan(ForegroundColorSpan(COLOR_ACID), tagStart, tagEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                ssb.setSpan(StyleSpan(Typeface.BOLD), tagStart, tagEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+
+                val closeBracketStart = tm.start(4)
+                val closeBracketEnd = tm.end(4)
+                ssb.setSpan(ForegroundColorSpan(Color.parseColor("#5C7C99")), closeBracketStart, closeBracketEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+
+            // Атрибуты (attr="value")
+            val attrPattern = Pattern.compile("([A-Za-z0-9_.:-]+)\\s*=\\s*(\"[^\"]*\"|'[^']*')")
+            val am = attrPattern.matcher(code)
+            while (am.find()) {
+                val attrNameStart = am.start(1)
+                val attrNameEnd = am.end(1)
+                ssb.setSpan(ForegroundColorSpan(COLOR_CYAN), attrNameStart, attrNameEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+
+                val attrValStart = am.start(2)
+                val attrValEnd = am.end(2)
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_STRING), attrValStart, attrValEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+
+            // XML Entities (&amp;, &lt;, &gt;, &#123;)
+            val entPattern = Pattern.compile("&[a-zA-Z0-9#]+;")
+            val em = entPattern.matcher(code)
+            while (em.find()) {
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_NUMBER), em.start(), em.end(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+
+            // CDATA
+            val cdataPattern = Pattern.compile("<!\\[CDATA\\[[\\s\\S]*?\\]\\]>")
+            val cdm = cdataPattern.matcher(code)
+            while (cdm.find()) {
+                ssb.setSpan(ForegroundColorSpan(COLOR_SYNTAX_ANNOTATION), cdm.start(), cdm.end(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+
+            return ssb
+        }
+
+        if (ext == "yml" || ext == "yaml" || ext == "aeg") {
             // Ключи YAML (word:)
             val keyPattern = Pattern.compile("(^|\\n)\\s*([A-Za-z0-9_.-]+)\\s*:")
             val km = keyPattern.matcher(code)

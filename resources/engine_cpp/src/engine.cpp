@@ -1,3 +1,4 @@
+#include "aegis_deobf.hpp"
 #include <iostream>
 // engine.cpp - см. engine.hpp. 1:1 порт engine.py.
 #include <cstdint>  // БАГ-ФИКС: MinGW/Windows не тянет int64_t транзитивно через другие заголовки, как это молча делает libstdc++ на Linux - см. ошибку сборки Windows-раннера в этой сессии.
@@ -351,26 +352,28 @@ std::optional<std::pair<std::string, std::string>> match_hash_case(const std::ve
     //   if (!X.equals("лит")) break;
     //   idxVar = N;
     //   [break;]
-    if (body.size() == 2 || body.size() == 3) {
-        if (body[0]->kind == StmtKind::IfStmt) {
-            auto* ifs = static_cast<IfStmt*>(body[0].get());
-            if (!ifs->else_body.has_value() && ifs->then_body.size() == 1 && ifs->then_body[0]->kind == StmtKind::BreakStmt) {
-                if (ifs->cond && ifs->cond->kind == ExprKind::UnOp) {
-                    auto* neg = static_cast<UnOp*>(ifs->cond.get());
-                    if (neg->op == "!" && neg->expr && neg->expr->kind == ExprKind::MethodCall) {
-                        auto* eq = static_cast<MethodCall*>(neg->expr.get());
-                        if (eq->name == "equals" && eq->args.size() == 1 && eq->target && eq->target->kind == ExprKind::Local) {
-                            if (static_cast<Local*>(eq->target.get())->name == x_name && eq->args[0]->kind == ExprKind::Const) {
-                                auto* lit = static_cast<Const*>(eq->args[0].get());
-                                if (lit->type == "String" && body[1]->kind == StmtKind::ExprStmt) {
-                                    auto* es = static_cast<ExprStmtNode*>(body[1].get());
-                                    if (es->expr && es->expr->kind == ExprKind::Assign) {
-                                        auto* asn = static_cast<Assign*>(es->expr.get());
-                                        if (asn->op == "=" && asn->target && asn->target->kind == ExprKind::Local) {
-                                            if (static_cast<Local*>(asn->target.get())->name == idx_name && asn->value && asn->value->kind == ExprKind::Const) {
-                                                if (body.size() == 2 || (body.size() == 3 && body[2]->kind == StmtKind::BreakStmt)) {
-                                                    return std::make_pair(lit->literal, static_cast<Const*>(asn->value.get())->literal);
-                                                }
+    if (body.size() >= 2 && body[0]->kind == StmtKind::IfStmt) {
+        auto* ifs = static_cast<IfStmt*>(body[0].get());
+        if (!ifs->else_body.has_value() && ifs->then_body.size() == 1 && ifs->then_body[0]->kind == StmtKind::BreakStmt) {
+            if (ifs->cond && ifs->cond->kind == ExprKind::UnOp) {
+                auto* neg = static_cast<UnOp*>(ifs->cond.get());
+                if (neg->op == "!" && neg->expr && neg->expr->kind == ExprKind::MethodCall) {
+                    auto* eq = static_cast<MethodCall*>(neg->expr.get());
+                    if (eq->name == "equals" && eq->args.size() == 1 && eq->target && eq->target->kind == ExprKind::Local) {
+                        if (static_cast<Local*>(eq->target.get())->name == x_name && eq->args[0]->kind == ExprKind::Const) {
+                            auto* lit = static_cast<Const*>(eq->args[0].get());
+                            if (lit->type == "String" && body[1]->kind == StmtKind::ExprStmt) {
+                                auto* es = static_cast<ExprStmtNode*>(body[1].get());
+                                if (es->expr && es->expr->kind == ExprKind::Assign) {
+                                    auto* asn = static_cast<Assign*>(es->expr.get());
+                                    if (asn->op == "=" && asn->target && asn->target->kind == ExprKind::Local) {
+                                        if (static_cast<Local*>(asn->target.get())->name == idx_name && asn->value && asn->value->kind == ExprKind::Const) {
+                                            bool rest_ok = true;
+                                            for (size_t k = 2; k < body.size(); ++k) {
+                                                if (body[k]->kind != StmtKind::BreakStmt) { rest_ok = false; break; }
+                                            }
+                                            if (rest_ok) {
+                                                return std::make_pair(lit->literal, static_cast<Const*>(asn->value.get())->literal);
                                             }
                                         }
                                     }
@@ -504,8 +507,20 @@ std::vector<StmtPtr> collapse_string_switch(const std::vector<StmtPtr>& stmts) {
             }
             if (!ok || idx_to_literal.empty()) continue;
 
-            if (base + 2 >= stmts.size() || stmts[base + 2]->kind != StmtKind::SwitchStmt) continue;
-            auto* isw = static_cast<SwitchStmt*>(stmts[base + 2].get());
+            size_t second_pos = base + 2;
+            std::vector<StmtPtr> hoisted_decls;
+            while (second_pos < stmts.size() && stmts[second_pos]->kind == StmtKind::LocalDecl) {
+                auto* ld = static_cast<LocalDecl*>(stmts[second_pos].get());
+                if (!ld->init || (ld->name != idx_name && ld->name != x_name)) {
+                    hoisted_decls.push_back(stmts[second_pos]);
+                    second_pos++;
+                } else {
+                    break;
+                }
+            }
+
+            if (second_pos >= stmts.size() || stmts[second_pos]->kind != StmtKind::SwitchStmt) continue;
+            auto* isw = static_cast<SwitchStmt*>(stmts[second_pos].get());
             if (!isw->selector || isw->selector->kind != ExprKind::Local) continue;
             if (static_cast<Local*>(isw->selector.get())->name != idx_name) continue;
 
@@ -531,8 +546,11 @@ std::vector<StmtPtr> collapse_string_switch(const std::vector<StmtPtr>& stmts) {
             }
             if (!ok) continue;
 
+            for (auto& hd : hoisted_decls) {
+                out.push_back(hd);
+            }
             out.push_back(std::make_shared<SwitchStmt>(subject, std::move(new_cases)));
-            i = base + 3;
+            i = second_pos + 1;
             goto matched;
         }
 
@@ -1432,12 +1450,29 @@ std::vector<StmtPtr> fold_sync_blocks(const std::vector<StmtPtr>& stmts) {
         StmtPtr s = stmts[i];
         if (auto* mm = dynamic_cast<MonitorMarkerStmt*>(s.get())) {
             if (mm->kind == "enter") {
+                ExprPtr lock_expr = mm->expr;
+                if (!out.empty() && out.back()->kind == StmtKind::LocalDecl) {
+                    auto* ld = static_cast<LocalDecl*>(out.back().get());
+                    if (ld->name == expr_key(mm->expr) && ld->init) {
+                        lock_expr = ld->init;
+                        out.pop_back();
+                    }
+                } else if (!out.empty() && out.back()->kind == StmtKind::ExprStmt) {
+                    auto* es = static_cast<ExprStmtNode*>(out.back().get());
+                    if (es->expr && es->expr->kind == ExprKind::Assign) {
+                        auto* as = static_cast<Assign*>(es->expr.get());
+                        if (as->target && expr_key(as->target) == expr_key(mm->expr) && as->value) {
+                            lock_expr = as->value;
+                            out.pop_back();
+                        }
+                    }
+                }
                 std::string key = expr_key(mm->expr);
                 auto [body_opt, next_index] = extract_sync_region(stmts, i + 1, key);
                 if (body_opt.has_value()) {
                     auto body = fold_sync_blocks(*body_opt);
                     body = strip_monitor_exits(body, key);
-                    out.push_back(std::make_shared<SyncStmt>(mm->expr, body));
+                    out.push_back(std::make_shared<SyncStmt>(lock_expr, body));
                     i = *next_index;
                     continue;
                 }
@@ -1567,6 +1602,13 @@ void try_desugar_one(SwitchStmt* switch_stmt, const std::map<std::string, std::v
     ExprPtr enum_expr = mc->target;
     std::string enum_type = enum_expr->type;
 
+    auto norm = [](std::string s) -> std::string {
+        for (char& c : s) {
+            if (c == '$' || c == '.') c = '_';
+        }
+        return s;
+    };
+
     std::optional<std::map<int64_t, std::string>> exact;
     auto find_table = [&](const std::string& owner_str, const std::string& fname) -> std::optional<std::map<int64_t, std::string>> {
         auto it = switchmap_tables.find({owner_str, fname});
@@ -1575,19 +1617,29 @@ void try_desugar_one(SwitchStmt* switch_stmt, const std::map<std::string, std::v
         for (char& c : slashed) if (c == '.') c = '/';
         it = switchmap_tables.find({slashed, fname});
         if (it != switchmap_tables.end()) return it->second;
+
+        std::string n_fname = norm(fname);
+        std::string n_owner = norm(owner_str);
+
         for (auto& [pair, tbl] : switchmap_tables) {
-            if (pair.second == fname) {
-                if (pair.first == owner_str || pair.first == slashed) return tbl;
-                if (!owner_str.empty() && pair.first.size() > owner_str.size() &&
-                    pair.first.rfind("/" + owner_str) == pair.first.size() - owner_str.size() - 1) return tbl;
-                if (!owner_str.empty() && pair.first.size() > owner_str.size() &&
-                    pair.first.rfind("." + owner_str) == pair.first.size() - owner_str.size() - 1) return tbl;
+            std::string n_pair_f = norm(pair.first);
+            std::string n_pair_s = norm(pair.second);
+            if (n_pair_s == n_fname) {
+                if (n_owner.empty() || n_pair_f == n_owner ||
+                    (n_pair_f.size() > n_owner.size() &&
+                     (n_pair_f.rfind("/" + n_owner) == n_pair_f.size() - n_owner.size() - 1 ||
+                      n_pair_f.rfind("_" + n_owner) == n_pair_f.size() - n_owner.size() - 1))) {
+                    return tbl;
+                }
             }
         }
         int matches = 0;
         const std::map<int64_t, std::string>* candidate = nullptr;
         for (auto& [pair, tbl] : switchmap_tables) {
-            if (pair.second == fname) {
+            std::string n_pair_s = norm(pair.second);
+            if (n_pair_s == n_fname ||
+                (!n_fname.empty() && n_pair_s.find(n_fname) != std::string::npos) ||
+                (!n_pair_s.empty() && n_fname.find(n_pair_s) != std::string::npos)) {
                 matches++;
                 candidate = &tbl;
             }
@@ -1598,6 +1650,17 @@ void try_desugar_one(SwitchStmt* switch_stmt, const std::map<std::string, std::v
 
     if (!field_name.empty()) {
         exact = find_table(owner_name.value_or(""), field_name);
+    }
+
+    if (!exact.has_value() && !enum_type.empty()) {
+        std::string n_etype = norm(enum_type);
+        for (auto& [pair, tbl] : switchmap_tables) {
+            std::string n_pair_s = norm(pair.second);
+            if (n_pair_s.find(n_etype) != std::string::npos) {
+                exact = tbl;
+                break;
+            }
+        }
     }
 
     if (exact.has_value()) {
@@ -1646,9 +1709,13 @@ void try_desugar_one(SwitchStmt* switch_stmt, const std::map<std::string, std::v
                 if (ord_it != enum_ordinals.end()) names_ptr = &ord_it->second;
             }
             if (!names_ptr) {
+                std::string n_base = norm(enum_type_base);
                 for (auto& [k, v] : enum_ordinals) {
-                    if (k.size() > enum_type_base.size() &&
-                        k.rfind("/" + enum_type_base) == k.size() - enum_type_base.size() - 1) {
+                    std::string nk = norm(k);
+                    if (nk == n_base ||
+                        (nk.size() > n_base.size() &&
+                         (nk.rfind("/" + n_base) == nk.size() - n_base.size() - 1 ||
+                          nk.rfind("_" + n_base) == nk.size() - n_base.size() - 1))) {
                         names_ptr = &v;
                         break;
                     }
@@ -2608,6 +2675,105 @@ static int count_goto_stmts(const std::vector<StmtPtr>& stmts) {
 
 // ==================== fallback_bytecode_listing / decompile_method_body ====================
 
+namespace {
+
+size_t trace_aegis_real_code_entry(const std::vector<uint8_t>& code) {
+    if (code.size() < 15) return 0;
+    // O(1) Quick Gate: преамбулы Aegis всегда начинаются с очень узкого набора опкодов:
+    // iconst_0 (0x03), ldc/ldc_w (0x12, 0x13), invokestatic (0xb8), getstatic (0xb2), ifne/ifeq (0x9a, 0x99)
+    uint8_t op0 = code[0];
+    if (op0 != 0x03 && op0 != 0x12 && op0 != 0x13 && op0 != 0xb8 && op0 != 0xb2 && op0 != 0x9a && op0 != 0x99) {
+        return 0;
+    }
+    size_t pc = 0;
+    int jumps = 0;
+    bool has_preamble = false;
+
+    while (pc < code.size()) {
+        if (++jumps > 40) break; // Защита: поддержка до 40 цепочек ловушек Aegis (было 8)
+
+        // 1. iconst_0 (0x03) followed by ifeq (0x99 xx yy)
+        if (pc + 4 <= code.size() && code[pc] == 0x03 && code[pc + 1] == 0x99) {
+            int16_t rel = static_cast<int16_t>((static_cast<uint16_t>(code[pc + 2]) << 8) | code[pc + 3]);
+            // Распознавание терминатора преамбулы Aegis:
+            // iconst_0; ifeq +5; aconst_null; athrow; <РЕАЛЬНЫЙ БАЙТКОД>
+            if (rel == 5 && pc + 6 <= code.size() && code[pc + 4] == 0x01 && code[pc + 5] == 0xbf) {
+                return pc + 6;
+            }
+            int64_t target = static_cast<int64_t>(pc + 1) + rel;
+            if (target > static_cast<int64_t>(pc) && target < static_cast<int64_t>(code.size())) {
+                has_preamble = true;
+                pc = static_cast<size_t>(target);
+                continue;
+            }
+        }
+
+        // 2. ifne/ifeq +6 goto target OR ifne/ifeq +8 goto_w target within first 50 bytes from pc
+        bool found_jump = false;
+        size_t scan_limit = std::min(pc + 50, code.size() > 4 ? code.size() - 4 : 0);
+        for (size_t offset = pc; offset < scan_limit; ++offset) {
+            // 9a 00 06 a7 / 99 00 06 a7
+            if (offset + 6 <= code.size() && (code[offset] == 0x9a || code[offset] == 0x99) &&
+                code[offset + 1] == 0x00 && code[offset + 2] == 0x06 && code[offset + 3] == 0xa7) {
+                int16_t rel = static_cast<int16_t>((static_cast<uint16_t>(code[offset + 4]) << 8) | code[offset + 5]);
+                int64_t target = static_cast<int64_t>(offset + 3) + rel;
+                if (target > 0 && target < static_cast<int64_t>(code.size())) {
+                    has_preamble = true;
+                    pc = static_cast<size_t>(target);
+                    found_jump = true;
+                    break;
+                }
+            }
+            // 9a 00 08 c8 / 99 00 08 c8
+            else if (offset + 8 <= code.size() && (code[offset] == 0x9a || code[offset] == 0x99) &&
+                     code[offset + 1] == 0x00 && code[offset + 2] == 0x08 && code[offset + 3] == 0xc8) {
+                int32_t rel = static_cast<int32_t>((static_cast<uint32_t>(code[offset + 4]) << 24) |
+                                                   (static_cast<uint32_t>(code[offset + 5]) << 16) |
+                                                   (static_cast<uint32_t>(code[offset + 6]) << 8) |
+                                                   code[offset + 7]);
+                int64_t target = static_cast<int64_t>(offset + 3) + rel;
+                if (target > 0 && target < static_cast<int64_t>(code.size())) {
+                    has_preamble = true;
+                    pc = static_cast<size_t>(target);
+                    found_jump = true;
+                    break;
+                }
+            }
+        }
+        if (!found_jump) break;
+    }
+
+    if (has_preamble && pc < code.size()) return pc;
+    return 0;
+}
+
+std::vector<StmtPtr> filter_aegis_trap_stmts(const std::vector<StmtPtr>& list) {
+    std::vector<StmtPtr> result;
+    for (const auto& s : list) {
+        if (!s) continue;
+        if (s->kind == StmtKind::ExprStmt) {
+            auto* es = static_cast<ExprStmtNode*>(s.get());
+            if (es->expr && es->expr->kind == ExprKind::MethodCall) {
+                auto* mc = static_cast<MethodCall*>(es->expr.get());
+                if (mc->owner.has_value()) {
+                    const std::string& ow = *mc->owner;
+                    if (ow.find("AegisBootstrap") != std::string::npos ||
+                        ow.find("AegisSecurityGuard") != std::string::npos ||
+                        ow.find("dev/aegisforge") != std::string::npos ||
+                        ow.find("dev.aegisforge") != std::string::npos) {
+                        continue;
+                    }
+                }
+            }
+        }
+        result.push_back(s);
+    }
+    return result;
+}
+
+} // anonymous namespace
+
+
 std::vector<std::string> fallback_bytecode_listing(const ClassFile& cf, const Method& method, int indent,
                                                    const std::optional<std::string>& reason) {
     std::string pad(4 * static_cast<size_t>(indent), ' ');
@@ -2636,13 +2802,169 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
 
     try {
         g_crash_method_name = method.name.c_str();
-        DecodedMethod dm = decode_method(method.code);
+
+        std::vector<uint8_t> clean_code = method.code;
+        size_t real_pc = trace_aegis_real_code_entry(clean_code);
+        if (real_pc > 0) {
+            clean_code[0] = 0xc8; // goto_w
+            uint32_t target_u32 = static_cast<uint32_t>(real_pc);
+            clean_code[1] = static_cast<uint8_t>((target_u32 >> 24) & 0xff);
+            clean_code[2] = static_cast<uint8_t>((target_u32 >> 16) & 0xff);
+            clean_code[3] = static_cast<uint8_t>((target_u32 >> 8) & 0xff);
+            clean_code[4] = static_cast<uint8_t>(target_u32 & 0xff);
+            for (size_t i = 5; i < real_pc; ++i) clean_code[i] = 0x00;
+        }
+
+        DecodedMethod dm = decode_method(clean_code);
         result.n_instructions = static_cast<int>(dm.order.size());
         auto [filtered_exceptions, junk_removed] = filter_junk_catches(method);
+        if (real_pc > 0) {
+            std::vector<ExceptionEntry> valid_exceptions;
+            for (auto e : filtered_exceptions) {
+                if (e.handler_pc >= real_pc) {
+                    if (e.start_pc < real_pc) e.start_pc = static_cast<uint16_t>(real_pc);
+                    if (e.end_pc > real_pc && e.start_pc < e.end_pc) {
+                        valid_exceptions.push_back(e);
+                    }
+                }
+            }
+            filtered_exceptions = std::move(valid_exceptions);
+        }
         CFG cfg(dm.instrs, dm.order, filtered_exceptions);
         result.n_blocks = static_cast<int>(cfg.blocks.size());
         result.junk_catches_removed = junk_removed;
         MethodCtx ctx(cf, method, renamer, known_internal_by_dotted, class_internal, all_classes);
+
+        uint64_t aegis_token = 0;
+        bool has_aegis_token = false;
+        for (const auto& [offset, ins] : dm.instrs) {
+            if (ins.mnemonic == "invokedynamic" && ins.cp_index.has_value()) {
+                auto it = cf.pool.find(static_cast<uint16_t>(*ins.cp_index));
+                if (it != cf.pool.end() && it->second.tag == CpTag::InvokeDynamic) {
+                    uint16_t bsm_idx = it->second.idx1;
+                    if (bsm_idx < cf.bootstrap_methods.size()) {
+                        const BootstrapMethod& bm = cf.bootstrap_methods[bsm_idx];
+                        auto mh = cf.method_handle_ref(bm.method_handle_idx);
+                        std::string bsm_owner = mh ? std::get<1>(*mh) : "";
+                        std::string bsm_name = mh ? std::get<2>(*mh) : "";
+                        bool is_pot_aegis = (bsm_owner.find("Aegis") != std::string::npos ||
+                                             bsm_owner == "dev/aegisforge/vm/AegisIndyBootstrap" ||
+                                             bsm_owner.find("SpatialRegionEvaluator") != std::string::npos ||
+                                             bsm_owner.find("RegionDispatcher") != std::string::npos ||
+                                             bsm_name == "dispatch" || bsm_name == "evaluate" || bsm_name == "execute");
+                        if (is_pot_aegis) {
+                            if (!bm.args.empty()) {
+                                auto cp_it = cf.pool.find(bm.args[0]);
+                                if (cp_it != cf.pool.end()) {
+                                    if (cp_it->second.tag == CpTag::Long) {
+                                        aegis_token = cp_it->second.long_value;
+                                        has_aegis_token = true;
+                                    } else if (cp_it->second.tag == CpTag::Integer) {
+                                        aegis_token = static_cast<uint64_t>(cp_it->second.int_value);
+                                        has_aegis_token = true;
+                                    } else if (cp_it->second.tag == CpTag::String) {
+                                        if (const std::string* s_ptr = cf.utf8(cp_it->second.idx1)) {
+                                            try {
+                                                const auto& s = *s_ptr;
+                                                if (s.size() > 2 && (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))) {
+                                                    aegis_token = std::stoull(s.substr(2), nullptr, 16);
+                                                } else if (s.size() == 8) {
+                                                    aegis_token = std::stoull(s, nullptr, 16);
+                                                } else {
+                                                    uint64_t htok = 0;
+                                                    try { htok = std::stoull(s, nullptr, 16); } catch (...) {}
+                                                    if (htok != 0 && get_aegis_vm_method(htok)) {
+                                                        aegis_token = htok;
+                                                    } else {
+                                                        aegis_token = std::stoull(s, nullptr, 10);
+                                                    }
+                                                }
+                                                has_aegis_token = true;
+                                            } catch (...) {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (ins.mnemonic == "invokestatic" && ins.cp_index.has_value()) {
+                auto ref = cf.ref_string(static_cast<uint16_t>(*ins.cp_index));
+                if (ref) {
+                    const std::string& owner = std::get<0>(*ref);
+                    const std::string& name = std::get<1>(*ref);
+                    if ((owner.find("dev/aegisforge/vm/AegisVM") != std::string::npos ||
+                         owner.find("AegisVM") != std::string::npos ||
+                         owner.find("SpatialRegionEvaluator") != std::string::npos) &&
+                        (name == "execute" || name == "evaluate")) {
+                        for (auto prev_it = dm.instrs.begin(); prev_it != dm.instrs.end(); ++prev_it) {
+                            if (prev_it->first < offset && (prev_it->second.mnemonic == "ldc2_w" || prev_it->second.mnemonic == "ldc")) {
+                                if (prev_it->second.cp_index.has_value()) {
+                                    auto cpit = cf.pool.find(static_cast<uint16_t>(*prev_it->second.cp_index));
+                                    if (cpit != cf.pool.end()) {
+                                        if (cpit->second.tag == CpTag::Long) {
+                                            aegis_token = cpit->second.long_value;
+                                            has_aegis_token = true;
+                                        } else if (cpit->second.tag == CpTag::Integer) {
+                                            aegis_token = static_cast<uint64_t>(cpit->second.int_value);
+                                            has_aegis_token = true;
+                                        } else if (cpit->second.tag == CpTag::String) {
+                                            if (const std::string* s_ptr = cf.utf8(cpit->second.idx1)) {
+                                                try {
+                                                    const auto& s = *s_ptr;
+                                                    if (s.size() > 2 && (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))) {
+                                                        aegis_token = std::stoull(s.substr(2), nullptr, 16);
+                                                    } else if (s.size() == 8) {
+                                                        aegis_token = std::stoull(s, nullptr, 16);
+                                                    } else {
+                                                        uint64_t htok = 0;
+                                                        try { htok = std::stoull(s, nullptr, 16); } catch (...) {}
+                                                        if (htok != 0 && get_aegis_vm_method(htok)) {
+                                                            aegis_token = htok;
+                                                        } else {
+                                                            aegis_token = std::stoull(s, nullptr, 10);
+                                                        }
+                                                    }
+                                                    has_aegis_token = true;
+                                                } catch (...) {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (has_aegis_token) break;
+        }
+
+        if (has_aegis_token) {
+            if (auto vm_m = get_aegis_vm_method(aegis_token)) {
+                std::vector<ExprPtr> actual_args;
+                bool is_static_m = (method.access & 0x0008) != 0;
+                if (!is_static_m) actual_args.push_back(std::make_shared<This>());
+                for (auto& [slot, info] : ctx.locals) {
+                    if (info.is_param && (is_static_m || slot != 0)) {
+                        actual_args.push_back(std::make_shared<Local>(info.name, info.type));
+                    }
+                }
+                std::vector<StmtPtr> ir_stmts;
+                auto ret_expr = translate_aegis_ir_method(*vm_m, actual_args, ctx, &ir_stmts);
+                if (ret_expr && (ret_expr->kind != ExprKind::Raw || !static_cast<const Raw*>(ret_expr.get())->text.empty())) {
+                    ir_stmts.push_back(std::make_shared<ReturnStmt>(ret_expr));
+                }
+                ir_stmts = simplify_stmts(ir_stmts);
+                collapse_array_literals(ir_stmts);
+                auto body_lines = emit_stmts(ir_stmts, indent);
+                result.ok = true;
+                result.stmts = ir_stmts;
+                result.java_lines = body_lines;
+                result.locals = ctx.locals;
+                result.imports = ctx.imports;
+                return result;
+            }
+        }
 
         std::map<int64_t, std::vector<ExprPtr>> seeds;
         for (auto& [start, blk] : cfg.blocks) {
@@ -2820,36 +3142,39 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
             }
         }
         Structurer structurer(cfg, results, filtered_exceptions, ctx);
-        auto stmts = structurer.build(*cfg.entry);
+                auto stmts = structurer.build(*cfg.entry);
+                for (size_t si = 0; si < stmts.size(); ++si) {
+                    }
         stmts = fold_sync_blocks(stmts);
-        stmts = simplify_stmts(stmts);
-        if (method.name == "<init>") stmts = reorder_ctor_call_to_front(stmts);
-        stmts = inline_single_use_crossing_temps(stmts, ctx);
-        stmts = fold_array_literals(stmts);
-        if (!enum_ordinals.empty() || !switchmap_tables.empty()) {
+                stmts = simplify_stmts(stmts);
+                stmts = filter_aegis_trap_stmts(stmts);
+                if (method.name == "<init>") stmts = reorder_ctor_call_to_front(stmts);
+                stmts = inline_single_use_crossing_temps(stmts, ctx);
+                stmts = fold_array_literals(stmts);
+                if (!enum_ordinals.empty() || !switchmap_tables.empty()) {
             stmts = desugar_enum_switches(stmts, enum_ordinals, ctx, switchmap_tables);
         }
-        if (!stmts.empty() && stmts.back()->kind == StmtKind::ReturnStmt && !static_cast<ReturnStmt*>(stmts.back().get())->expr) {
+                if (!stmts.empty() && stmts.back()->kind == StmtKind::ReturnStmt && !static_cast<ReturnStmt*>(stmts.back().get())->expr) {
             stmts.pop_back();
         }
         refresh_crossing_temp_types(stmts, ctx);
-
+        
         std::map<std::string, std::string> declared_seed;
         for (auto& [idx, info] : ctx.locals) {
             if (info.is_param) declared_seed[info.name] = info.type;
         }
         stmts = ensure_local_declarations(stmts, declared_seed);
-        stmts = fold_if_else_ternary(stmts);
-        {
+                stmts = fold_if_else_ternary(stmts);
+                {
             std::set<std::string> declared_so_far;
             for (int pass = 0; pass < 3; ++pass) {
                 stmts = hoist_escaping_locals(stmts, declared_so_far);
             }
         }
-        stmts = collapse_string_switch(stmts);
-        stmts = eliminate_dead_locals(stmts);
-        collapse_sb_in_stmts(stmts);
-        prune_unused_imports(stmts, ctx);
+                stmts = collapse_string_switch(stmts);
+                stmts = eliminate_dead_locals(stmts);
+                collapse_sb_in_stmts(stmts);
+                prune_unused_imports(stmts, ctx);
         stmts = collapse_adjacent_monitors(stmts);
         for (int hoist_pass = 0; hoist_pass < 4 && has_escaping_local_decl(stmts); ++hoist_pass) {
             stmts = hoist_all_escaping_to_root(stmts, ctx);
@@ -2949,7 +3274,9 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
         // emit_stmts" - сворачиваем `new T[N]; x[0]=..; x[1]=..;` в
         // `new T[]{..}` перед выводом.
         collapse_array_literals(stmts);
+        set_current_method_return_type(ctx.ret_type);
         auto body_lines = emit_stmts(stmts, indent);
+        set_current_method_return_type(std::nullopt);
         result.ok = true;
         int gotos = count_goto_stmts(stmts);
         result.has_irreducible_goto = (gotos > 0);

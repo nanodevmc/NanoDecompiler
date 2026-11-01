@@ -1,5 +1,5 @@
-import { FileArchive, Play, TriangleAlert, Loader2, Sparkles } from "lucide-react";
-import { useMemo, type ReactNode } from "react";
+import { FileArchive, Play, TriangleAlert, Loader2, Sparkles, FolderTree, Code } from "lucide-react";
+import { useMemo, useState, useEffect, type ReactNode } from "react";
 import { useEngine } from "../state/engine";
 import { FileTree } from "./FileTree";
 import { CodeView } from "./CodeView";
@@ -63,6 +63,15 @@ export function Workspace() {
     [jobs],
   );
 
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && (window.innerWidth < 768 || /Android|iPhone|iPad/i.test(navigator.userAgent)));
+  const [mobileTab, setMobileTab] = useState<"tree" | "code">("tree");
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(typeof window !== "undefined" && (window.innerWidth < 768 || /Android|iPhone|iPad/i.test(navigator.userAgent)));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
   /* готово → дерево + код */
   if (selectedJob?.status === "done" && selectedJob.files) {
     const openId = openFileByJob[selectedJob.id];
@@ -70,14 +79,50 @@ export function Workspace() {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         {envIssue && <EnvBanner />}
+        {isMobile && (
+          <div className="flex flex-none items-center justify-between border-b border-line bg-surface px-3 py-1.5 z-10">
+            <div className="flex items-center gap-1 rounded-lg bg-bg/80 p-0.5 border border-line">
+              <button
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[11px] font-medium transition-all ${
+                  mobileTab === "tree" ? "bg-raised text-acid shadow-sm font-semibold" : "text-dim hover:text-ink"
+                }`}
+                onClick={() => setMobileTab("tree")}
+              >
+                <FolderTree size={13} />
+                <span>Папки</span>
+              </button>
+              <button
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[11px] font-medium transition-all ${
+                  mobileTab === "code" ? "bg-raised text-acid shadow-sm font-semibold" : "text-dim hover:text-ink"
+                }`}
+                onClick={() => setMobileTab("code")}
+              >
+                <Code size={13} />
+                <span>Код</span>
+              </button>
+            </div>
+            {file && (
+              <span className="mono text-[10px] text-faint truncate max-w-[150px]" title={file.name}>
+                {file.name}
+              </span>
+            )}
+          </div>
+        )}
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-          <FileTree
-            files={selectedJob.files}
-            openId={file?.id}
-            onSelect={fid => selectFile(selectedJob.id, fid)}
-            totalSourceLines={selectedJob.details?.stats.total_source_lines}
-          />
-          <CodeView file={file} jobId={selectedJob.id} outDir={selectedJob.outDir} />
+          {(!isMobile || mobileTab === "tree") && (
+            <FileTree
+              files={selectedJob.files}
+              openId={file?.id}
+              onSelect={fid => {
+                selectFile(selectedJob.id, fid);
+                if (isMobile) setMobileTab("code");
+              }}
+              totalSourceLines={selectedJob.details?.stats.total_source_lines}
+            />
+          )}
+          {(!isMobile || mobileTab === "code") && (
+            <CodeView file={file} jobId={selectedJob.id} outDir={selectedJob.outDir} />
+          )}
         </div>
       </div>
     );

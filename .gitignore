@@ -113,3 +113,9 @@ mobile-android/unaligned.apk
 resources/engine_cpp/build_android/
 resources/engine_cpp/build/
 
+
+*.zip
+resources/engine_cpp/build_win/
+test_bench_speed_*/
+test_wg_after_fix/
+*.bak*

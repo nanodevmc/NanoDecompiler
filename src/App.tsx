@@ -13,6 +13,7 @@ import { ProjectSearchModal } from "./components/ProjectSearchModal";
 import { BugReportModal } from "./components/BugReportModal";
 import { SetupWizard } from "./components/SetupWizard";
 import { Toasts } from "./components/Toasts";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Code2, Archive, Terminal as TerminalIcon, Settings, FolderOpen, Play } from "lucide-react";
 import { cn } from "./utils/cn";
 
@@ -215,7 +216,9 @@ function Shell() {
           <main className="relative flex-1 min-h-0 w-full overflow-hidden flex flex-col">
             {activeMobileTab === "workspace" && (
               <div className="h-full w-full flex flex-col overflow-hidden">
-                <Workspace />
+                <ErrorBoundary fallbackTitle="Ошибка рабочей области">
+                  <Workspace />
+                </ErrorBoundary>
               </div>
             )}
             {activeMobileTab === "queue" && (
@@ -244,7 +247,9 @@ function Shell() {
           <main className="relative flex min-h-0 flex-1">
             <Sidebar />
             <section className="flex min-w-0 flex-1 flex-col">
-              <Workspace />
+              <ErrorBoundary fallbackTitle="Ошибка рабочей области">
+                <Workspace />
+              </ErrorBoundary>
               <Terminal />
             </section>
           </main>

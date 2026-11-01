@@ -373,7 +373,7 @@ function createWindow() {
     // реальный --color-surface там #0c100d, не #0a0d0b - несовпадение
     // давало едва заметную вспышку неверного фона на долю секунды перед
     // отрисовкой контента.
-    backgroundColor: "#226332", // --color-surface из index.css
+    backgroundColor: "#0c100d", // --color-bg из index.css
     autoHideMenuBar: true,
     // БАГ-ФИКС "х2 кнопок":
     // frame не был задан вообще -> ОС рисовала СВОИ системные кнопки
@@ -402,7 +402,23 @@ function createWindow() {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.webContents.send("page:findResult", { activeMatchOrdinal: result.activeMatchOrdinal, matches: result.matches });
   });
+
+  mainWindow.webContents.on("render-process-gone", (_event: any, details: any) => {
+    console.error("[NanoDecompiler] Render process gone:", details.reason, details.exitCode);
+    if (details.reason !== "clean-exit" && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.reload();
+    }
+  });
+
+  app.on("child-process-gone", (_event: any, details: any) => {
+    console.error("[NanoDecompiler] Child process gone:", details?.type, details?.reason);
+  });
 }
+
+// Windows 11 DWM и Frameless Electron оптимизации:
+// Предотвращаем падение GPU-процесса и отключение поверхности DWM (черный экран)
+app.commandLine.appendSwitch("disable-gpu-process-crash-limit");
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
 app.whenReady().then(() => {
   // Рендереру не нужны камера/микрофон/геолокация/уведомления и т.п. - отказываем во всём.
@@ -439,7 +455,7 @@ function openLogWindow() {
     height: 560,
     minWidth: 480,
     minHeight: 320,
-    backgroundColor: "226332",
+    backgroundColor: "#0c100d",
     autoHideMenuBar: true,
     frame: false,
     icon: iconPath(),

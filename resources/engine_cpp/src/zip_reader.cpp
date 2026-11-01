@@ -92,6 +92,12 @@ ZipReader::ZipReader(const std::string& path) : path_(path) {
     std::streamoff file_size = f.tellg();
     if (file_size < 22) throw std::runtime_error("not a zip (too small)");
 
+    if (file_size <= 128 * 1024 * 1024) {
+        jar_data_.resize(static_cast<size_t>(file_size));
+        f.seekg(0);
+        f.read(reinterpret_cast<char*>(jar_data_.data()), file_size);
+    }
+
     // Ищем End Of Central Directory (сигнатура PK\x05\x06) с конца - в
     // общем случае она в последних 22..(22+65535) байтах (комментарий
     // архива переменной длины).
@@ -191,22 +197,6 @@ std::vector<uint8_t> ZipReader::read(const std::string& name) const {
     auto off_it = local_header_offset_.find(name);
     uint64_t local_offset = off_it->second;
 
-    std::ifstream f(fs::u8path(path_), std::ios::binary);
-    if (!f) throw std::runtime_error("cannot open " + path_);
-    f.seekg(0, std::ios::end);
-    uint64_t file_size = static_cast<uint64_t>(f.tellg());
-    if (local_offset + 30 > file_size) throw std::runtime_error("local file header is outside of the file for " + name);
-    f.seekg(static_cast<std::streamoff>(local_offset));
-    uint8_t lh[30] = {0};
-    f.read(reinterpret_cast<char*>(lh), 30);
-    if (f.gcount() != 30) throw std::runtime_error("cannot read local file header for " + name);
-    if (!(lh[0] == 0x50 && lh[1] == 0x4b && lh[2] == 0x03 && lh[3] == 0x04)) {
-        throw std::runtime_error("bad local file header for " + name);
-    }
-    uint16_t name_len = rd_u16(&lh[26]);
-    uint16_t extra_len = rd_u16(&lh[28]);
-    uint64_t data_offset = local_offset + 30 + name_len + extra_len;
-
     const ZipEntryInfo& info = it->second;
     if (info.uncompressed_size == 0) {
         return {};
@@ -214,27 +204,59 @@ std::vector<uint8_t> ZipReader::read(const std::string& name) const {
     if (info.compressed_size > kMaxEntryBytes || info.uncompressed_size > kMaxEntryBytes) {
         throw std::runtime_error("zip entry is too large: " + name);
     }
-    if (data_offset + info.compressed_size > file_size) {
-        throw std::runtime_error("zip entry data is outside of the file for " + name);
-    }
-    f.seekg(static_cast<std::streamoff>(data_offset));
 
-    // Размер сжатых данных берём ИЗ ЦЕНТРАЛЬНОГО КАТАЛОГА (info.compressed_size),
-    // а НЕ из локального заголовка - когда архиватор писал запись потоково
-    // (general purpose flag bit 3, "data descriptor"), поля crc32/размеров
-    // в локальном заголовке нулевые, и полагаться на них нельзя; в
-    // центральном каталоге эти поля всегда достоверны.
-    std::vector<uint8_t> raw(info.compressed_size);
-    f.read(reinterpret_cast<char*>(raw.data()), static_cast<std::streamsize>(info.compressed_size));
-    if (static_cast<uint64_t>(f.gcount()) != info.compressed_size) {
-        throw std::runtime_error("truncated zip entry data for " + name);
+    const uint8_t* compressed_ptr = nullptr;
+    std::vector<uint8_t> raw_from_disk;
+
+    if (!jar_data_.empty()) {
+        if (local_offset + 30 > jar_data_.size()) {
+            throw std::runtime_error("local file header outside file for " + name);
+        }
+        const uint8_t* lh = jar_data_.data() + local_offset;
+        if (!(lh[0] == 0x50 && lh[1] == 0x4b && lh[2] == 0x03 && lh[3] == 0x04)) {
+            throw std::runtime_error("bad local file header for " + name);
+        }
+        uint16_t name_len = rd_u16(&lh[26]);
+        uint16_t extra_len = rd_u16(&lh[28]);
+        uint64_t data_offset = local_offset + 30 + name_len + extra_len;
+        if (data_offset + info.compressed_size > jar_data_.size()) {
+            throw std::runtime_error("zip entry data outside file for " + name);
+        }
+        compressed_ptr = jar_data_.data() + data_offset;
+    } else {
+        std::ifstream f(fs::u8path(path_), std::ios::binary);
+        if (!f) throw std::runtime_error("cannot open " + path_);
+        f.seekg(0, std::ios::end);
+        uint64_t file_size = static_cast<uint64_t>(f.tellg());
+        if (local_offset + 30 > file_size) throw std::runtime_error("local file header is outside of the file for " + name);
+        f.seekg(static_cast<std::streamoff>(local_offset));
+        uint8_t lh[30] = {0};
+        f.read(reinterpret_cast<char*>(lh), 30);
+        if (f.gcount() != 30) throw std::runtime_error("cannot read local file header for " + name);
+        if (!(lh[0] == 0x50 && lh[1] == 0x4b && lh[2] == 0x03 && lh[3] == 0x04)) {
+            throw std::runtime_error("bad local file header for " + name);
+        }
+        uint16_t name_len = rd_u16(&lh[26]);
+        uint16_t extra_len = rd_u16(&lh[28]);
+        uint64_t data_offset = local_offset + 30 + name_len + extra_len;
+        if (data_offset + info.compressed_size > file_size) {
+            throw std::runtime_error("zip entry data is outside of the file for " + name);
+        }
+        f.seekg(static_cast<std::streamoff>(data_offset));
+        raw_from_disk.resize(info.compressed_size);
+        f.read(reinterpret_cast<char*>(raw_from_disk.data()), static_cast<std::streamsize>(info.compressed_size));
+        if (static_cast<uint64_t>(f.gcount()) != info.compressed_size) {
+            throw std::runtime_error("truncated zip entry data for " + name);
+        }
+        compressed_ptr = raw_from_disk.data();
     }
 
     if (info.compression_method == 0) {
-        return raw;  // STORED
+        return std::vector<uint8_t>(compressed_ptr, compressed_ptr + info.compressed_size);  // STORED
     }
     if (info.compression_method == 8) {
-        return inflate_raw(raw, info.uncompressed_size);  // DEFLATE
+        std::vector<uint8_t> raw_view(compressed_ptr, compressed_ptr + info.compressed_size);
+        return inflate_raw(raw_view, info.uncompressed_size);  // DEFLATE
     }
     throw std::runtime_error("unsupported compression method " + std::to_string(info.compression_method) + " for " + name);
 }

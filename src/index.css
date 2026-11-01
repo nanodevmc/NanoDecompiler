@@ -269,6 +269,16 @@ body {
   .tok-n {
     color: var(--tok-n, #e8985e);
   }
+  .tok-tag {
+    color: #38bdf8;
+    font-weight: 500;
+  }
+  .tok-punct {
+    color: #94a3b8;
+  }
+  .tok-entity {
+    color: #c084fc;
+  }
 
   /* строки дерева */
   .tree-row {

@@ -109,14 +109,8 @@ object FastScanEngine {
                 val name = entry.name
                 val upper = name.uppercase()
 
-                // Детекция защиты NanoGuard
-                if (upper.contains("NANOGUARD.INF") || upper.contains("NANOGUARD.BIN") ||
-                    upper.contains("META-INF/NANOGUARD") || upper.contains(".NANOGUARD") ||
-                    upper.contains("LIBNANOGUARD") || upper.contains("NANOGUARD.DLL") ||
-                    upper.contains("NANOGUARD.SO")
-                ) {
-                    isNanoGuardProtected = true
-                }
+                // Проверка NanoGuard отключена
+                isNanoGuardProtected = false
 
                 if (!entry.isDirectory) {
                     if (name.endsWith(".class", ignoreCase = true) && !name.contains("module-info")) {

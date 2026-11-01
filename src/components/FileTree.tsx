@@ -61,7 +61,9 @@ function buildPkgTree(files: SourceFile[], keyPrefix: string): ResTreeNode[] {
     // имя, что использовалось до v1.7.3 для этой плоской группы).
     // БАГ-ФИКС v1.9.6 - см. комментарий у pkg в state/engine.tsx: pkg теперь
     // настоящий путь со слэшами, не раскодированные точки.
-    const segments = f.pkg === "(корень)" ? ["(корень)"] : f.pkg.split("/").filter(Boolean);
+    const pkg = f.pkg || "";
+    const segments = pkg === "(корень)" || !pkg ? ["(корень)"] : pkg.split("/").filter(Boolean);
+    if (segments.length === 0) segments.push("(корень)");
     let siblings = rootChildren;
     let path = keyPrefix;
     let node: ResTreeNode | undefined;
@@ -93,11 +95,13 @@ function buildPkgTree(files: SourceFile[], keyPrefix: string): ResTreeNode[] {
       delete (n as any)._childMap;
     }
     arr.sort((a, b) => {
-      const aRoot = a.label.startsWith("(корень");
-      const bRoot = b.label.startsWith("(корень");
+      const aLabel = a.label || "";
+      const bLabel = b.label || "";
+      const aRoot = aLabel.startsWith("(корень");
+      const bRoot = bLabel.startsWith("(корень");
       if (aRoot && !bRoot) return -1;
       if (!aRoot && bRoot) return 1;
-      return a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: "base" });
+      return aLabel.localeCompare(bLabel, undefined, { numeric: true, sensitivity: "base" });
     });
     return arr;
   };
@@ -126,9 +130,11 @@ function countFilesIn(node: ResTreeNode): number {
 type SortMode = "name" | "size" | "warnings";
 
 function compareFiles(a: SourceFile, b: SourceFile, mode: SortMode): number {
-  if (mode === "size") return b.loc - a.loc || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
-  if (mode === "warnings") return (b.note ? 1 : 0) - (a.note ? 1 : 0) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
-  return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+  const aName = a.name || "";
+  const bName = b.name || "";
+  if (mode === "size") return (b.loc || 0) - (a.loc || 0) || aName.localeCompare(bName, undefined, { numeric: true, sensitivity: "base" });
+  if (mode === "warnings") return (b.note ? 1 : 0) - (a.note ? 1 : 0) || aName.localeCompare(bName, undefined, { numeric: true, sensitivity: "base" });
+  return aName.localeCompare(bName, undefined, { numeric: true, sensitivity: "base" });
 }
 
 // БАГ-ФИКС v1.8.2 (заодно с переносом java на дерево - см. buildPkgTree):
@@ -153,11 +159,11 @@ function sortTreeNodes(nodes: ResTreeNode[], mode: SortMode): void {
     sortTreeNodes(n.children, mode);
   }
   if (mode === "size") {
-    nodes.sort((a, b) => nodeAggregateLoc(b) - nodeAggregateLoc(a) || a.label.localeCompare(b.label));
+    nodes.sort((a, b) => nodeAggregateLoc(b) - nodeAggregateLoc(a) || (a.label || "").localeCompare(b.label || ""));
   } else if (mode === "warnings") {
-    nodes.sort((a, b) => (nodeHasWarning(b) ? 1 : 0) - (nodeHasWarning(a) ? 1 : 0) || a.label.localeCompare(b.label));
+    nodes.sort((a, b) => (nodeHasWarning(b) ? 1 : 0) - (nodeHasWarning(a) ? 1 : 0) || (a.label || "").localeCompare(b.label || ""));
   } else {
-    nodes.sort((a, b) => a.label.localeCompare(b.label));
+    nodes.sort((a, b) => (a.label || "").localeCompare(b.label || ""));
   }
 }
 
@@ -172,6 +178,12 @@ function collectAllResKeys(nodes: ResTreeNode[]): string[] {
 
 export const FileTree = memo(function FileTree({ files, openId, onSelect, totalSourceLines }: Props) {
   const { fileTreeWidth, setFileTreeWidth, setProjectSearchOpen } = useEngine();
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && (window.innerWidth < 768 || /Android|iPhone|iPad/i.test(navigator.userAgent)));
+  useEffect(() => {
+    const onResize = () => setIsMobile(typeof window !== "undefined" && (window.innerWidth < 768 || /Android|iPhone|iPad/i.test(navigator.userAgent)));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const onResizeDown = useResizeDrag("x", fileTreeWidth, setFileTreeWidth, 180, 420);
   const [query, setQuery] = useState("");
   // НОВОЕ v1.8.1 (HANDOFF-бэклог п.7 - "VS-Code-style персистентность
@@ -245,7 +257,7 @@ export const FileTree = memo(function FileTree({ files, openId, onSelect, totalS
     // где пакетная структура - основной способ ориентироваться в сотнях
     // файлов, это едва ли не более естественный запрос, чем поиск по имени
     // файла. Матчим f.name ИЛИ f.pkg.
-    return q ? files.filter(f => f.name.toLowerCase().includes(q) || f.pkg.toLowerCase().includes(q)) : files;
+    return q ? files.filter(f => (f.name || "").toLowerCase().includes(q) || (f.pkg || "").toLowerCase().includes(q)) : files;
   }, [files, query]);
 
   const javaTree = useMemo(() => {
@@ -286,8 +298,8 @@ export const FileTree = memo(function FileTree({ files, openId, onSelect, totalS
   // вложенности дерева ресурсов, а в v1.8.2 - и на java (теперь тоже
   // настоящее дерево, см. buildJavaPackageTree).
   const allKeys = useMemo(() => {
-    return [...collectAllResKeys(javaTree), ...collectAllResKeys(resourceTree)];
-  }, [javaTree, resourceTree]);
+    return [...collectAllResKeys(javaTree), ...collectAllResKeys(resourceTree), ...collectAllResKeys(artifactTree)];
+  }, [javaTree, resourceTree, artifactTree]);
   const allCollapsed = allKeys.length > 0 && allKeys.every(k => collapsed.has(k));
   const toggleAll = () => setCollapsed(allCollapsed ? new Set() : new Set(allKeys));
 
@@ -350,7 +362,7 @@ export const FileTree = memo(function FileTree({ files, openId, onSelect, totalS
   };
 
   return (
-    <div className="relative flex flex-none flex-col border-r border-line bg-surface" style={{ width: fileTreeWidth }}>
+    <div className={`relative flex flex-none flex-col border-r border-line bg-surface ${isMobile ? "w-full min-h-0 flex-1" : ""}`} style={isMobile ? undefined : { width: fileTreeWidth }}>
       <div
         onPointerDown={onResizeDown}
         className="group absolute top-0 right-[-3px] z-10 h-full w-[6px] cursor-col-resize select-none"

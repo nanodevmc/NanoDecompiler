@@ -109,7 +109,7 @@ std::string Renamer::friendly_class(const std::string& internal_name) const {
             new_parts.push_back(p);
         }
     }
-    std::string new_simple = join_char(new_parts, '_');
+    std::string new_simple = join_char(new_parts, '.');
     std::string new_internal = !new_pkg.empty() ? (new_pkg + "/" + new_simple) : new_simple;
     class_map_[internal_name] = new_internal;
     return new_internal;

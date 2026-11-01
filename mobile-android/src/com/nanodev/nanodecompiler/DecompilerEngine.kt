@@ -97,16 +97,25 @@ object DecompilerEngine {
         context: Context,
         inputFile: File,
         skipLegitimacy: Boolean = false,
+        skipMalwareScan: Boolean = false,
         onStage: (String) -> Unit,
         onFileProcessing: (String) -> Unit,
         onLog: (String) -> Unit
     ): DecompileResult {
         val startTime = System.currentTimeMillis()
+        onLog("[*] Инициализация рабочего каталога...")
         val baseDecompiled = getDecompiledBaseDir(context)
 
         val safeName = inputFile.name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val outDir = File(baseDecompiled, safeName)
-        if (outDir.exists()) outDir.deleteRecursively()
+        if (outDir.exists()) {
+            val trash = File(baseDecompiled, ".trash_${System.currentTimeMillis()}")
+            if (outDir.renameTo(trash)) {
+                Thread {
+                    try { trash.deleteRecursively() } catch (_: Exception) {}
+                }.start()
+            }
+        }
         outDir.mkdirs()
 
         if (!inputFile.exists() || inputFile.length() == 0L) {
@@ -125,10 +134,15 @@ object DecompilerEngine {
             val cmdList = mutableListOf(
                 engine.absolutePath,
                 inputFile.absolutePath,
-                outDir.absolutePath
+                "-o",
+                outDir.absolutePath,
+                "--ignore-nanoguard"
             )
             if (skipLegitimacy) {
                 cmdList.add("--no-legitimacy-check")
+            }
+            if (skipMalwareScan) {
+                cmdList.add("--skip-scan")
             }
 
             val pb = ProcessBuilder(cmdList)

@@ -78,7 +78,11 @@ void clear_active_aegis_vm();
 // Оффлайн трансляция опкодов Aegis VM в AST выражения без запуска JVM
 ExprPtr translate_aegis_ir_method(const AegisIRMethod& ir,
                                   const std::vector<ExprPtr>& call_args,
-                                  MethodCtx& ctx);
+                                  MethodCtx& ctx,
+                                  std::vector<StmtPtr>* out_stmts = nullptr);
+
+// Расшифровка строк AegisVM.decryptString("...", key) в чистый текст
+std::optional<std::string> aegis_decrypt_string_fast(const std::string& encrypted_utf8, int32_t key);
 
 // Проверка структуры байткода: расчёт ожидаемого количества классов, методов и строк
 // с отсевом мусорных классов ловушек (AegisArmorTrap, AegisGrinder*, Hikari, Guava, Shaded libs)
