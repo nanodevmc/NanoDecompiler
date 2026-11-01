@@ -334,14 +334,14 @@ std::vector<SiteConfig> parse_legitimacy_sites_config(const std::string& json_te
 
 namespace {
 // БАГ-ФИКС (HANDOFF_53 -> закрыто): раньше здесь была заглушка
-// USER/REPO. Реальный репозиторий проекта - NanoDev1488/NanoDecompiler
+// USER/REPO. Реальный репозиторий проекта - nanodevmc/NanoDecompiler
 // (те же константы GITHUB_OWNER/GITHUB_REPO используются в
 // electron/updater.ts для проверки обновлений) - файл legitimacy_sites.json
 // лежит в корне репозитория, ветка main. Раньше curl молча получал 404 и
 // движок деградировал на default_legitimacy_sites_config() - деградация
 // была безопасной, но саму фичу "менять источники без пересборки" никто
 // не включал. Теперь URL настоящий.
-constexpr const char* LEGITIMACY_SITES_CONFIG_URL = "https://raw.githubusercontent.com/NanoDev1488/NanoDecompiler/main/legitimacy_sites.json";
+constexpr const char* LEGITIMACY_SITES_CONFIG_URL = "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/legitimacy_sites.json";
 }  // namespace
 
 std::vector<SiteConfig> load_legitimacy_sites_config() {

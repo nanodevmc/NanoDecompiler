@@ -4,15 +4,15 @@
 
 **Декомпилятор Minecraft-плагинов и модов с честной эвристикой вместо красивого вранья.**
 
-[![Version](https://img.shields.io/badge/version-2.0.1-b6ff3c?style=for-the-badge&logo=codeforces&logoColor=000)](https://github.com/NanoDev1488/NanoDecompiler)
-[![Engine](https://img.shields.io/badge/Engine-C%2B%2B17%20Native-38bdf8?style=for-the-badge&logo=c%2B%2B&logoColor=white)](https://github.com/NanoDev1488/NanoDecompiler)
-[![Lite GUI](https://img.shields.io/badge/Lite%20GUI-C%23%20Avalonia-a855f7?style=for-the-badge&logo=dotnet&logoColor=white)](https://github.com/NanoDev1488/NanoDecompiler)
-[![Telemetry](https://img.shields.io/badge/Telemetry-opt--in%20(off%20by%20default)-4ade80?style=for-the-badge&logo=shield&logoColor=white)](https://github.com/NanoDev1488/NanoDecompiler)
-[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-38bdf8?style=for-the-badge&logo=githubpages&logoColor=white)](https://nanodev1488.github.io/NanoDecompiler/)
+[![Version](https://img.shields.io/badge/version-2.0.1-b6ff3c?style=for-the-badge&logo=codeforces&logoColor=000)](https://github.com/nanodevmc/NanoDecompiler)
+[![Engine](https://img.shields.io/badge/Engine-C%2B%2B17%20Native-38bdf8?style=for-the-badge&logo=c%2B%2B&logoColor=white)](https://github.com/nanodevmc/NanoDecompiler)
+[![Lite GUI](https://img.shields.io/badge/Lite%20GUI-C%23%20Avalonia-a855f7?style=for-the-badge&logo=dotnet&logoColor=white)](https://github.com/nanodevmc/NanoDecompiler)
+[![Telemetry](https://img.shields.io/badge/Telemetry-opt--in%20(off%20by%20default)-4ade80?style=for-the-badge&logo=shield&logoColor=white)](https://github.com/nanodevmc/NanoDecompiler)
+[![Docs](https://img.shields.io/badge/Docs-GitHub%20Pages-38bdf8?style=for-the-badge&logo=githubpages&logoColor=white)](https://nanodevmc.github.io/NanoDecompiler/)
 
 Bukkit · Spigot · Paper · Purpur · Velocity · BungeeCord · Fabric · Forge · NeoForge
 
-[📢 Telegram-канал автора и обновлений](https://t.me/NanoDev_mc) · [📖 Онлайн-документация](https://nanodev1488.github.io/NanoDecompiler/)
+[📢 Telegram-канал автора и обновлений](https://t.me/NanoDev_mc) · [📖 Онлайн-документация](https://nanodevmc.github.io/NanoDecompiler/)
 
 </div>
 

@@ -3,7 +3,12 @@
   "version": "2.0.5",
   "description": "Декомпилятор для Java-майнкрафт подобных файлов (.jar моды/плагины)",
   "main": "dist-electron/main.js",
-  "author": "NanoDev1488",
+  "author": "NanoDev (nanodevmc)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nanodevmc/NanoDecompiler.git"
+  },
+  "homepage": "https://github.com/nanodevmc/NanoDecompiler#readme",
   "scripts": {
     "dev": "vite",
     "build:renderer": "vite build",

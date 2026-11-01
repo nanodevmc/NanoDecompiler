@@ -984,7 +984,7 @@ class MainActivity : Activity() {
                     "Автор: NanoDev\n" +
                     "Канал: t.me/WineSquad\n" +
                     "Связь: t.me/radoqi\n" +
-                    "GitHub: nanodev1488\n\n" +
+                    "GitHub: nanodevmc\n\n" +
                     "Лицензия: Полная версия без ограничений"
             setTextColor(COLOR_TEXT)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)

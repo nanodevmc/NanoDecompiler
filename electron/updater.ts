@@ -29,7 +29,7 @@ function safeReplaceFile(tmpPath: string, destPath: string): void {
 }
 
 // Подтверждено пользователем: реальный владелец/репозиторий (не заглушка).
-const GITHUB_OWNER = "NanoDev1488";
+const GITHUB_OWNER = "nanodevmc";
 const GITHUB_REPO = "NanoDecompiler";
 
 interface GhAsset {

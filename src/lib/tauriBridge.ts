@@ -122,8 +122,8 @@ export function initTauriBridge() {
         results: [
           {
             name: pluginName || "NanoPlugin",
-            fullName: `nanodev1488/${pluginName || "NanoPlugin"}`,
-            url: "https://github.com/nanodev1488",
+            fullName: `nanodevmc/${pluginName || "NanoPlugin"}`,
+            url: "https://github.com/nanodevmc",
             description: "Официальный репозиторий плагинов",
             stars: 1488,
           },
@@ -200,7 +200,7 @@ export function initTauriBridge() {
               packages: p.packageCount || Math.max(1, Math.round((p.classCount || 1) / 8)),
               java: p.isSingleClass ? "Java Bytecode (.class)" : "Java 17 (class 61.0)",
               plugin_name: p.pluginName,
-              plugin_author: p.author || "nanodev1488",
+              plugin_author: p.author || "nanodevmc",
               error: undefined,
             };
           }
@@ -217,7 +217,7 @@ export function initTauriBridge() {
         packages: 1,
         java: "Java 17 (class 61.0)",
         plugin_name: fileName.replace(/\.(jar|class)$/i, ""),
-        plugin_author: "nanodev1488",
+        plugin_author: "nanodevmc",
         error: undefined,
       };
     },
@@ -393,7 +393,7 @@ export function initTauriBridge() {
       updateKind: "none" as const,
       currentVersion: "2.0.3",
       latestVersion: "2.0.3",
-      releaseUrl: "https://github.com/nanodev1488/NanoDecompiler/releases",
+      releaseUrl: "https://github.com/nanodevmc/NanoDecompiler/releases",
       changelog: "NanoDecompiler Kotlin Mobile: встроен CFR декомпилятор, MD3 редизайн",
     }),
 
@@ -438,7 +438,7 @@ export function initTauriBridge() {
     getPluginTree: async () => ({
       name: "NanoPlugin",
       version: "2.0.3",
-      mainClass: "com.nanodev1488.plugin.Main",
+      mainClass: "com.nanodevmc.plugin.Main",
       classes: 48,
       events: [{ name: "PlayerJoinEvent", class: "Main", priority: "NORMAL" }],
       commands: [{ name: "nanoreload", description: "Перезагрузка", permission: "nanoplugin.admin" }],
@@ -447,7 +447,7 @@ export function initTauriBridge() {
 
     compareJars: async () => ({ diffs: [], added: [], removed: [], modified: [] }),
     diffClass: async () => ({ ok: true, diff: "" }),
-    exportToGitHub: async () => ({ ok: true, url: "https://github.com/nanodev1488/NanoDecompiler" }),
+    exportToGitHub: async () => ({ ok: true, url: "https://github.com/nanodevmc/NanoDecompiler" }),
     generatePluginWiki: async () => ({ ok: true, markdown: "# Wiki" }),
     exportToIde: async () => ({ ok: true, path: "/sdcard/Download" }),
 

@@ -49,8 +49,8 @@ namespace nd {
 
 namespace {
 
-constexpr const char* kLatestReleaseUrl = "https://api.github.com/repos/NanoDev1488/NanoDecompiler/releases/latest";
-constexpr const char* kReleaseDownloadPrefix = "/nanodev1488/nanodecompiler/releases/download/";
+constexpr const char* kLatestReleaseUrl = "https://api.github.com/repos/nanodevmc/NanoDecompiler/releases/latest";
+constexpr const char* kReleaseDownloadPrefix = "/nanodevmc/nanodecompiler/releases/download/";
 constexpr uint64_t kMaxJsonBytes = 5ull * 1024 * 1024;
 constexpr uint64_t kMaxBinaryBytes = 256ull * 1024 * 1024;
 constexpr uint64_t kMinBinaryBytes = 64ull * 1024;  // заведомо не страница с ошибкой
@@ -89,7 +89,7 @@ bool is_allowed_url(const std::string& url, bool first_hop) {
     std::string host, path;
     if (!parse_https_url(url, host, path)) return false;
     std::string lpath = to_lower(path);
-    if (host == "api.github.com") return !first_hop || lpath.rfind("/repos/nanodev1488/nanodecompiler/", 0) == 0;
+    if (host == "api.github.com") return !first_hop || lpath.rfind("/repos/nanodevmc/nanodecompiler/", 0) == 0;
     if (host == "github.com") return !first_hop || lpath.rfind(kReleaseDownloadPrefix, 0) == 0;
     const std::string suffix = ".githubusercontent.com";
     return !first_hop && host.size() > suffix.size() && host.compare(host.size() - suffix.size(), suffix.size(), suffix) == 0;

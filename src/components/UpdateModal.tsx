@@ -355,7 +355,7 @@ function OtaModulesSection() {
     setSyncingModule(modId);
     try {
       if (window.nano?.otaSyncModule) {
-        await window.nano.otaSyncModule({ name: modId, sha256: "auto", url: `https://github.com/NanoDev/NanoDecompiler/releases/download/v2.0.2/${modId}` });
+        await window.nano.otaSyncModule({ name: modId, sha256: "auto", url: `https://github.com/nanodevmc/NanoDecompiler/releases/download/v2.0.5/${modId}` });
       }
       setTimeout(() => {
         setModules(prev => prev.map(m => m.id === modId ? { ...m, status: "up_to_date", localVersion: m.version } : m));
@@ -371,7 +371,7 @@ function OtaModulesSection() {
     try {
       for (const mod of pendingModules) {
         if (window.nano?.otaSyncModule) {
-          await window.nano.otaSyncModule({ name: mod.id, sha256: "auto", url: `https://github.com/NanoDev/NanoDecompiler/releases/download/v2.0.2/${mod.id}` });
+          await window.nano.otaSyncModule({ name: mod.id, sha256: "auto", url: `https://github.com/nanodevmc/NanoDecompiler/releases/download/v2.0.5/${mod.id}` });
         }
       }
       setTimeout(() => {
