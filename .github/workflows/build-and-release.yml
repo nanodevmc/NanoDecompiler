@@ -183,6 +183,15 @@ jobs:
       - name: npm install
         run: npm install
 
+
+      - name: Кэш Vite dist/ (фронтенд)
+        uses: actions/cache@v4
+        with:
+          path: dist
+          key: vite-dist-${{ hashFiles('src/**', 'index.html', 'vite.config.mts', 'tsconfig.json') }}
+          restore-keys: |
+            vite-dist-
+
       - name: Собрать Electron-инсталлятор (npm run dist)
         run: npm run dist
 
@@ -288,6 +297,15 @@ jobs:
 
       - name: npm install
         run: npm install
+
+
+      - name: Кэш Vite dist/ (фронтенд)
+        uses: actions/cache@v4
+        with:
+          path: dist
+          key: vite-dist-${{ hashFiles('src/**', 'index.html', 'vite.config.mts', 'tsconfig.json') }}
+          restore-keys: |
+            vite-dist-
 
       - name: Собрать Electron-инсталлятор (npm run dist)
         run: npm run dist
@@ -409,6 +427,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Кэш cmake build/ (Windows) — пропускает компиляцию при неизменных исходниках
+        uses: actions/cache@v4
+        with:
+          path: resources/engine_cpp/build
+          key: ${{ runner.os }}-cmake-build-${{ hashFiles('resources/engine_cpp/src/**', 'resources/engine_cpp/include/**', 'resources/engine_cpp/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-cmake-build-
+
       - name: Кэш ccache (Windows)
         uses: actions/cache@v4
         with:
@@ -436,11 +462,11 @@ jobs:
         run: |
           export CCACHE_DIR="$(cygpath -u "$GITHUB_WORKSPACE")/.ccache"
           mkdir -p "$CCACHE_DIR"
-          ccache -M 1G
+          ccache -M 2G
           ccache -z
           cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
           ninja -C build -j $(nproc)
-          ccache -s
+          ccache -s --verbose
           strip -s build/NanoDecompilerCLI.exe
           upx --best build/NanoDecompilerCLI.exe || true
           cp build/NanoDecompilerCLI.exe ../../NanoDecompilerClApi.exe
@@ -481,6 +507,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Кэш cmake build/ (Linux) — пропускает компиляцию при неизменных исходниках
+        uses: actions/cache@v4
+        with:
+          path: resources/engine_cpp/build
+          key: ${{ runner.os }}-cmake-build-${{ hashFiles('resources/engine_cpp/src/**', 'resources/engine_cpp/include/**', 'resources/engine_cpp/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-cmake-build-
+
       - name: Кэш ccache (Linux)
         uses: actions/cache@v4
         with:
@@ -488,6 +522,14 @@ jobs:
           key: ${{ runner.os }}-ccache-${{ hashFiles('resources/engine_cpp/**') }}
           restore-keys: |
             ${{ runner.os }}-ccache-
+
+      - name: Кэш apt пакетов (Linux build tools)
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-engine-build-tools-v1
+          restore-keys: |
+            ${{ runner.os }}-apt-engine-build-tools-
 
       - name: Установить зависимости сборки
         run: sudo apt-get update && sudo apt-get install -y build-essential zlib1g-dev ccache ninja-build upx-ucl
@@ -497,11 +539,11 @@ jobs:
         run: |
           export CCACHE_DIR=~/.cache/ccache
           mkdir -p "$CCACHE_DIR"
-          ccache -M 1G
+          ccache -M 2G
           ccache -z
           cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache
           ninja -C build -j $(nproc)
-          ccache -s
+          ccache -s --verbose
           strip --strip-all build/NanoDecompilerCLI
           upx --best build/NanoDecompilerCLI || true
           cp build/NanoDecompilerCLI ../../NanoDecompilerClApi
@@ -528,6 +570,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Кэш cmake build/ (macOS) — пропускает компиляцию при неизменных исходниках
+        uses: actions/cache@v4
+        with:
+          path: resources/engine_cpp/build
+          key: ${{ runner.os }}-cmake-build-${{ hashFiles('resources/engine_cpp/src/**', 'resources/engine_cpp/include/**', 'resources/engine_cpp/CMakeLists.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-cmake-build-
+
       - name: Кэш ccache (macOS)
         uses: actions/cache@v4
         with:
@@ -546,7 +596,7 @@ jobs:
         run: |
           export CCACHE_DIR=~/Library/Caches/ccache
           mkdir -p "$CCACHE_DIR"
-          ccache -M 1G
+          ccache -M 2G
           ccache -z
           CMAKE_FLAGS="-S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo"
           if command -v ccache >/dev/null 2>&1; then
@@ -554,7 +604,7 @@ jobs:
           fi
           cmake $CMAKE_FLAGS
           ninja -C build -j $(sysctl -n hw.logicalcpu)
-          ccache -s || true
+          ccache -s --verbose || true
           cp build/NanoDecompilerCLI ../../NanoDecompilerClApi
 
       - name: Проверка - бинарник реально работает
@@ -706,9 +756,20 @@ jobs:
           workspaces: |
             tauri-v2/src-tauri
             crates/nanodecompiler-fastscan
+          cache-targets: true
+          cache-all-crates: true
 
       - name: npm install
         run: npm install
+
+
+      - name: Кэш Vite dist/ (фронтенд — пропускает сборку при неизменном src/)
+        uses: actions/cache@v4
+        with:
+          path: dist
+          key: vite-dist-${{ hashFiles('src/**', 'index.html', 'vite.config.mts', 'tsconfig.json') }}
+          restore-keys: |
+            vite-dist-
 
       - name: Собрать фронтенд (Vite)
         run: npm run build:renderer
@@ -719,21 +780,30 @@ jobs:
           cd tauri-v2/src-tauri
           cargo build --release
           cd ../..
-          cp tauri-v2/src-tauri/target/release/nanodecompiler-tauri.exe NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe
+          # find the exe regardless of subtle path differences
+          STANDALONE=$(find tauri-v2/src-tauri/target/release -maxdepth 1 -iname 'nanodecompiler-tauri.exe' | head -1)
+          if [ -z "$STANDALONE" ]; then
+            echo '::error::nanodecompiler-tauri.exe not found after cargo build'
+            find tauri-v2/src-tauri/target/release -maxdepth 1 -type f -name '*.exe' || true
+            exit 1
+          fi
+          cp "$STANDALONE" NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe
 
       - name: Собрать инсталлятор Tauri v2 (NSIS / Bundle)
         shell: bash
         run: |
           VERSION="${{ needs.resolve-version.outputs.version }}"
-          if command -v makensis &>/dev/null; then
-            cd resources && makensis -DPRODUCT_VERSION="$VERSION" installer_tauri.nsi && cd ..
-          elif [ -f "/c/Program Files (x86)/NSIS/makensis.exe" ]; then
-            cd resources && "/c/Program Files (x86)/NSIS/makensis.exe" -DPRODUCT_VERSION="$VERSION" installer_tauri.nsi && cd ..
-          else
+          # Принудительно добавляем NSIS в PATH (choco кладёт его в Program Files (x86)/NSIS)
+          export PATH="$PATH:/c/Program Files (x86)/NSIS"
+          if ! command -v makensis &>/dev/null; then
             choco install nsis -y --no-progress
-            cd resources && makensis -DPRODUCT_VERSION="$VERSION" installer_tauri.nsi && cd ..
+            export PATH="$PATH:/c/Program Files (x86)/NSIS"
           fi
-          SETUP_CANDIDATE=$(find . -maxdepth 1 -iname "NanoDecompiler-Tauri-Setup-*.exe" 2>/dev/null | head -1)
+          SETUP_CANDIDATE=''
+          if [ -f 'resources/installer_tauri.nsi' ] && command -v makensis &>/dev/null; then
+            cd resources && makensis -DPRODUCT_VERSION="$VERSION" installer_tauri.nsi && cd ..
+            SETUP_CANDIDATE=$(find . -maxdepth 1 -iname 'NanoDecompiler-Tauri-Setup-*.exe' 2>/dev/null | head -1)
+          fi
           if [ -n "$SETUP_CANDIDATE" ]; then
             cp "$SETUP_CANDIDATE" NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe
           else
@@ -800,9 +870,20 @@ jobs:
           workspaces: |
             tauri-v2/src-tauri
             crates/nanodecompiler-fastscan
+          cache-targets: true
+          cache-all-crates: true
 
       - name: npm install
         run: npm install
+
+
+      - name: Кэш Vite dist/ (фронтенд — пропускает сборку при неизменном src/)
+        uses: actions/cache@v4
+        with:
+          path: dist
+          key: vite-dist-${{ hashFiles('src/**', 'index.html', 'vite.config.mts', 'tsconfig.json') }}
+          restore-keys: |
+            vite-dist-
 
       - name: Собрать фронтенд (Vite)
         run: npm run build:renderer
@@ -851,8 +932,23 @@ jobs:
         with:
           targets: aarch64-linux-android
 
-      - name: Установить cargo-tauri CLI
+      - name: Кэш ~/.cargo/bin (cargo-tauri бинарь)
+        id: cache-cargo-tauri-bin
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-tauri
+          key: cargo-tauri-bin-v2-0
+
+      - name: Установить cargo-tauri CLI (только если нет в кэше)
+        if: steps.cache-cargo-tauri-bin.outputs.cache-hit != 'true'
         run: cargo install tauri-cli --version "^2.0" --locked
+
+      - name: Кэш Rust (Cargo registry + git + tauri-v2 target)
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri-v2/src-tauri
+          cache-targets: true
+          cache-all-crates: true
 
       - name: Кэш node_modules
         uses: actions/cache@v4
@@ -873,7 +969,7 @@ jobs:
         run: |
           cd tauri-v2
           cargo tauri android init --ci --skip-targets-install
-          cargo tauri android build --apk --target aarch64-linux-android
+          cargo tauri android build --apk --target aarch64
           mkdir -p ../android-apk
           find src-tauri/gen/android -name "*.apk" -exec cp {} ../android-apk/NanoDecompiler-Android-arm64.apk \;
 
