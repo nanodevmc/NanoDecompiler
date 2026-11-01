@@ -19,7 +19,7 @@ export function EventFlowModal({
 }: {
   open: boolean;
   onClose: () => void;
-  files: { path: string; content?: string }[];
+  files: { path?: string; relPath?: string; content?: string; code?: string }[];
   onOpenFile?: (path: string, line?: number) => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
@@ -29,7 +29,7 @@ export function EventFlowModal({
     const list: BukkitEventHandler[] = [];
 
     files.forEach((f) => {
-      const code = f.content || "";
+      const code = f.content || f.code || "";
       if (!code.includes("@EventHandler") && !code.includes("Listener")) return;
 
       const lines = code.split("\n");
@@ -55,7 +55,7 @@ export function EventFlowModal({
             priority,
             ignoreCancelled,
             line: idx + 1,
-            file: f.path,
+            file: f.path || f.relPath || "",
           };
         } else if (currentEventHandler && (trimmed.startsWith("public void") || trimmed.startsWith("void") || trimmed.startsWith("protected void"))) {
           // Parse method name and event parameter
@@ -64,7 +64,8 @@ export function EventFlowModal({
             const methodName = methodMatch[1];
             const eventName = methodMatch[2];
 
-            const className = f.path.split("/").pop()?.replace(".java", "") || "UnknownClass";
+            const filePath = f.path || f.relPath || "";
+            const className = filePath.split("/").pop()?.replace(".java", "") || "UnknownClass";
 
             list.push({
               className,
@@ -72,7 +73,7 @@ export function EventFlowModal({
               eventName,
               priority: currentEventHandler.priority || "NORMAL",
               ignoreCancelled: currentEventHandler.ignoreCancelled || false,
-              file: f.path,
+              file: f.path || f.relPath || "",
               line: currentEventHandler.line || idx + 1,
             });
           }

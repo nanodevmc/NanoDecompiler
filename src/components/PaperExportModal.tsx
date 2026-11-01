@@ -14,7 +14,7 @@ export function PaperExportModal({
   pluginName?: string;
   version?: string;
   mainClass?: string;
-  decompiledFiles?: { path: string; content?: string }[];
+  decompiledFiles?: { path?: string; relPath?: string; content?: string; code?: string }[];
 }) {
   const [buildSystem, setBuildSystem] = useState<"maven" | "gradle">("maven");
   const [minecraftVersion, setMinecraftVersion] = useState("1.21.4");
@@ -27,19 +27,19 @@ export function PaperExportModal({
   const foliaWarnings: { file: string; line: number; issue: string }[] = [];
   if (supportFolia && decompiledFiles) {
     decompiledFiles.forEach((f) => {
-      if (!f.content) return;
-      const lines = f.content.split("\n");
+      const code = f.content || f.code; if (!code) return;
+      const lines = (f.content || f.code || "").split("\n");
       lines.forEach((line, idx) => {
         if (line.includes("Bukkit.getScheduler()") || line.includes("getServer().getScheduler()")) {
           foliaWarnings.push({
-            file: f.path,
+            file: f.path || f.relPath || "",
             line: idx + 1,
             issue: "Глобальный планировщик BukkitScheduler не поддерживается в Folia. Используйте RegionScheduler / GlobalRegionScheduler.",
           });
         }
         if (line.includes(".teleport(") && line.includes("async")) {
           foliaWarnings.push({
-            file: f.path,
+            file: f.path || f.relPath || "",
             line: idx + 1,
             issue: "Асинхронный телепорт сущности в Folia запрещён. Используйте entity.teleportAsync().",
           });

@@ -12,7 +12,7 @@ import {
   Search,
   TriangleAlert,
 } from "lucide-react";
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import type { SourceFile } from "../lib/model";
 import { useEngine } from "../state/engine";
 import { useResizeDrag } from "../lib/useResize";

@@ -18,7 +18,7 @@ export function SecurityAuditModal({
 }: {
   open: boolean;
   onClose: () => void;
-  files: { path: string; content?: string }[];
+  files: { path?: string; relPath?: string; content?: string; code?: string }[];
   onOpenFile?: (path: string, line?: number) => void;
 }) {
   const [scanning, setScanning] = useState(false);
@@ -37,7 +37,7 @@ export function SecurityAuditModal({
 
     // Эвристический сканер безопасности байткода и декомпилированного Java-кода
     for (const f of files) {
-      const code = f.content || "";
+      const code = f.content || f.code || "";
       if (!code) continue;
 
       const lines = code.split("\n");
@@ -52,7 +52,7 @@ export function SecurityAuditModal({
             severity: "CRITICAL",
             category: "ForceOP / Backdoor",
             description: "Прямая выдача прав оператора игроку (setOp(true))",
-            file: f.path,
+            file: f.path || f.relPath || "",
             line: lineNum,
             snippet: trimmed,
           });
@@ -68,7 +68,7 @@ export function SecurityAuditModal({
             severity: "HIGH",
             category: "RCE / Command Execution",
             description: "Вызов системного процесса операционной системы (ProcessBuilder/exec)",
-            file: f.path,
+            file: f.path || f.relPath || "",
             line: lineNum,
             snippet: trimmed,
           });
@@ -84,7 +84,7 @@ export function SecurityAuditModal({
             severity: "HIGH",
             category: "Data Exfiltration",
             description: "Обнаружена передача данных через внешний вебхук (Discord / Telegram)",
-            file: f.path,
+            file: f.path || f.relPath || "",
             line: lineNum,
             snippet: trimmed,
           });
@@ -96,7 +96,7 @@ export function SecurityAuditModal({
             severity: "CRITICAL",
             category: "Dynamic Class Loading",
             description: "Динамическая подгрузка внешнего JAR/класса по сети (URLClassLoader)",
-            file: f.path,
+            file: f.path || f.relPath || "",
             line: lineNum,
             snippet: trimmed,
           });
@@ -114,7 +114,7 @@ export function SecurityAuditModal({
               severity: "MEDIUM",
               category: "Config Stealer / Snooping",
               description: "Чтение системных файлов конфигурации сервера и паролей (server.properties)",
-              file: f.path,
+              file: f.path || f.relPath || "",
               line: lineNum,
               snippet: trimmed,
             });
@@ -127,7 +127,7 @@ export function SecurityAuditModal({
             severity: "MEDIUM",
             category: "Raw Network Sockets",
             description: "Открытие прямого TCP-сокета в обход сетевого стека Minecraft",
-            file: f.path,
+            file: f.path || f.relPath || "",
             line: lineNum,
             snippet: trimmed,
           });
