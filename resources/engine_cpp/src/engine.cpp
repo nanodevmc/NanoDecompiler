@@ -272,8 +272,8 @@ std::vector<StmtPtr> strip_decl_to_assign(const std::vector<StmtPtr>& lst, const
         if (!st) continue;
         if (st->kind == StmtKind::LocalDecl && names.count(static_cast<LocalDecl*>(st.get())->name)) {
             auto* ld = static_cast<LocalDecl*>(st.get());
-            if (!types.count(ld->name) || types[ld->name].empty() || types[ld->name] == "Object") {
-                if (!ld->type.empty()) types[ld->name] = ld->type;
+            if (!types.count(ld->name) || types[ld->name].empty() || types[ld->name] == "Object" || types[ld->name] == "java.lang.Object") {
+                if (!ld->type.empty() && ld->type != "Object" && ld->type != "java.lang.Object") types[ld->name] = ld->type;
             }
             if (ld->init) {
                 out.push_back(std::make_shared<ExprStmtNode>(
@@ -818,24 +818,52 @@ bool uses_name_in_expr(const ExprPtr& e, const std::string& name) {
 }
 
 std::vector<StmtPtr> eliminate_dead_locals(const std::vector<StmtPtr>& stmts) {
+    std::vector<StmtPtr> pruned = prune_dead_synth_locals(stmts);
     std::vector<StmtPtr> out;
-    for (size_t i = 0; i < stmts.size(); ++i) {
-        if (stmts[i]->kind == StmtKind::LocalDecl) {
-            auto* ld = static_cast<LocalDecl*>(stmts[i].get());
-            // Если init - чистое выражение (const/literal) без побочных эффектов,
-            // и имя НЕ используется нигде дальше - пропускаем объявление
+    for (size_t i = 0; i < pruned.size(); ++i) {
+        auto s = pruned[i];
+        if (!s) continue;
+        if (s->kind == StmtKind::IfStmt) {
+            auto* if_st = static_cast<IfStmt*>(s.get());
+            if_st->then_body = eliminate_dead_locals(if_st->then_body);
+            if (if_st->else_body) *if_st->else_body = eliminate_dead_locals(*if_st->else_body);
+        } else if (s->kind == StmtKind::WhileStmt) {
+            auto* w = static_cast<WhileStmt*>(s.get());
+            w->body = eliminate_dead_locals(w->body);
+        } else if (s->kind == StmtKind::DoWhileStmt) {
+            auto* dw = static_cast<DoWhileStmt*>(s.get());
+            dw->body = eliminate_dead_locals(dw->body);
+        } else if (s->kind == StmtKind::ForStmt) {
+            auto* f = static_cast<ForStmt*>(s.get());
+            f->body = eliminate_dead_locals(f->body);
+        } else if (s->kind == StmtKind::BlockStmt) {
+            auto* b = static_cast<BlockStmt*>(s.get());
+            b->stmts = eliminate_dead_locals(b->stmts);
+        } else if (s->kind == StmtKind::SwitchStmt) {
+            auto* sw = static_cast<SwitchStmt*>(s.get());
+            for (auto& c : sw->cases) c.body = eliminate_dead_locals(c.body);
+        } else if (s->kind == StmtKind::TryStmt) {
+            auto* t = static_cast<TryStmt*>(s.get());
+            t->body = eliminate_dead_locals(t->body);
+            for (auto& c : t->catches) c.body = eliminate_dead_locals(c.body);
+            if (t->finally_body) *t->finally_body = eliminate_dead_locals(*t->finally_body);
+        } else if (s->kind == StmtKind::SyncStmt) {
+            auto* sy = static_cast<SyncStmt*>(s.get());
+            sy->body = eliminate_dead_locals(sy->body);
+        } else if (s->kind == StmtKind::LocalDecl) {
+            auto* ld = static_cast<LocalDecl*>(s.get());
             bool init_pure = !ld->init || ld->init->kind == ExprKind::Const ||
                              ld->init->kind == ExprKind::NewArray ||
                              (ld->init->kind == ExprKind::UnOp && static_cast<UnOp*>(ld->init.get())->expr->kind == ExprKind::Const);
-            if (init_pure || ld->name.rfind("__obj", 0) == 0) {
-                if (!uses_name_in_stmts(stmts, ld->name, i + 1)) {
-                    continue;  // мёртвый код (включая временные бандлы параметров) - пропускаем
+            if (init_pure || ld->name.rfind("__obj", 0) == 0 || is_synth_temp(ld->name)) {
+                if (!uses_name_in_stmts(pruned, ld->name, i + 1)) {
+                    continue;
                 }
             }
         }
-        out.push_back(stmts[i]);
+        out.push_back(s);
     }
-    return out;
+    return prune_dead_synth_locals(out);
 }
 
 // ---------------- _collapse_stringbuilder ----------------
@@ -1286,12 +1314,50 @@ std::set<std::string> collect_all_escaping_names(const std::vector<StmtPtr>& lst
     return escaping;
 }
 
+
+static void harvest_local_decl_types(const std::vector<StmtPtr>& lst, std::map<std::string, std::string>& types) {
+    for (const auto& st : lst) {
+        if (!st) continue;
+        if (st->kind == StmtKind::LocalDecl) {
+            auto* ld = static_cast<LocalDecl*>(st.get());
+            if (!ld->type.empty() && ld->type != "Object" && ld->type != "java.lang.Object") {
+                types[ld->name] = ld->type;
+            }
+        } else if (st->kind == StmtKind::IfStmt) {
+            auto* i = static_cast<IfStmt*>(st.get());
+            harvest_local_decl_types(i->then_body, types);
+            if (i->else_body.has_value()) harvest_local_decl_types(*i->else_body, types);
+        } else if (st->kind == StmtKind::WhileStmt) {
+            harvest_local_decl_types(static_cast<WhileStmt*>(st.get())->body, types);
+        } else if (st->kind == StmtKind::DoWhileStmt) {
+            harvest_local_decl_types(static_cast<DoWhileStmt*>(st.get())->body, types);
+        } else if (st->kind == StmtKind::ForStmt) {
+            auto* f = static_cast<ForStmt*>(st.get());
+            harvest_local_decl_types(f->body, types);
+        } else if (st->kind == StmtKind::BlockStmt) {
+            harvest_local_decl_types(static_cast<BlockStmt*>(st.get())->stmts, types);
+        } else if (st->kind == StmtKind::TryStmt) {
+            auto* t = static_cast<TryStmt*>(st.get());
+            harvest_local_decl_types(t->body, types);
+            for (auto& c : t->catches) harvest_local_decl_types(c.body, types);
+            if (t->finally_body.has_value()) harvest_local_decl_types(*t->finally_body, types);
+        } else if (st->kind == StmtKind::SwitchStmt) {
+            for (auto& c : static_cast<SwitchStmt*>(st.get())->cases) harvest_local_decl_types(c.body, types);
+        } else if (st->kind == StmtKind::SyncStmt) {
+            harvest_local_decl_types(static_cast<SyncStmt*>(st.get())->body, types);
+        }
+    }
+}
+
 std::vector<StmtPtr> hoist_all_escaping_to_root(std::vector<StmtPtr> stmts, MethodCtx& ctx) {
     auto escaping = collect_all_escaping_names(stmts);
     if (escaping.empty()) return stmts;
     std::map<std::string, std::string> types;
+    harvest_local_decl_types(stmts, types);
     for (auto& [slot, info] : ctx.locals) {
-        if (!info.name.empty() && !info.type.empty()) types[info.name] = info.type;
+        if (!info.name.empty() && !info.type.empty() && (!types.count(info.name) || types[info.name] == "Object" || types[info.name] == "java.lang.Object")) {
+            types[info.name] = info.type;
+        }
     }
     for (auto& [name, typ] : ctx.crossing_temp_types) {
         if (!name.empty() && !typ.empty()) types[name] = typ;
@@ -3183,8 +3249,11 @@ MethodDecompileResult decompile_method_body(const ClassFile& cf, const Method& m
             auto all_escaping = collect_all_escaping_names(stmts);
             if (!all_escaping.empty()) {
                 std::map<std::string, std::string> types;
+                harvest_local_decl_types(stmts, types);
                 for (auto& [slot, info] : ctx.locals) {
-                    if (!info.name.empty() && !info.type.empty()) types[info.name] = info.type;
+                    if (!info.name.empty() && !info.type.empty() && (!types.count(info.name) || types[info.name] == "Object" || types[info.name] == "java.lang.Object")) {
+                        types[info.name] = info.type;
+                    }
                 }
                 for (auto& [name, typ] : ctx.crossing_temp_types) {
                     if (!name.empty() && !typ.empty()) types[name] = typ;

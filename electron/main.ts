@@ -384,11 +384,18 @@ function createWindow() {
     // - кастомные кнопки внизу теперь единственные и реально подключены
     // (см. window:minimize/maximize/close ниже).
     frame: false,
+    show: false,
     icon: iconPath(),
     webPreferences: secureWebPreferences(),
   });
 
   hardenWindow(mainWindow);
+
+  mainWindow.once("ready-to-show", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+    }
+  });
 
   if (isDev && process.env.VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
@@ -412,13 +419,22 @@ function createWindow() {
 
   app.on("child-process-gone", (_event: any, details: any) => {
     console.error("[NanoDecompiler] Child process gone:", details?.type, details?.reason);
+    if (details?.type === "GPU" && mainWindow && !mainWindow.isDestroyed()) {
+      console.warn("[NanoDecompiler] GPU context lost, reloading webContents to recover...");
+      mainWindow.webContents.reload();
+    }
   });
 }
 
-// Windows 11 DWM и Frameless Electron оптимизации:
-// Предотвращаем падение GPU-процесса и отключение поверхности DWM (черный экран)
-app.commandLine.appendSwitch("disable-gpu-process-crash-limit");
+// Windows 11 DWM и Frameless Electron оптимизации стабильности графики:
+// 1. Отключаем GPU watchdog, чтобы Chromium не убивал GPU-процесс при 100% нагрузке CPU во время декомпиляции
+app.commandLine.appendSwitch("disable-gpu-watchdog");
+// 2. Отключаем расчет нативной окклюзии окон (частая причина черного экрана при скрытии/перекрытии окон в Win 11)
 app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
+// 3. Поддержка безопасного режима без аппаратного ускорения при запуске с флагом --disable-gpu или --safe-mode
+if (process.argv.includes("--disable-gpu") || process.argv.includes("--safe-mode")) {
+  app.disableHardwareAcceleration();
+}
 
 app.whenReady().then(() => {
   // Рендереру не нужны камера/микрофон/геолокация/уведомления и т.п. - отказываем во всём.

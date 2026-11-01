@@ -912,9 +912,10 @@ ExprPtr build_lambda(const ClassFile& cf, const std::vector<uint16_t>& bsm_args,
     std::string impl_owner_disp = ctx.owner_display(impl_owner);
     std::string impl_mname = ctx.method_name(impl_owner, impl_name, impl_desc);
     std::optional<std::vector<std::string>> impl_params;
+    std::string impl_ret_type = "Object";
     try {
         auto [ir, ip] = method_descriptor_to_java(impl_desc);
-        (void)ir;
+        impl_ret_type = ctx.map_type(ir);
         impl_params = ip;
     } catch (...) {
         impl_params = std::nullopt;
@@ -937,7 +938,7 @@ ExprPtr build_lambda(const ClassFile& cf, const std::vector<uint16_t>& bsm_args,
     } else if (MH_KIND_STATIC.count(kind)) {
         std::vector<ExprPtr> args = captured;
         args.insert(args.end(), lam_params.begin(), lam_params.end());
-        call = std::make_shared<MethodCall>(nullptr, impl_mname, coerce_seq(args, impl_params), "Object", true,
+        call = std::make_shared<MethodCall>(nullptr, impl_mname, coerce_seq(args, impl_params), impl_ret_type, true,
                                              std::optional<std::string>(impl_owner_disp));
         if (captured.empty() && impl_name.rfind("lambda$", 0) != 0) is_ref = true;
     } else if (MH_KIND_VIRTUAL.count(kind) || MH_KIND_SPECIAL.count(kind)) {
@@ -962,7 +963,7 @@ ExprPtr build_lambda(const ClassFile& cf, const std::vector<uint16_t>& bsm_args,
             impl_owner_disp != "Object" && impl_owner_disp != "java.lang.Object") {
             recv = std::make_shared<Cast>(impl_owner_disp, recv);
         }
-        call = std::make_shared<MethodCall>(recv, impl_mname, coerce_seq(rest, impl_params), "Object", false,
+        call = std::make_shared<MethodCall>(recv, impl_mname, coerce_seq(rest, impl_params), impl_ret_type, false,
                                              std::optional<std::string>(impl_owner_disp));
     } else {
         call = std::make_shared<MethodCall>(nullptr, impl_mname, captured, "Object", true);

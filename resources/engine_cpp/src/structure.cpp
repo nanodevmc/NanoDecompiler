@@ -1253,11 +1253,8 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_try(int64_t pc, con
 
 // ==================== loop beautification / постобработка ====================
 
-namespace {
-
 bool is_synth_temp(const std::string& name) {
-    if (name.rfind("__stk", 0) == 0 || name.rfind("__temp", 0) == 0 ||
-        name.rfind("__sb", 0) == 0 || name.rfind("__cross", 0) == 0) return true;
+    if (name.rfind("__", 0) == 0) return true;
     if (name.rfind("temp", 0) == 0 && name.size() > 4) {
         for (size_t i = 4; i < name.size(); ++i) {
             if (!std::isdigit(static_cast<unsigned char>(name[i]))) return false;
@@ -1266,6 +1263,8 @@ bool is_synth_temp(const std::string& name) {
     }
     return false;
 }
+
+namespace {
 
 std::optional<std::pair<ExprPtr, ExprPtr>> as_assign(const StmtPtr& stmt) {
     if (!stmt) return std::nullopt;
@@ -4186,6 +4185,13 @@ void rename_ident_in_expr(ExprPtr& e, const std::string& old_name, const std::st
         if (na->initializer.has_value()) {
             for (auto& item : *na->initializer) rename_ident_in_expr(item, old_name, new_name);
         }
+    } else if (e->kind == ExprKind::FieldAccess) {
+        auto* fa = static_cast<FieldAccess*>(e.get());
+        rename_ident_in_expr(fa->target, old_name, new_name);
+    } else if (e->kind == ExprKind::Lambda) {
+        auto* l = static_cast<Lambda*>(e.get());
+        for (auto& p : l->params) rename_ident_in_expr(p, old_name, new_name);
+        rename_ident_in_expr(l->body_method_ref, old_name, new_name);
     }
 }
 
@@ -4254,6 +4260,9 @@ std::vector<StmtPtr> smart_rename_locals(std::vector<StmtPtr> stmts) {
                 all_names.insert(ld->name);
                 bool is_generic = (ld->name.rfind("var", 0) == 0 || ld->name.rfind("loc", 0) == 0 ||
                                    ld->name.rfind("obj", 0) == 0 || (ld->name.size() == 1 && std::islower(static_cast<unsigned char>(ld->name[0]))));
+                if (!is_generic && ld->name.rfind("n", 0) == 0 && ld->name.size() > 1 && std::isdigit(static_cast<unsigned char>(ld->name[1]))) {
+                    is_generic = true;
+                }
                 if (is_generic) {
                     candidates.push_back({ld->name, ld->type});
                 }
@@ -4297,7 +4306,18 @@ std::vector<StmtPtr> smart_rename_locals(std::vector<StmtPtr> stmts) {
             } else if (s->kind == StmtKind::DoWhileStmt) {
                 scan(static_cast<DoWhileStmt*>(s.get())->body);
             } else if (s->kind == StmtKind::ForStmt) {
-                scan(static_cast<ForStmt*>(s.get())->body);
+                auto* f = static_cast<ForStmt*>(s.get());
+                if (f->init && f->init->kind == ExprKind::Assign) {
+                    auto* a = static_cast<Assign*>(f->init.get());
+                    if (a->target && a->target->kind == ExprKind::Local) {
+                        auto* loc = static_cast<Local*>(a->target.get());
+                        all_names.insert(loc->name);
+                        if (loc->name.rfind("var", 0) == 0 || loc->name.rfind("n", 0) == 0) {
+                            candidates.push_back({loc->name, "@HINT:i"});
+                        }
+                    }
+                }
+                scan(f->body);
             } else if (s->kind == StmtKind::BlockStmt) {
                 scan(static_cast<BlockStmt*>(s.get())->stmts);
             } else if (s->kind == StmtKind::TryStmt) {
@@ -4338,6 +4358,8 @@ std::vector<StmtPtr> smart_rename_locals(std::vector<StmtPtr> stmts) {
             } else if (simple_t.size() >= 2 && std::isupper(static_cast<unsigned char>(simple_t[0]))) {
                 base_n = simple_t;
                 base_n[0] = std::tolower(static_cast<unsigned char>(base_n[0]));
+            } else if (typ == "char") {
+                base_n = "c";
             } else if (typ == "boolean") {
                 base_n = "flag";
             } else if (typ == "int" || typ == "short" || typ == "byte") {
@@ -4806,6 +4828,138 @@ std::vector<StmtPtr> inline_single_use_synth_temps(std::vector<StmtPtr> stmts) {
     return stmts;
 }
 
+
+bool is_local_read_expr(const ExprPtr& e, const std::string& name);
+bool is_local_read_stmt(const StmtPtr& s, const std::string& name);
+
+bool is_local_read_expr(const ExprPtr& e, const std::string& name) {
+    if (!e) return false;
+    if (e->kind == ExprKind::Local) {
+        return static_cast<const Local*>(e.get())->name == name;
+    }
+    if (e->kind == ExprKind::Assign) {
+        auto* a = static_cast<const Assign*>(e.get());
+        if (a->target) {
+            if (a->target->kind == ExprKind::Local && static_cast<const Local*>(a->target.get())->name == name) {
+                // target of direct assign is a write
+            } else if (a->target->kind == ExprKind::ArrayAccess) {
+                auto* aa = static_cast<const ArrayAccess*>(a->target.get());
+                if (is_local_read_expr(aa->index, name)) return true;
+                if (aa->array && aa->array->kind == ExprKind::Local && static_cast<const Local*>(aa->array.get())->name == name) {
+                    // target array element set: write to name's element
+                } else {
+                    if (is_local_read_expr(aa->array, name)) return true;
+                }
+            } else {
+                if (is_local_read_expr(a->target, name)) return true;
+            }
+        }
+        return is_local_read_expr(a->value, name);
+    }
+    switch (e->kind) {
+        case ExprKind::FieldAccess:
+            return is_local_read_expr(static_cast<const FieldAccess*>(e.get())->target, name);
+        case ExprKind::ArrayAccess: {
+            auto* a = static_cast<const ArrayAccess*>(e.get());
+            return is_local_read_expr(a->array, name) || is_local_read_expr(a->index, name);
+        }
+        case ExprKind::MethodCall: {
+            auto* m = static_cast<const MethodCall*>(e.get());
+            if (is_local_read_expr(m->target, name)) return true;
+            for (auto& a : m->args) if (is_local_read_expr(a, name)) return true;
+            return false;
+        }
+        case ExprKind::NewObject:
+            for (auto& a : static_cast<const NewObject*>(e.get())->args) if (is_local_read_expr(a, name)) return true;
+            return false;
+        case ExprKind::NewArray: {
+            auto* n = static_cast<const NewArray*>(e.get());
+            for (auto& d : n->dims) if (is_local_read_expr(d, name)) return true;
+            if (n->initializer.has_value()) {
+                for (auto& item : *n->initializer) if (is_local_read_expr(item, name)) return true;
+            }
+            return false;
+        }
+        case ExprKind::Cast:
+            return is_local_read_expr(static_cast<const Cast*>(e.get())->expr, name);
+        case ExprKind::InstanceOf:
+            return is_local_read_expr(static_cast<const InstanceOf*>(e.get())->expr, name);
+        case ExprKind::BinOp: {
+            auto* b = static_cast<const BinOp*>(e.get());
+            return is_local_read_expr(b->left, name) || is_local_read_expr(b->right, name);
+        }
+        case ExprKind::UnOp:
+            return is_local_read_expr(static_cast<const UnOp*>(e.get())->expr, name);
+        case ExprKind::Ternary: {
+            auto* t = static_cast<const Ternary*>(e.get());
+            return is_local_read_expr(t->cond, name) || is_local_read_expr(t->tval, name) ||
+                   is_local_read_expr(t->fval, name);
+        }
+        case ExprKind::Lambda: {
+            auto* l = static_cast<const Lambda*>(e.get());
+            for (auto& p : l->params) if (is_local_read_expr(p, name)) return true;
+            return is_local_read_expr(l->body_method_ref, name);
+        }
+        default:
+            return false;
+    }
+}
+
+bool is_local_read_stmt(const StmtPtr& s, const std::string& name) {
+    if (!s) return false;
+    if (s->kind == StmtKind::ExprStmt) {
+        return is_local_read_expr(static_cast<const ExprStmtNode*>(s.get())->expr, name);
+    } else if (s->kind == StmtKind::ThrowStmt) {
+        return is_local_read_expr(static_cast<const ThrowStmt*>(s.get())->expr, name);
+    } else if (s->kind == StmtKind::SyncStmt) {
+        return is_local_read_expr(static_cast<const SyncStmt*>(s.get())->expr, name);
+    } else if (s->kind == StmtKind::ReturnStmt) {
+        return is_local_read_expr(static_cast<const ReturnStmt*>(s.get())->expr, name);
+    } else if (s->kind == StmtKind::IfStmt) {
+        auto* i = static_cast<const IfStmt*>(s.get());
+        if (is_local_read_expr(i->cond, name)) return true;
+        for (auto& sub : i->then_body) if (is_local_read_stmt(sub, name)) return true;
+        if (i->else_body) for (auto& sub : *i->else_body) if (is_local_read_stmt(sub, name)) return true;
+        return false;
+    } else if (s->kind == StmtKind::WhileStmt) {
+        auto* w = static_cast<const WhileStmt*>(s.get());
+        if (is_local_read_expr(w->cond, name)) return true;
+        for (auto& sub : w->body) if (is_local_read_stmt(sub, name)) return true;
+        return false;
+    } else if (s->kind == StmtKind::DoWhileStmt) {
+        auto* dw = static_cast<const DoWhileStmt*>(s.get());
+        if (is_local_read_expr(dw->cond, name)) return true;
+        for (auto& sub : dw->body) if (is_local_read_stmt(sub, name)) return true;
+        return false;
+    } else if (s->kind == StmtKind::ForStmt) {
+        auto* f = static_cast<const ForStmt*>(s.get());
+        if (f->init && is_local_read_expr(f->init, name)) return true;
+        if (is_local_read_expr(f->cond, name)) return true;
+        if (f->update && is_local_read_stmt(f->update, name)) return true;
+        for (auto& sub : f->body) if (is_local_read_stmt(sub, name)) return true;
+        return false;
+    } else if (s->kind == StmtKind::LocalDecl) {
+        return is_local_read_expr(static_cast<const LocalDecl*>(s.get())->init, name);
+    } else if (s->kind == StmtKind::SwitchStmt) {
+        auto* sw = static_cast<const SwitchStmt*>(s.get());
+        if (is_local_read_expr(sw->selector, name)) return true;
+        for (auto& c : sw->cases) {
+            for (auto& sub : c.body) if (is_local_read_stmt(sub, name)) return true;
+        }
+        return false;
+    } else if (s->kind == StmtKind::TryStmt) {
+        auto* t = static_cast<const TryStmt*>(s.get());
+        for (auto& sub : t->body) if (is_local_read_stmt(sub, name)) return true;
+        for (auto& c : t->catches) for (auto& sub : c.body) if (is_local_read_stmt(sub, name)) return true;
+        if (t->finally_body) for (auto& sub : *t->finally_body) if (is_local_read_stmt(sub, name)) return true;
+        return false;
+    } else if (s->kind == StmtKind::BlockStmt) {
+        for (auto& sub : static_cast<const BlockStmt*>(s.get())->stmts) if (is_local_read_stmt(sub, name)) return true;
+        return false;
+    }
+    return false;
+}
+
 std::vector<StmtPtr> prune_dead_synth_locals(std::vector<StmtPtr> stmts) {
     for (auto& s : stmts) {
         if (!s) continue;
@@ -4833,6 +4987,9 @@ std::vector<StmtPtr> prune_dead_synth_locals(std::vector<StmtPtr> stmts) {
         } else if (s->kind == StmtKind::SyncStmt) {
             auto* sy = static_cast<SyncStmt*>(s.get());
             sy->body = prune_dead_synth_locals(sy->body);
+        } else if (s->kind == StmtKind::BlockStmt) {
+            auto* b = static_cast<BlockStmt*>(s.get());
+            b->stmts = prune_dead_synth_locals(b->stmts);
         }
     }
     size_t n = stmts.size();
@@ -4840,16 +4997,40 @@ std::vector<StmtPtr> prune_dead_synth_locals(std::vector<StmtPtr> stmts) {
         if (!stmts[i] || stmts[i]->kind != StmtKind::LocalDecl) continue;
         auto* ld = static_cast<LocalDecl*>(stmts[i].get());
         if (is_synth_temp(ld->name)) {
-            bool used = false;
+            bool is_read = false;
             for (size_t j = 0; j < n; ++j) {
                 if (i == j || !stmts[j]) continue;
-                if (contains_local_ref_stmt(stmts[j], ld->name)) {
-                    used = true;
+                if (is_local_read_stmt(stmts[j], ld->name)) {
+                    is_read = true;
                     break;
                 }
             }
-            if (!used && (!ld->init || !has_side_effect(ld->init))) {
-                stmts[i] = nullptr;
+            if (!is_read) {
+                // The synth local is write-only or completely unused!
+                // 1. Prune the LocalDecl itself if init has no unremovable side effects
+                if (!ld->init || !has_side_effect(ld->init) || ld->init->kind == ExprKind::NewArray || ld->init->kind == ExprKind::NewObject) {
+                    stmts[i] = nullptr;
+                    // 2. Prune all dead writes/array-sets to this synth local
+                    for (size_t j = 0; j < n; ++j) {
+                        if (!stmts[j] || stmts[j]->kind != StmtKind::ExprStmt) continue;
+                        auto* es = static_cast<ExprStmtNode*>(stmts[j].get());
+                        if (es->expr && es->expr->kind == ExprKind::Assign) {
+                            auto* a = static_cast<Assign*>(es->expr.get());
+                            bool is_write_to_ld = false;
+                            if (a->target && a->target->kind == ExprKind::Local && static_cast<Local*>(a->target.get())->name == ld->name) {
+                                is_write_to_ld = true;
+                            } else if (a->target && a->target->kind == ExprKind::ArrayAccess) {
+                                auto* aa = static_cast<ArrayAccess*>(a->target.get());
+                                if (aa->array && aa->array->kind == ExprKind::Local && static_cast<Local*>(aa->array.get())->name == ld->name) {
+                                    is_write_to_ld = true;
+                                }
+                            }
+                            if (is_write_to_ld) {
+                                stmts[j] = nullptr;
+                            }
+                        }
+                    }
+                }
             }
         }
     }

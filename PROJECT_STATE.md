@@ -9,22 +9,22 @@
 
 ## Ключевые достижения v2.0.5:
 1. **Ликвидация «Черного экрана» в Electron на Windows 11**:
-   - Устранён нелегальный условный вызов хука `useEngine()` в `CodeView.tsx:205`, вызывавший сбой инвариантов React и размонтирование корня.
-   - Внедрён защитный `ErrorBoundary.tsx` в стиле Liquid Glass, предотвращающий падение приложения.
-   - Добавлена null-безопасность для `file.pkg.split`, `compareFiles`, `sortTreeNodes`, `localeCompare` в `FileTree.tsx`.
-   - В `electron/main.ts` добавлены флаги `disable-gpu-process-crash-limit`, `disable-features: CalculateNativeWinOcclusion` (устранение бага DWM окклюзии окон без рамок на Win 11) и перехват `render-process-gone`.
-2. **Ликвидация дублирования CFG и фиктивных `temp3 = 1;` (`structure.cpp`)**:
-   - В `build_if_inner` убран ошибочный override точки слияния `merge = forward`, сбивавший непосредственный пост-доминатор.
-   - Устранено 3-кратное дублирование кода в `lambda_onPlaceBlock_1` (сокращение с 69 до 28 строк чистого кода).
-3. **Умное именование локальных переменных (`structure.cpp`, `emit.cpp`)**:
-   - Ликвидированы сырые `var2`, `var3`, `var4`, `var6`, `var7`, `var9`, `var10`, `var11`.
-   - Присвоены семантические имена: `query`, `associable`, `flags`, `list`, `isFire`, `isLava`, `flag`, `regions`.
-   - Автоматическая свёртка `if (isFire != 0)` в `if (isFire)` и десахаризация булевых операторов.
-4. **Мгновенный старт на Android без 15-секундного зависания**:
-   - В `FastScanEngine.kt` энтропия Шеннона ограничена выборкой 3 классов вместо 50 (устранён перегрев CPU).
-   - В `MainActivity.kt` внедрено буферизованное копирование по 64 КБ с мгновенной отрисовкой статуса.
+   - Добавлен флаг `disable-gpu-watchdog`, предотвращающий убийство GPU-процесса Chromium при 100% нагрузке на процессор во время декомпиляции.
+   - Устранён сбой DWM поверхности swapchain: окно создается скрытым (`show: false`) и плавно отображается по событию `ready-to-show`.
+   - Внедрена автоматическая перезагрузка контекста при аварии GPU (`child-process-gone: details.type === 'GPU'`).
+   - Добавлена поддержка CLI-флагов аварийного запуска без аппаратного ускорения (`--disable-gpu`, `--safe-mode`).
+2. **Синхронизация переменных в замыканиях и лямбдах**:
+   - Полная синхронизация слотов и имен захваченных параметров (`binding`, `actor` вместо `var5`/`var6`).
+   - Устранены расхождения типов и деградация в `(Object)`.
+3. **Человекоподобный чистый код в `emit.cpp` и `structure.cpp`**:
+   - Символьные литералы печатаются как `'\\'`, `'\"'`, `'\n'` вместо сырых кодов ASCII 92, 34, 10.
+   - Булевы инверсии компилируются в `tgt = !tgt` вместо `tgt = tgt == 0`.
+   - Массивы в `toArray` сворачиваются в ссылку на конструктор `String[]::new`.
+4. **Рекурсивная зачистка мёртвых синтетических массивов (`__obj1`) и переменных (`temp4`)**:
+   - `eliminate_dead_locals` сделан рекурсивным по всем подблокам (`IfStmt`, `WhileStmt`, `BlockStmt`, `TryStmt`).
+   - Внедрена связка с `prune_dead_synth_locals`: неиспользуемые синтетические массивы и мертвые записи в них (`__obj1[0] = ...`) удаляются без остатка.
 5. **Релизные артефакты v2.0.5**:
-   - Мобильный APK: `NanoDecompiler-Mobile-v2.0.5.apk` (4.03 МБ, релизная v2/v3 подпись) -> `https://paste.c-net.org/DaresIntercom`
+   - Мобильный APK: `NanoDecompiler-Mobile-v2.0.5.apk` (4.04 МБ, релизная v2/v3 подпись) -> `https://paste.c-net.org/OmahaOxygen`
    - Копия на Рабочем столе: `C:\Users\nanodev\Desktop\NanoDecompiler-Mobile-v2.0.5.apk`
    - Нативный Desktop CLI: `resources/engine_cpp/build/NanoDecompilerCLI.exe` (4.05 МБ)
    - Нативный Android CLI: `mobile-android/assets/bin/NanoDecompilerCLI` (2.58 МБ)

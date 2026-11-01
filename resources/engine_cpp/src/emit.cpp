@@ -71,6 +71,42 @@ void set_shadow_context(const std::vector<std::string>& local_names) {
 }
 void clear_shadow_context() { g_shadowed_names.clear(); }
 
+
+static std::optional<std::string> format_char_const(const std::string& val) {
+    try {
+        long long n = std::stoll(val);
+        if (n >= 0 && n <= 65535) {
+            if (n == 92) return std::string("'\\\\'");
+            if (n == 34) return std::string("'\\\"'");
+            if (n == 39) return std::string("'\\\''");
+            if (n == 10) return std::string("'\\n'");
+            if (n == 13) return std::string("'\\r'");
+            if (n == 9)  return std::string("'\\t'");
+            if (n >= 32 && n <= 126) {
+                std::string s = "'";
+                s += static_cast<char>(n);
+                s += "'";
+                return s;
+            }
+        }
+    } catch (...) {}
+    return std::nullopt;
+}
+
+static bool is_char_expr(const ExprPtr& e) {
+    if (!e) return false;
+    if (e->type == "char") return true;
+    if (e->kind == ExprKind::Local) {
+        const auto* loc = static_cast<const Local*>(e.get());
+        if (loc->type == "char" || loc->name == "c" || loc->name == "ch") return true;
+        if (loc->name.rfind("c", 0) == 0 && loc->name.size() <= 3 && (loc->name.size() == 1 || std::isdigit(static_cast<unsigned char>(loc->name[1])))) return true;
+    } else if (e->kind == ExprKind::MethodCall) {
+        const auto* mc = static_cast<const MethodCall*>(e.get());
+        if (mc->name == "charAt") return true;
+    }
+    return false;
+}
+
 std::string emit_expr(const ExprPtr& e) {
     if (!e) return "/* ? NoneType */";
     static thread_local int s_expr_depth = 0;
@@ -190,6 +226,12 @@ std::string emit_expr(const ExprPtr& e) {
         }
         case ExprKind::Cast: {
             const auto* c = static_cast<const Cast*>(e.get());
+            if (c->type == "Object" || c->type == "java.lang.Object") {
+                return paren(c->expr, c);
+            }
+            if (c->expr && c->expr->type == c->type) {
+                return paren(c->expr, c);
+            }
             return "(" + simple(c->type) + ") " + paren_at(c->expr, 85);
         }
         case ExprKind::InstanceOf: {
@@ -216,6 +258,13 @@ std::string emit_expr(const ExprPtr& e) {
             }
             std::string left_s = paren(b->left, b, 'l');
             std::string right_s = paren(b->right, b, 'r');
+            if (is_char_expr(b->left) && b->right && b->right->kind == ExprKind::Const) {
+                auto ch_opt = format_char_const(static_cast<const Const*>(b->right.get())->value);
+                if (ch_opt.has_value()) right_s = *ch_opt;
+            } else if (is_char_expr(b->right) && b->left && b->left->kind == ExprKind::Const) {
+                auto ch_opt = format_char_const(static_cast<const Const*>(b->left.get())->value);
+                if (ch_opt.has_value()) left_s = *ch_opt;
+            }
             if (b->op == "!=" && (right_s == "0" || right_s == "false")) {
                 if (b->left && (b->left->type == "boolean" || b->left->kind == ExprKind::BinOp ||
                     (b->left->kind == ExprKind::Local && (
@@ -260,6 +309,19 @@ std::string emit_expr(const ExprPtr& e) {
         }
         case ExprKind::Assign: {
             const auto* a = static_cast<const Assign*>(e.get());
+            if (a->op == "=" && a->value && a->value->kind == ExprKind::BinOp) {
+                const auto* bo = static_cast<const BinOp*>(a->value.get());
+                if (bo->op == "==" && bo->right && bo->right->kind == ExprKind::Const) {
+                    const auto* rc = static_cast<const Const*>(bo->right.get());
+                    if (rc->value == "0" || rc->value == "false") {
+                        std::string tgt = emit_expr(a->target);
+                        std::string lhs = emit_expr(bo->left);
+                        if (tgt == lhs) {
+                            return tgt + " = !" + tgt;
+                        }
+                    }
+                }
+            }
             return emit_expr(a->target) + " " + a->op + " " + emit_expr(a->value);
         }
         case ExprKind::ClassLiteral:

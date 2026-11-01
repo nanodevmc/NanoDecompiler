@@ -105,4 +105,8 @@ ExprPtr negate(const ExprPtr& cond);
 // тернарник и т.д. - применяется к результату Structurer::build().
 std::vector<StmtPtr> simplify_stmts(const std::vector<StmtPtr>& stmts);
 
+bool is_synth_temp(const std::string& name);
+bool is_local_read_stmt(const StmtPtr& s, const std::string& name);
+std::vector<StmtPtr> prune_dead_synth_locals(std::vector<StmtPtr> stmts);
+
 }  // namespace nd
