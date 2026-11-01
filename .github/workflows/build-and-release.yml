@@ -449,20 +449,24 @@ jobs:
         shell: pwsh
         working-directory: .
         run: |
-          # БАГ-ФИКС: раньше вывод обычного (не --json-output) режима нигде
-          # не сохранялся - при падении ("out_dir не создан") причина
-          # оставалась полностью невидимой ни в логах, ни где-либо ещё.
-          # Печатаем реальный stdout/exit code движка ПЕРЕД throw, чтобы
-          # причина (отказ по размеру файла, битый .jar после чекаута и
-          # т.п.) была видна сразу в логе CI, а не требовала гадания.
+          # Обычный режим — движок пишет прогресс + ##ND_RESULT:{}##, нас интересует exit code и наличие out_dir
           $consoleOut = .\NanoDecompilerClApi.exe test_jars\smoketest_plugin.jar out_check_cli --no-legitimacy-check 2>&1 | Out-String
           Write-Host "=== вывод движка (обычный режим) ==="
           Write-Host $consoleOut
           Write-Host "=== код выхода: $LASTEXITCODE ==="
           if (-not (Test-Path "out_check_cli")) { throw "ClApi: out_dir (обычный режим) не создан - см. вывод движка выше" }
-          $json = .\NanoDecompilerClApi.exe test_jars\smoketest_plugin.jar out_check_cli_json --json-output --no-legitimacy-check | ConvertFrom-Json
+
+          # --json-output: движок выводит ##ND_FILE:*## перед итоговым JSON — берём только строку с {
+          $rawLines = .\NanoDecompilerClApi.exe test_jars\smoketest_plugin.jar out_check_cli_json --json-output --no-legitimacy-check 2>&1
+          $jsonLine = ($rawLines | Where-Object { $_ -match '^\s*\{' }) -join ""
+          if (-not $jsonLine) { throw "ClApi: --json-output не вернул JSON-строку. Вывод: $rawLines" }
+          $json = $jsonLine | ConvertFrom-Json
           if ($json.status -ne "ok") { throw "ClApi: --json-output вернул status=$($json.status), reason=$($json.reason)" }
-          $jsonNeo = .\NanoDecompilerClApi.exe test_jars\NeoBuyer.jar out_check_cli_neobuyer --json-output --no-legitimacy-check | ConvertFrom-Json
+
+          $rawNeo = .\NanoDecompilerClApi.exe test_jars\NeoBuyer.jar out_check_cli_neobuyer --json-output --no-legitimacy-check 2>&1
+          $jsonNeoLine = ($rawNeo | Where-Object { $_ -match '^\s*\{' }) -join ""
+          if (-not $jsonNeoLine) { throw "ClApi: NeoBuyer --json-output не вернул JSON. Вывод: $rawNeo" }
+          $jsonNeo = $jsonNeoLine | ConvertFrom-Json
           if ($jsonNeo.status -ne "ok") { throw "ClApi: NeoBuyer --json-output вернул status=$($jsonNeo.status), reason=$($jsonNeo.reason)" }
 
       - uses: actions/upload-artifact@v4
@@ -835,11 +839,12 @@ jobs:
           java-version: "17"
 
       - name: Настроить Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Установить Android NDK
         run: |
-          echo "y" | sudo sdkmanager --install "ndk;26.1.10909125"
+          SDK_MGR="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          echo "y" | "${SDK_MGR}" --install "ndk;26.1.10909125"
 
       - name: Установить Rust toolchain & Android target
         uses: dtolnay/rust-toolchain@stable
