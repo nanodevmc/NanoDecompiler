@@ -339,13 +339,12 @@ function OtaModulesSection() {
   const [syncAllLoading, setSyncAllLoading] = useState(false);
   const [engineMods, setEngineMods] = useState<EngineMicroModule[]>(ENGINE_MICRO_MODULES);
 
-  // Модули интерфейса и движка
+  // Модули интерфейса и экосистемные OTA-пакеты (.ndota)
   const [modules, setModules] = useState<GuiModuleItem[]>([
-    { id: "mod-editor", name: "mod-editor.js", label: "Редактор и просмотр байткода", version: "2.0.2", localVersion: "2.0.2", status: "up_to_date", size: "34.6 KB" },
-    { id: "mod-plugins", name: "mod-plugins.js", label: "Менеджер и дерево плагинов", version: "2.0.2", localVersion: "2.0.1", status: "update_available", size: "62.6 KB" },
-    { id: "mod-settings", name: "mod-settings.js", label: "Модуль параметров и настроек", version: "2.0.2", localVersion: "2.0.2", status: "up_to_date", size: "34.5 KB" },
-    { id: "mod-filetree", name: "mod-filetree.js", label: "Дерево файлов проекта", version: "2.0.2", localVersion: "2.0.2", status: "up_to_date", size: "9.3 KB" },
-    { id: "mod-jni-engine", name: "mod-jni-engine.wasm", label: "Движок JNI деобфускации (89%+)", version: "2.0.2", localVersion: "-", status: "new", size: "128.4 KB" },
+    { id: "gui_webui", name: "NanoDecompiler-OTA-WebUI-v2.0.7.ndota", label: "WebUI & SPA фронтенд модуль", version: "2.0.7", localVersion: "2.0.7", status: "up_to_date", size: "199.7 KB" },
+    { id: "gui_electron", name: "NanoDecompiler-OTA-Electron-v2.0.7.ndota", label: "Electron Desktop ядро и Preload", version: "2.0.7", localVersion: "2.0.7", status: "up_to_date", size: "289.6 KB" },
+    { id: "gui_android", name: "NanoDecompiler-OTA-Android-v2.0.7.ndota", label: "Android Mobile WebView ассеты", version: "2.0.7", localVersion: "2.0.7", status: "up_to_date", size: "199.7 KB" },
+    { id: "gui_lite", name: "NanoDecompiler-OTA-Lite-v2.0.7.ndota", label: "C# Avalonia Lite XAML темы и иконки", version: "2.0.7", localVersion: "2.0.7", status: "up_to_date", size: "31.0 KB" },
   ]);
 
   const pendingModules = modules.filter(m => m.status !== "up_to_date");
@@ -354,8 +353,11 @@ function OtaModulesSection() {
   const handleDownloadModule = async (modId: string) => {
     setSyncingModule(modId);
     try {
+      const targetMod = modules.find(m => m.id === modId);
+      const fileName = targetMod?.name || `${modId}.ndota`;
+      const url = `https://github.com/nanodevmc/NanoDecompiler/releases/download/v2.0.7/${fileName}`;
       if (window.nano?.otaSyncModule) {
-        await window.nano.otaSyncModule({ name: modId, sha256: "auto", url: `https://github.com/nanodevmc/NanoDecompiler/releases/download/v2.0.5/${modId}` });
+        await window.nano.otaSyncModule({ name: fileName, sha256: "auto", url });
       }
       setTimeout(() => {
         setModules(prev => prev.map(m => m.id === modId ? { ...m, status: "up_to_date", localVersion: m.version } : m));
@@ -370,8 +372,9 @@ function OtaModulesSection() {
     setSyncAllLoading(true);
     try {
       for (const mod of pendingModules) {
+        const url = `https://github.com/nanodevmc/NanoDecompiler/releases/download/v2.0.7/${mod.name}`;
         if (window.nano?.otaSyncModule) {
-          await window.nano.otaSyncModule({ name: mod.id, sha256: "auto", url: `https://github.com/nanodevmc/NanoDecompiler/releases/download/v2.0.5/${mod.id}` });
+          await window.nano.otaSyncModule({ name: mod.name, sha256: "auto", url });
         }
       }
       setTimeout(() => {
@@ -430,7 +433,7 @@ function OtaModulesSection() {
         {allUpToDate ? (
           <p className="text-acid font-medium flex items-center gap-1.5">
             <Check size={13} />
-            Все модули обновлены до последней версии (v2.0.2).
+            Все модули обновлены до последней версии (v2.0.7).
           </p>
         ) : (
           <div className="space-y-1">

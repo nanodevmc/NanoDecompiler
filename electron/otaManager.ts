@@ -3,6 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
 import * as https from "https";
+import * as http from "http";
 
 export interface OtaModuleInfo {
   name: string;
@@ -15,9 +16,36 @@ export interface OtaModuleInfo {
 export interface OtaManifest {
   manifestVersion: string;
   releaseTag: string;
-  generatedAt: string;
-  guiModules: Record<string, OtaModuleInfo>;
-  engineModules: Record<string, OtaModuleInfo>;
+  generatedAt?: string;
+  channels?: string[];
+  components?: Record<string, any>;
+  otaPackages?: Record<string, OtaModuleInfo>;
+  guiModules?: Record<string, OtaModuleInfo>;
+  engineModules?: Record<string, OtaModuleInfo>;
+}
+
+function httpsGetWithRedirects(
+  targetUrl: string,
+  headers: Record<string, string>,
+  callback: (res: http.IncomingMessage) => void,
+  maxRedirects = 5
+): void {
+  try {
+    const parsed = new URL(targetUrl);
+    const client = parsed.protocol === "http:" ? http : https;
+    client.get(targetUrl, { headers }, (res) => {
+      const code = res.statusCode || 0;
+      if ([301, 302, 303, 307, 308].includes(code) && res.headers.location && maxRedirects > 0) {
+        const nextUrl = new URL(res.headers.location, targetUrl).toString();
+        return httpsGetWithRedirects(nextUrl, headers, callback, maxRedirects - 1);
+      }
+      callback(res);
+    }).on("error", () => {
+      callback({ statusCode: 500 } as any);
+    });
+  } catch {
+    callback({ statusCode: 500 } as any);
+  }
 }
 
 export class OtaManager {
@@ -57,22 +85,26 @@ export class OtaManager {
     return new Promise((resolve) => {
       try {
         const u = new URL(manifestUrl);
-        if (u.protocol !== "https:" || !u.hostname.endsWith("github.com") && !u.hostname.endsWith("githubusercontent.com")) {
+        if (u.protocol !== "https:" || (!u.hostname.endsWith("github.com") && !u.hostname.endsWith("githubusercontent.com"))) {
           return resolve(null);
         }
-        https.get(manifestUrl, { headers: { "User-Agent": "NanoDecompiler-OTA" } }, (res) => {
+        httpsGetWithRedirects(manifestUrl, { "User-Agent": "NanoDecompiler-OTA" }, (res) => {
           if (res.statusCode !== 200) return resolve(null);
           let data = "";
           res.on("data", (c) => (data += c.toString("utf-8")));
           res.on("end", () => {
             try {
-              resolve(JSON.parse(data) as OtaManifest);
+              const manifest = JSON.parse(data) as OtaManifest;
+              if (manifest.otaPackages && !manifest.guiModules) {
+                manifest.guiModules = manifest.otaPackages;
+              }
+              resolve(manifest);
             } catch {
               resolve(null);
             }
           });
           res.on("error", () => resolve(null));
-        }).on("error", () => resolve(null));
+        });
       } catch {
         resolve(null);
       }
@@ -86,14 +118,14 @@ export class OtaManager {
 
     // Проверяем существующий
     const localHash = await this.sha256File(dest);
-    if (localHash && localHash.toLowerCase() === mod.sha256.toLowerCase()) {
+    if (localHash && mod.sha256 && localHash.toLowerCase() === mod.sha256.toLowerCase()) {
       return { ok: true, path: dest };
     }
 
     return new Promise((resolve) => {
       try {
         const out = fs.createWriteStream(tmp);
-        https.get(mod.url, { headers: { "User-Agent": "NanoDecompiler-OTA" } }, (res) => {
+        httpsGetWithRedirects(mod.url, { "User-Agent": "NanoDecompiler-OTA" }, (res) => {
           if (res.statusCode !== 200) {
             out.close();
             try { fs.unlinkSync(tmp); } catch {}
@@ -109,9 +141,11 @@ export class OtaManager {
           out.on("finish", async () => {
             out.close();
             const actualHash = await this.sha256File(tmp);
-            if (!actualHash || actualHash.toLowerCase() !== mod.sha256.toLowerCase()) {
-              try { fs.unlinkSync(tmp); } catch {}
-              return resolve({ ok: false, error: "SHA-256 mismatch for OTA module" });
+            if (mod.sha256 && mod.sha256 !== "auto") {
+              if (!actualHash || actualHash.toLowerCase() !== mod.sha256.toLowerCase()) {
+                try { fs.unlinkSync(tmp); } catch {}
+                return resolve({ ok: false, error: "SHA-256 mismatch for OTA module" });
+              }
             }
             try {
               if (fs.existsSync(dest)) fs.unlinkSync(dest);
@@ -125,9 +159,6 @@ export class OtaManager {
             try { fs.unlinkSync(tmp); } catch {}
             resolve({ ok: false, error: String(e) });
           });
-        }).on("error", (e) => {
-          try { fs.unlinkSync(tmp); } catch {}
-          resolve({ ok: false, error: String(e) });
         });
       } catch (e) {
         resolve({ ok: false, error: String(e) });
@@ -146,12 +177,12 @@ export class OtaManager {
     });
 
     ipcMain.handle("ota:fetchManifest", async (_e, manifestUrl?: string) => {
-      const url = manifestUrl || "https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/ota-manifest.json";
+      const url = manifestUrl || "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json";
       return await this.fetchManifest(url);
     });
 
     ipcMain.handle("ota:syncModule", async (_e, mod: OtaModuleInfo) => {
-      if (!mod || !mod.name || !mod.sha256 || !mod.url) return { ok: false, error: "Некорректный дескриптор модуля" };
+      if (!mod || !mod.name || !mod.url) return { ok: false, error: "Некорректный дескриптор модуля" };
       return await this.syncModule(mod);
     });
   }

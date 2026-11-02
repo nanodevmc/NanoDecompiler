@@ -168,6 +168,8 @@ declare global {
       openTranslationsFolder: () => Promise<void>;
       createTranslationTemplate: () => Promise<{ ok: boolean; path?: string; error?: string }>;
       otaSyncModule?: (mod: { name: string; sha256?: string; url: string }) => Promise<{ ok: boolean; path?: string; error?: string }>;
+      otaFetchManifest?: (manifestUrl?: string) => Promise<any>;
+      otaListLocal?: () => Promise<string[]>;
       otaGetStatus?: () => Promise<any>;
     };
   }
