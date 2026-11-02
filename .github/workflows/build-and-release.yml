@@ -638,7 +638,7 @@ jobs:
             os_name: Windows
             arch_name: x64
             ext: .exe
-            out_file: NanoDecompilerLite-Windows-x64
+            out_file: NanoDecompiler-Lite-Windows-x64
             clapi_artifact: clapi-artifacts-windows
             clapi_bin: NanoDecompilerClApi.exe
             embedded_name: NanoDecompilerCLI.exe
@@ -646,7 +646,7 @@ jobs:
             os_name: Linux
             arch_name: x64
             ext: ""
-            out_file: NanoDecompilerLite-Linux-x64
+            out_file: NanoDecompiler-Lite-Linux-x64
             clapi_artifact: clapi-artifacts-linux
             clapi_bin: NanoDecompilerClApi
             embedded_name: NanoDecompilerCLI
@@ -654,7 +654,7 @@ jobs:
             os_name: macOS
             arch_name: x64
             ext: ""
-            out_file: NanoDecompilerLite-macOS-x64
+            out_file: NanoDecompiler-Lite-macOS-x64
             clapi_artifact: clapi-artifacts-macos
             clapi_bin: NanoDecompilerClApi
             embedded_name: NanoDecompilerCLI
@@ -662,7 +662,7 @@ jobs:
             os_name: macOS
             arch_name: arm64
             ext: ""
-            out_file: NanoDecompilerLite-macOS-arm64
+            out_file: NanoDecompiler-Lite-macOS-arm64
             clapi_artifact: clapi-artifacts-macos
             clapi_bin: NanoDecompilerClApi
             embedded_name: NanoDecompilerCLI
@@ -787,7 +787,7 @@ jobs:
             find tauri-v2/src-tauri/target/release -maxdepth 1 -type f -name '*.exe' || true
             exit 1
           fi
-          cp "$STANDALONE" NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe
+          cp "$STANDALONE" NanoDecompiler-Tauri-Windows-x64-Standalone.exe
 
       - name: Собрать инсталлятор Tauri v2 (NSIS / Bundle)
         shell: bash
@@ -805,17 +805,17 @@ jobs:
             SETUP_CANDIDATE=$(find . -maxdepth 1 -iname 'NanoDecompiler-Tauri-Setup-*.exe' 2>/dev/null | head -1)
           fi
           if [ -n "$SETUP_CANDIDATE" ]; then
-            cp "$SETUP_CANDIDATE" NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe
+            cp "$SETUP_CANDIDATE" NanoDecompiler-Tauri-Windows-x64-Setup.exe
           else
-            cp NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe
+            cp NanoDecompiler-Tauri-Windows-x64-Standalone.exe NanoDecompiler-Tauri-Windows-x64-Setup.exe
           fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: tauri-artifact-win
           path: |
-            NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe
-            NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe
+            NanoDecompiler-Tauri-Windows-x64-Setup.exe
+            NanoDecompiler-Tauri-Windows-x64-Standalone.exe
           if-no-files-found: error
 
   build-tauri-linux:
@@ -893,16 +893,16 @@ jobs:
           cd tauri-v2/src-tauri
           cargo build --release
           cd ../..
-          cp tauri-v2/src-tauri/target/release/nanodecompiler-tauri NanoDecompiler-Tauri-v2-Linux-x64
-          chmod +x NanoDecompiler-Tauri-v2-Linux-x64
+          cp tauri-v2/src-tauri/target/release/nanodecompiler-tauri NanoDecompiler-Tauri-Linux-x64
+          chmod +x NanoDecompiler-Tauri-Linux-x64
 
       - uses: actions/upload-artifact@v4
         with:
           name: tauri-artifact-linux
-          path: NanoDecompiler-Tauri-v2-Linux-x64
+          path: NanoDecompiler-Tauri-Linux-x64
           if-no-files-found: error
 
-  build-tauri-android:
+  build-android-native:
     needs: [resolve-version]
     runs-on: ubuntu-latest
     steps:
@@ -922,87 +922,58 @@ jobs:
       - name: Настроить Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Установить Android NDK
+      - name: Подготовить хэш зависимостей
+        shell: bash
         run: |
-          SDK_MGR="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
-          echo "y" | "${SDK_MGR}" --install "ndk;26.1.10909125"
-
-      - name: Установить Rust toolchain & Android target
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
-      - name: Кэш ~/.cargo/bin (cargo-tauri бинарь)
-        id: cache-cargo-tauri-bin
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-tauri
-          key: cargo-tauri-bin-v2-0
-
-      - name: Установить cargo-tauri CLI (только если нет в кэше)
-        if: steps.cache-cargo-tauri-bin.outputs.cache-hit != 'true'
-        run: cargo install tauri-cli --version "^2.0" --locked
-
-      - name: Кэш Rust (Cargo registry + git + tauri-v2 target)
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: tauri-v2/src-tauri
-          cache-targets: true
-          cache-all-crates: true
+          node -e 'const p = require("./package.json"); console.log(JSON.stringify({d: p.dependencies, dd: p.devDependencies}))' > .deps-hash.json
 
       - name: Кэш node_modules
         uses: actions/cache@v4
         with:
           path: node_modules
-          key: ${{ runner.os }}-node20-${{ hashFiles('package.json') }}
+          key: ${{ runner.os }}-node20-${{ hashFiles('.deps-hash.json') }}
           restore-keys: |
             ${{ runner.os }}-node20-
 
-      - name: npm install & Build Vite
+      - name: npm install & Сборка фронтенда (Vite)
         run: |
           npm install
           npm run build:renderer
+          # Синхронизируем свежие ассеты в mobile-android/assets
+          rm -rf mobile-android/assets/assets
+          cp -r dist/assets mobile-android/assets/
+          cp dist/index.html mobile-android/assets/
 
-      - name: Инициализировать и собрать APK (Tauri v2 Mobile)
-        env:
-          NDK_HOME: /usr/local/lib/android/sdk/ndk/26.1.10909125
+      - name: Скачать Kotlin Compiler и uber-apk-signer
         run: |
-          cd tauri-v2
-          cargo tauri android init --ci --skip-targets-install
-          cargo tauri android build --apk --target aarch64
-          mkdir -p ../android-apk
-          find src-tauri/gen/android -name "*.apk" -exec cp {} ../android-apk/NanoDecompiler-Android-arm64.apk \;
+          wget -q https://github.com/JetBrains/kotlin/releases/download/v1.9.22/kotlin-compiler-1.9.22.zip
+          unzip -q kotlin-compiler-1.9.22.zip
+          wget -q https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar
 
-      - name: Подписать релизный APK (HONOR / Google Play Keystore)
-        if: env.ANDROID_KEYSTORE_BASE64 != ''
+      - name: Собрать нативный Android APK (2.97 MB)
         env:
+          RELEASE_TAG: ${{ needs.resolve-version.outputs.version }}
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
-          wget -q https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar
-          java -jar uber-apk-signer-1.3.0.jar -a android-apk/NanoDecompiler-Android-arm64.apk \
-            --ks release.keystore \
-            --ksAlias "${ANDROID_KEY_ALIAS:-nanodev}" \
-            --ksPass "${ANDROID_KEYSTORE_PASSWORD:-regi12345.}" \
-            --ksKeyPass "${ANDROID_KEY_PASSWORD:-regi12345.}" \
-            -o android-apk/signed
-          find android-apk/signed -name "*-signed.apk" -exec cp {} android-apk/NanoDecompiler-Android-arm64.apk \;
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > release.keystore
+          fi
+          python3 scripts/build_android.py --version "$RELEASE_TAG" --out-dir android-apk
           rm -f release.keystore
 
       - uses: actions/upload-artifact@v4
         with:
           name: tauri-artifact-android
-          path: android-apk/NanoDecompiler-Android-arm64.apk
-          if-no-files-found: warn
+          path: android-apk/NanoDecompiler-Android-arm64-*.apk
+          if-no-files-found: error
 
   publish-release:
     permissions:
       contents: write
     # HANDOFF_54: явно перечислены ВСЕ клиентские, ClApi и Lite job'ы
-    needs: [resolve-version, build-tauri-windows, build-tauri-linux, build-tauri-android, build-client-windows, build-client-linux, build-client-macos, build-clapi-windows, build-clapi-linux, build-clapi-macos, build-lite-gui]
+    needs: [resolve-version, build-tauri-windows, build-tauri-linux, build-android-native, build-client-windows, build-client-linux, build-client-macos, build-clapi-windows, build-clapi-linux, build-clapi-macos, build-lite-gui]
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ needs.resolve-version.outputs.version }}
@@ -1047,12 +1018,14 @@ jobs:
         run: |
           TAG="${RELEASE_TAG}"
           # 1. ОСНОВНЫЕ КЛИЕНТЫ: TAURI V2 NATIVE (НОВОЕ ПОКОЛЕНИЕ)
-          mv release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Windows-x64-Setup.exe release-files/NanoDecompiler-Tauri-v2-Windows-x64-${TAG}.exe
-          mv release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Windows-x64-Standalone.exe release-files/NanoDecompiler-Tauri-v2-Windows-x64-${TAG}-Portable.exe
-          if [ -f "release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Linux-x64" ]; then
-            mv release-files-tmp/tauri/NanoDecompiler-Tauri-v2-Linux-x64 release-files/NanoDecompiler-Tauri-v2-Linux-x64-${TAG}
+          mv release-files-tmp/tauri/NanoDecompiler-Tauri-Windows-x64-Setup.exe release-files/NanoDecompiler-Tauri-Windows-x64-${TAG}.exe
+          mv release-files-tmp/tauri/NanoDecompiler-Tauri-Windows-x64-Standalone.exe release-files/NanoDecompiler-Tauri-Windows-x64-${TAG}-Portable.exe
+          if [ -f "release-files-tmp/tauri/NanoDecompiler-Tauri-Linux-x64" ]; then
+            mv release-files-tmp/tauri/NanoDecompiler-Tauri-Linux-x64 release-files/NanoDecompiler-Tauri-Linux-x64-${TAG}
           fi
-          if [ -f "release-files-tmp/tauri/NanoDecompiler-Android-arm64.apk" ]; then
+          if compgen -G "release-files-tmp/tauri/NanoDecompiler-Android-arm64-*.apk" > /dev/null; then
+            cp release-files-tmp/tauri/NanoDecompiler-Android-arm64-*.apk release-files/NanoDecompiler-Android-arm64-${TAG}.apk
+          elif [ -f "release-files-tmp/tauri/NanoDecompiler-Android-arm64.apk" ]; then
             mv release-files-tmp/tauri/NanoDecompiler-Android-arm64.apk release-files/NanoDecompiler-Android-arm64-${TAG}.apk
           fi
 
@@ -1062,9 +1035,9 @@ jobs:
           mv release-files-tmp/clients/NanoDecompiler-Client.dmg release-files/NanoDecompiler-Electron-macOS-arm64-${TAG}.dmg
 
           # 3. ДВИЖКИ CLI (C++ CLI)
-          mv release-files-tmp/windows/NanoDecompilerClApi.exe release-files/NanoDecompilerCLI-Windows-x64-${TAG}.exe
-          mv release-files-tmp/linux/NanoDecompilerClApi release-files/NanoDecompilerCLI-Linux-x64-${TAG}
-          mv release-files-tmp/macos/NanoDecompilerClApi release-files/NanoDecompilerCLI-macOS-arm64-${TAG}
+          mv release-files-tmp/windows/NanoDecompilerClApi.exe release-files/NanoDecompiler-CLI-Windows-x64-${TAG}.exe
+          mv release-files-tmp/linux/NanoDecompilerClApi release-files/NanoDecompiler-CLI-Linux-x64-${TAG}
+          mv release-files-tmp/macos/NanoDecompilerClApi release-files/NanoDecompiler-CLI-macOS-arm64-${TAG}
 
       # Упаковать легковесные OTA-пакеты (.ndota)
       - name: Собрать легковесные OTA пакеты (.ndota)
@@ -1124,14 +1097,14 @@ jobs:
               "checksums": checksums,
               "components": {
                   "engine": {
-                      "windows_x64": make_entry(f"NanoDecompilerCLI-Windows-x64-{tag}.exe"),
-                      "linux_x64": make_entry(f"NanoDecompilerCLI-Linux-x64-{tag}"),
-                      "macos_arm64": make_entry(f"NanoDecompilerCLI-macOS-arm64-{tag}"),
+                      "windows_x64": make_entry(f"NanoDecompiler-CLI-Windows-x64-{tag}.exe"),
+                      "linux_x64": make_entry(f"NanoDecompiler-CLI-Linux-x64-{tag}"),
+                      "macos_arm64": make_entry(f"NanoDecompiler-CLI-macOS-arm64-{tag}"),
                   },
                   "desktop_tauri": {
-                      "windows_setup": make_entry(f"NanoDecompiler-Tauri-v2-Windows-x64-{tag}.exe"),
-                      "windows_portable": make_entry(f"NanoDecompiler-Tauri-v2-Windows-x64-{tag}-Portable.exe"),
-                      "linux_x64": make_entry(f"NanoDecompiler-Tauri-v2-Linux-x64-{tag}"),
+                      "windows_setup": make_entry(f"NanoDecompiler-Tauri-Windows-x64-{tag}.exe"),
+                      "windows_portable": make_entry(f"NanoDecompiler-Tauri-Windows-x64-{tag}-Portable.exe"),
+                      "linux_x64": make_entry(f"NanoDecompiler-Tauri-Linux-x64-{tag}"),
                   },
                   "desktop_electron": {
                       "windows_setup": make_entry(f"NanoDecompiler-Electron-Windows-x64-{tag}.exe"),
@@ -1139,20 +1112,20 @@ jobs:
                       "macos_dmg": make_entry(f"NanoDecompiler-Electron-macOS-arm64-{tag}.dmg"),
                   },
                   "desktop_lite": {
-                      "windows_x64": make_entry(f"NanoDecompilerLite-Windows-x64-{tag}.exe"),
-                      "linux_x64": make_entry(f"NanoDecompilerLite-Linux-x64-{tag}"),
-                      "macos_x64": make_entry(f"NanoDecompilerLite-macOS-x64-{tag}"),
-                      "macos_arm64": make_entry(f"NanoDecompilerLite-macOS-arm64-{tag}"),
+                      "windows_x64": make_entry(f"NanoDecompiler-Lite-Windows-x64-{tag}.exe"),
+                      "linux_x64": make_entry(f"NanoDecompiler-Lite-Linux-x64-{tag}"),
+                      "macos_x64": make_entry(f"NanoDecompiler-Lite-macOS-x64-{tag}"),
+                      "macos_arm64": make_entry(f"NanoDecompiler-Lite-macOS-arm64-{tag}"),
                   },
                   "mobile_android": {
                       "arm64_apk": make_entry(f"NanoDecompiler-Android-arm64-{tag}.apk"),
                   }
               },
               "otaPackages": {
-                  "gui_webui": make_entry(f"NanoDecompiler-GUI-WebUI-{tag}.ndota") or make_entry(f"NanoDecompiler-WebUI-{tag}.ndota"),
-                  "gui_electron": make_entry(f"NanoDecompiler-GUI-Electron-{tag}.ndota"),
-                  "gui_android": make_entry(f"NanoDecompiler-GUI-Android-{tag}.ndota"),
-                  "gui_lite": make_entry(f"NanoDecompiler-GUI-Lite-{tag}.ndota")
+                  "gui_webui": make_entry(f"NanoDecompiler-OTA-WebUI-{tag}.ndota"),
+                  "gui_electron": make_entry(f"NanoDecompiler-OTA-Electron-{tag}.ndota"),
+                  "gui_android": make_entry(f"NanoDecompiler-OTA-Android-{tag}.ndota"),
+                  "gui_lite": make_entry(f"NanoDecompiler-OTA-Lite-{tag}.ndota")
               }
           }
 
@@ -1188,30 +1161,30 @@ jobs:
               "### 📋 Список изменений",
               changelog_section,
               "",
-              "### 📦 Загрузки (Стандартизированные артефакты [Name]-[OS]-[arch]-[version][ext])",
+              "### 📦 Загрузки (Стандартизированные артефакты [Name]-[Platform]-[OS]-[Arch]-[Version][Ext])",
               "",
-              "| Файл | Описание | Платформа / Архитектура |",
-              "|------|----------|-------------------------|",
-              f"| `NanoDecompiler-Tauri-v2-Windows-x64-{tag_full}.exe` | **⭐ ОСНОВНОЙ КЛИЕНТ** (Tauri v2 Native Desktop, Liquid Glass + MD3) | Windows x64 |",
-              f"| `NanoDecompiler-Tauri-v2-Windows-x64-{tag_full}-Portable.exe` | **Портативный нативный клиент** (Tauri v2, без инсталляции) | Windows x64 |",
-              f"| `NanoDecompiler-Tauri-v2-Linux-x64-{tag_full}` | **⭐ ОСНОВНОЙ КЛИЕНТ** (Tauri v2 Native Desktop) | Linux x64 |",
-              f"| `NanoDecompiler-Android-arm64-{tag_full}.apk` | **Мобильный клиент** (Android 7.0+ / API 24+, ARM64) | Android ARM64 |",
-              f"| `NanoDecompilerLite-Windows-x64-{tag_full}.exe` | **Ультралегкий C# GUI клиент** (быстрый, не лагает) | Windows x64 |",
-              f"| `NanoDecompilerLite-Linux-x64-{tag_full}` | **Ультралегкий C# GUI клиент** | Linux x64 |",
-              f"| `NanoDecompilerLite-macOS-x64-{tag_full}` | **Ультралегкий C# GUI клиент** | macOS Intel x64 |",
-              f"| `NanoDecompilerLite-macOS-arm64-{tag_full}` | **Ультралегкий C# GUI клиент** | macOS Apple Silicon |",
-              f"| `NanoDecompiler-Electron-Windows-x64-{tag_full}.exe` | Классический Electron GUI клиент (fallback) | Windows x64 |",
-              f"| `NanoDecompiler-Electron-Linux-x64-{tag_full}.AppImage` | Классический Electron GUI клиент (fallback) | Linux x64 |",
-              f"| `NanoDecompiler-Electron-macOS-arm64-{tag_full}.dmg` | Классический Electron GUI клиент (fallback) | macOS Apple Silicon |",
-              f"| `NanoDecompilerCLI-Windows-x64-{tag_full}.exe` | Движок декомпиляции (C++ CLI/API) | Windows x64 |",
-              f"| `NanoDecompilerCLI-Linux-x64-{tag_full}` | Движок декомпиляции (C++ CLI/API) | Linux x64 |",
-              f"| `NanoDecompilerCLI-macOS-arm64-{tag_full}` | Движок декомпиляции (C++ CLI/API) | macOS Apple Silicon |",
-              f"| `NanoDecompiler-WebUI-{tag_full}.ndota` | **Легковесный OTA пакет UI** (горячее обновление без переустановки) | Универсальный |",
-              f"| `NanoDecompiler-Engine-Windows-x64-{tag_full}.ndota` | Легковесный OTA модуль движка (Windows) | Windows x64 |",
-              f"| `NanoDecompiler-Engine-Android-arm64-{tag_full}.ndota` | Легковесный OTA модуль движка (Android) | Android ARM64 |",
-              "| `ota-manifest.json` | **Манифест и спецификация компонентов для OTA обновлений** | - |",
-              "| `versions.json` | Машиночитаемые версии для автообновления | - |",
-              "| `checksums.json` | Контрольные суммы SHA256 всех бинарников | - |",
+              "| Файл | Платформа | Описание | Размер |",
+              "|------|-----------|----------|--------|",
+              f"| `NanoDecompiler-Tauri-Windows-x64-{tag_full}.exe` | **Tauri (Desktop)** | ⭐ **Основной клиент** (Installer, Liquid Glass + MD3) | ~3.7 MB |",
+              f"| `NanoDecompiler-Tauri-Windows-x64-{tag_full}-Portable.exe` | **Tauri (Desktop)** | Нативный портативный клиент (без инсталляции) | ~9.0 MB |",
+              f"| `NanoDecompiler-Tauri-Linux-x64-{tag_full}` | **Tauri (Desktop)** | ⭐ **Основной клиент для Linux** | ~16 MB |",
+              f"| `NanoDecompiler-Electron-Windows-x64-{tag_full}.exe` | **Electron (Desktop)** | Классический GUI инсталлятор (Fallback) | ~64 MB |",
+              f"| `NanoDecompiler-Electron-Linux-x64-{tag_full}.AppImage` | **Electron (Desktop)** | Классический GUI AppImage | ~75 MB |",
+              f"| `NanoDecompiler-Electron-macOS-arm64-{tag_full}.dmg` | **Electron (Desktop)** | Классический GUI DMG для Apple Silicon | ~187 MB |",
+              f"| `NanoDecompiler-Lite-Windows-x64-{tag_full}.exe` | **Lite (Avalonia)** | Ультралегкий C# GUI клиент (мгновенный запуск) | ~24 MB |",
+              f"| `NanoDecompiler-Lite-Linux-x64-{tag_full}` | **Lite (Avalonia)** | Ультралегкий C# GUI клиент для Linux | ~23 MB |",
+              f"| `NanoDecompiler-Lite-macOS-x64-{tag_full}` | **Lite (Avalonia)** | Ультралегкий C# GUI клиент для macOS Intel | ~32 MB |",
+              f"| `NanoDecompiler-Lite-macOS-arm64-{tag_full}` | **Lite (Avalonia)** | Ультралегкий C# GUI клиент для Apple Silicon | ~32 MB |",
+              f"| `NanoDecompiler-CLI-Windows-x64-{tag_full}.exe` | **CLI / Core** | C++ Движок декомпиляции и CLI/API сервер | ~1.6 MB |",
+              f"| `NanoDecompiler-CLI-Linux-x64-{tag_full}` | **CLI / Core** | C++ Движок декомпиляции (Linux) | ~1.1 MB |",
+              f"| `NanoDecompiler-CLI-macOS-arm64-{tag_full}` | **CLI / Core** | C++ Движок декомпиляции (macOS ARM64) | ~2.7 MB |",
+              f"| `NanoDecompiler-Android-arm64-{tag_full}.apk` | **Android (Mobile)** | ⭐ **Нативный мобильный APK** (Kotlin + FastScan) | **2.97 MB** |",
+              f"| `NanoDecompiler-OTA-WebUI-{tag_full}.ndota` | **OTA / Delta** | Легковесный OTA архив WebUI компонентов | ~205 KB |",
+              f"| `NanoDecompiler-OTA-Electron-{tag_full}.ndota` | **OTA / Delta** | Легковесный OTA архив Electron Renderer | ~294 KB |",
+              f"| `NanoDecompiler-OTA-Android-{tag_full}.ndota` | **OTA / Delta** | Легковесный OTA архив мобильного UI | ~205 KB |",
+              f"| `NanoDecompiler-OTA-Lite-{tag_full}.ndota` | **OTA / Delta** | Легковесный OTA архив тем и ассетов Lite GUI | ~31 KB |",
+              "| `ota-manifest.json` | **Metadata** | Манифест спецификации всех OTA пакетов и бинарников | ~9 KB |",
+              "| `checksums.json` | **Metadata** | Контрольные суммы SHA256 всех релизных файлов | ~2 KB |",
               "",
               "### Как проверялось",
               "Все сборки компилируются и верифицируются в CI матрице на реальных тестах декомпиляции.",
