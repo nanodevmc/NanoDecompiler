@@ -9,7 +9,7 @@
   - СТРОГО БЕЗ `python -c` (любой вызов Python только через прямые файлы `.py`).
   - СТРОГО БЕЗ хардкода токенов и секретов в файлах репозитория.
 
-## Стандартизация релизов и оптимизация размера (v2.0.7):
+## Стандартизация релизов и сквозное подключение OTA (v2.0.7):
 1. **Канонический порядок именования релизных артефактов**:
    - Каждый файл строго декларирует технологию платформы: `[Name]-[Platform]-[OS]-[Arch]-[Version][Ext]`.
    - `NanoDecompiler-Tauri-*` (основной нативный клиент: Windows Setup, Portable, Linux).
@@ -20,17 +20,19 @@
    - `NanoDecompiler-OTA-*` (легковесные дельта-архивы для всех GUI компонентов).
 2. **Ликвидация тяжеловесного моста Android и оптимизация APK**:
    - Устранен 12.8 МБ мост Tauri mobile; сборка переведена на нативный Kotlin (`scripts/build_android.py`).
-   - Итоговый размер релизного подписанного APK уменьшен до **2.97 МБ** (-76.8% редукция).
+   - Итоговый размер релизного подписанного APK уменьшен до **2.87-2.97 МБ** (-76.8% редукция).
    - Удален случайный 2.58 МБ бинарник из `mobile-android/assets/bin/`, очищены устаревшие чанки Vite.
 3. **Легковесные дельта-пакеты OTA (.ndota)**:
    - Полное покрытие всех 4 GUI платформ без включения бинарников движка и .map-файлов:
-     - `NanoDecompiler-OTA-WebUI-v2.0.7.ndota`: ~201 KB (Web/SPA фронтенд)
+     - `NanoDecompiler-OTA-WebUI-v2.0.7.ndota`: ~199 KB (Web/SPA фронтенд)
      - `NanoDecompiler-OTA-Electron-v2.0.7.ndota`: ~289 KB (Renderer + Preload)
-     - `NanoDecompiler-OTA-Android-v2.0.7.ndota`: ~201 KB (WebView ассеты)
+     - `NanoDecompiler-OTA-Android-v2.0.7.ndota`: ~199 KB (WebView ассеты)
      - `NanoDecompiler-OTA-Lite-v2.0.7.ndota`: ~31 KB (Avalonia XAML темы и иконки)
-4. **Обновление GitHub Actions CI**:
-   - Job `build-android-native` компилирует нативный Kotlin APK за ~1 минуту вместо 15 минут NDK сборок.
-   - Автоматическая публикация 20 канонических файлов, `ota-manifest.json` и `checksums.json`.
+4. **Сквозная интеграция OTA во всех платформах**:
+   - **Android**: 100% нативно в `MainActivity.kt` (опрос `ota-manifest.json`, фоновое скачивание, SHA-256 верификация, PackageInstaller).
+   - **Electron**: `OtaManager` с авто-следованием за HTTP 301/302 редиректами GitHub CDN, поддержка секции `otaPackages`.
+   - **Tauri**: `tauriBridge.ts` без моков — живой `fetch()` к `ota-manifest.json`, семантическое сравнение версий и потоковая загрузка `.ndota`.
+   - **UI**: `UpdateModal.tsx` динамически отображает и скачивает реальные `.ndota` пакеты.
 
 ## 5 Мега-Галактических Инноваций движка:
 1. **NanoNeural Semantic Source Reconstructor (`semantic_reconstructor.cpp`, `semantic_reconstructor.hpp`)**:
