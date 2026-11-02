@@ -63,7 +63,10 @@ def main():
 
     # 2. Electron OTA .ndota (Renderer + Main/Preload scripts ~290 КБ)
     electron_out = os.path.join(rel_dir, f"NanoDecompiler-OTA-Electron-{tag}.ndota")
-    electron_files = collect_tree("dist", "dist") + collect_tree("dist-electron", "dist-electron")
+    electron_renderer = collect_tree("dist", "dist")
+    if not electron_renderer:
+        electron_renderer = collect_tree("mobile-android/assets", "dist")
+    electron_files = electron_renderer + collect_tree("dist-electron", "dist-electron")
     create_ndota_package(electron_out, {
         "packageName": "NanoDecompiler-OTA-Electron",
         "format": "ndota-bundle-v1",

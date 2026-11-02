@@ -1039,7 +1039,17 @@ jobs:
           mv release-files-tmp/linux/NanoDecompilerClApi release-files/NanoDecompiler-CLI-Linux-x64-${TAG}
           mv release-files-tmp/macos/NanoDecompilerClApi release-files/NanoDecompiler-CLI-macOS-arm64-${TAG}
 
-      # Упаковать легковесные OTA-пакеты (.ndota)
+      # Собрать ассеты и упаковать легковесные OTA-пакеты (.ndota)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Собрать фронтенд и Electron скрипты для OTA
+        run: |
+          npm install
+          npm run build
+
       - name: Собрать легковесные OTA пакеты (.ndota)
         shell: bash
         run: |
