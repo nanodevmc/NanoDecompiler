@@ -26,6 +26,8 @@ import { SecurityAuditModal } from "./SecurityAuditModal";
 import { PaperExportModal } from "./PaperExportModal";
 import { EventFlowModal } from "./EventFlowModal";
 import { DeobfMappingModal } from "./DeobfMappingModal";
+import { HolographicGraphModal } from "./HolographicGraphModal";
+import { Network } from "lucide-react";
 import { ShieldAlert, FolderUp, GitFork, BookOpen } from "lucide-react";
 
 export function AppHeader() {
@@ -58,6 +60,7 @@ export function AppHeader() {
   const [diffModalOpen, setDiffModalOpen] = useState(false);
   const [githubExportOpen, setGithubExportOpen] = useState(false);
   const [securityModalOpen, setSecurityModalOpen] = useState(false);
+  const [holographicGraphOpen, setHolographicGraphOpen] = useState(false);
   const [paperExportOpen, setPaperExportOpen] = useState(false);
   const [eventFlowOpen, setEventFlowOpen] = useState(false);
   const [deobfMappingOpen, setDeobfMappingOpen] = useState(false);
@@ -205,6 +208,7 @@ export function AppHeader() {
           onOpenDiff={handleOpenDiff}
           onOpenGitHub={handleOpenGitHubExport}
           onOpenSecurity={() => setSecurityModalOpen(true)}
+          onOpenHolographicGraph={() => setHolographicGraphOpen(true)}
           onOpenPaperExport={() => setPaperExportOpen(true)}
           onOpenEventFlow={() => setEventFlowOpen(true)}
           onOpenDeobfMapping={() => setDeobfMappingOpen(true)}
@@ -233,6 +237,13 @@ export function AppHeader() {
           onClose={() => setGithubExportOpen(false)}
           outDir={selectedJob?.outDir || ""}
           defaultRepoName={selectedJob?.fileName ? selectedJob.fileName.replace(/\.jar$/i, "") : "decompiled-plugin"}
+        />
+      )}
+      {holographicGraphOpen && (
+        <HolographicGraphModal
+          open={holographicGraphOpen}
+          onClose={() => setHolographicGraphOpen(false)}
+          files={selectedJob?.files || []}
         />
       )}
       {securityModalOpen && (
@@ -272,6 +283,7 @@ function ToolsMenu({
   onOpenDiff,
   onOpenGitHub,
   onOpenSecurity,
+  onOpenHolographicGraph,
   onOpenPaperExport,
   onOpenEventFlow,
   onOpenDeobfMapping,
@@ -280,6 +292,7 @@ function ToolsMenu({
   onOpenDiff: () => void;
   onOpenGitHub: () => void;
   onOpenSecurity: () => void;
+  onOpenHolographicGraph: () => void;
   onOpenPaperExport: () => void;
   onOpenEventFlow: () => void;
   onOpenDeobfMapping: () => void;
@@ -343,6 +356,19 @@ function ToolsMenu({
               </div>
             </button>
             <div className="my-1 border-t border-line/40" />
+            <button
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12px] text-ink/90 hover:bg-raised transition-colors"
+              onClick={() => {
+                setOpen(false);
+                onOpenHolographicGraph();
+              }}
+            >
+              <Network size={14} className="text-emerald-400 animate-pulse" />
+              <div>
+                <div className="font-medium text-ink">Holographic Graph & Matrix</div>
+                <div className="text-[10px] text-faint">Интерактивный граф слоев и эксплойтов</div>
+              </div>
+            </button>
             <button
               className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[12px] text-ink/90 hover:bg-raised transition-colors"
               onClick={() => {

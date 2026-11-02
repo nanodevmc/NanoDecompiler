@@ -64,6 +64,7 @@ private:
     std::map<int64_t, bool> terminates_cache_;
     int catch_var_ctr_ = 0;
     std::optional<int64_t> last_try_merge_pc_;
+    std::vector<int64_t> try_exit_stack_;
     std::set<int64_t> all_consumed_;
 
     void prepare_loops();

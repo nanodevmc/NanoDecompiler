@@ -3,6 +3,8 @@
 // process_jar.cpp - см. process_jar.hpp. Порт process_jar_with_stats() и
 // вспомогательных функций отчётов из main.py (HANDOFF_43).
 #include "process_jar.hpp"
+#include "semantic_namer.hpp"
+#include "minecraft_porter.hpp"
 #include "aegis_deobf.hpp"
 #include "legitimacy_check.hpp"
 #include "sha512.hpp"
@@ -288,7 +290,7 @@ const char* g_crash_class_name = nullptr;
 const char* g_crash_method_name = nullptr;
 const char* g_crash_pass_name = nullptr;
 
-JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool print_progress, bool ignore_nanoguard, bool skip_malware_scan) {
+JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool print_progress, bool ignore_nanoguard, bool skip_malware_scan, bool port_to_121, bool enable_semantic_namer, bool include_libs) {
     JarProcessResult jr;
     jr.out_dir = out_dir;
     ProjectStats& stats = jr.stats;
@@ -386,11 +388,7 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         }
     });
     if (jr.platform.is_mod()) {
-        jr.rejected = true;
-        jr.rejected_reason =
-            "Обнаружен " + jr.platform.kind_label() + " (" + jr.platform.manifest_path + ") - это МОД, а не "
-            "серверный плагин (Bukkit/Spigot/Paper/BungeeCord/Velocity). Временно моды не декомпилируются.";
-        return jr;
+        std::cout << "[i] Обнаружена платформа мода: " << jr.platform.kind_label() << " (" << jr.platform.manifest_path << ") - включен режим универсальной декомпиляции.\n";
     }
 
     std::string res_dir = (fs::u8path(out_dir) / "src" / "main" / "resources").u8string();
@@ -521,16 +519,19 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         if (hit.has_value() && !is_own_plugin_pkg && !is_same_as_plugin) {
             library_internal_names.push_back(it->first);
             library_hit_labels.insert(hit->second.group + ":" + hit->second.artifact);
-            it = class_files.erase(it);
+            if (!include_libs) {
+                it = class_files.erase(it);
+            } else {
+                ++it;
+            }
         } else if (is_generic_shaded_lib_path(it->first)) {
-            // НОВОЕ: конкретная библиотека неизвестна по имени/сигнатуре,
-            // но путь класса явно проходит через сегмент "libs"/"lib" -
-            // стандартная конвенция релокации зашейдженных зависимостей
-            // (см. lib_filter.hpp). Без точных Maven-координат - помечаем
-            // общей меткой, не привязанной к конкретной библиотеке.
             library_internal_names.push_back(it->first);
             library_hit_labels.insert("(shaded, неизвестная библиотека)");
-            it = class_files.erase(it);
+            if (!include_libs) {
+                it = class_files.erase(it);
+            } else {
+                ++it;
+            }
         } else {
             ++it;
         }
@@ -541,10 +542,12 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
     }
     // --- 6. Копируем ресурсы (кроме .class и библиотечных путей). ---
     std::vector<std::string> skip_res_prefixes;
-    for (auto& e : known_libs()) skip_res_prefixes.push_back(dotted_to_path_prefix(e.prefix));
-    for (auto& [prefix, coords] : relocated_prefixes) {
-        (void)coords;
-        skip_res_prefixes.push_back(dotted_to_path_prefix(prefix));
+    if (!include_libs) {
+        for (auto& e : known_libs()) skip_res_prefixes.push_back(dotted_to_path_prefix(e.prefix));
+        for (auto& [prefix, coords] : relocated_prefixes) {
+            (void)coords;
+            skip_res_prefixes.push_back(dotted_to_path_prefix(prefix));
+        }
     }
     // res_dir уже инициализирован и расшифрован на этапе 1 (AegisDeobf)
 
@@ -804,6 +807,14 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
         for (auto& [k, v] : hints2) renamer.class_name_hints[k] = v;  // .update() - позже перезаписывает раньше при коллизии ключа
         for (auto& [k, v] : hints_bukkit.class_hints) renamer.class_name_hints[k] = v;
         for (auto& [k, v] : hints_bukkit.method_hints) renamer.method_name_hints[k] = v;
+        if (enable_semantic_namer) {
+            auto roles = SemanticNamer::classify_jar_architecture(class_files);
+            for (auto& [internal_name, role_info] : roles) {
+                if (!role_info.suggested_class_name.empty() && renamer.class_name_hints.find(internal_name) == renamer.class_name_hints.end()) {
+                    renamer.class_name_hints[internal_name] = role_info.suggested_class_name;
+                }
+            }
+        }
     }
     for (auto& [internal, cf] : class_files) {
         renamer.friendly_class(internal);
@@ -873,6 +884,9 @@ JarProcessResult process_jar_with_stats(const std::string& jar_path, const std::
             // file_notes, fallback_contexts) видят уже очищенный текст, а
             // не рассинхронизированную версию.
             text = strip_dollar_outside_literals(text);
+            if (port_to_121) {
+                text = MinecraftPorter::port_java_source(text);
+            }
         } catch (const std::exception& e) {
             text = "// ОШИБКА рендеринга класса " + internal + ": " + e.what() + "\n";
         }

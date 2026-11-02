@@ -744,8 +744,39 @@ Structurer::JumpKind Structurer::resolve_jump_stmt(int64_t target, const std::se
         }
     }
     if (stop_addrs.count(target)) return JumpKind::NoStmt;
+    for (auto it = try_exit_stack_.rbegin(); it != try_exit_stack_.rend(); ++it) {
+        if (*it == target) return JumpKind::NoStmt;
+    }
     auto tit = cfg_.blocks.find(target);
     if (tit != cfg_.blocks.end()) {
+        // v2.0.6: Если целевой блок состоит из чистого return (void return или возврат константы/локала),
+        // заменяем нередуцируемый маркер на чистый оператор return
+        if (tit->second.instrs.size() == 1 && tit->second.instrs[0].mnemonic == "return") {
+            out_stmt = std::make_shared<ReturnStmt>(nullptr);
+            return JumpKind::Stmt;
+        }
+        auto rit = results_.find(target);
+        if (rit != results_.end()) {
+            if (rit->second.stmts.size() == 1 && rit->second.stmts[0]->kind == StmtKind::ReturnStmt) {
+                out_stmt = rit->second.stmts[0];
+                return JumpKind::Stmt;
+            }
+            if (rit->second.stmts.empty() && rit->second.term_kind == "return") {
+                out_stmt = std::make_shared<ReturnStmt>(nullptr);
+                return JumpKind::Stmt;
+            }
+            // v2.0.6: Если целевой блок является чистым терминальным блоком (завершается return без последующих ветвлений),
+            // подставляем его тело/возврат напрямую, исключая синтетический маркер goto
+            if (tit->second.succs.empty() && rit->second.term_kind == "return" && !rit->second.stmts.empty() &&
+                rit->second.stmts.back()->kind == StmtKind::ReturnStmt && rit->second.stmts.size() <= 3) {
+                if (rit->second.stmts.size() == 1) {
+                    out_stmt = rit->second.stmts[0];
+                } else {
+                    out_stmt = std::make_shared<BlockStmt>(rit->second.stmts);
+                }
+                return JumpKind::Stmt;
+            }
+        }
         if (tit->second.instrs.size() == 1 &&
             (tit->second.instrs[0].mnemonic == "goto" || tit->second.instrs[0].mnemonic == "goto_w") &&
             (!results_.count(target) || results_.at(target).stmts.empty())) {
@@ -858,7 +889,7 @@ std::optional<int64_t> Structurer::find_forward_merge(int64_t true_t, int64_t fa
             const Block& block = cfg_.blocks.at(pc);
             if (!block.handler_types.empty()) continue;
             seen.insert(pc);
-            if (stop_addrs.count(pc)) continue;
+            if (pc != start && stop_addrs.count(pc)) continue;
             for (int64_t s : block.succs) {
                 if (s > pc) frontier.push_back(s);
             }
@@ -889,6 +920,55 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_if(int64_t pc, Expr
         auto else_stmt = std::make_shared<GotoStmt>("block_" + std::to_string(false_t));
         return {std::make_shared<IfStmt>(cond, std::vector<StmtPtr>{then_stmt}, std::vector<StmtPtr>{else_stmt}), std::nullopt};
     }
+
+    // Short-circuit condition coalescing: combine chains of simple if-tests into && and ||
+    bool progressed = true;
+    while (progressed) {
+        progressed = false;
+        // 1. Logical AND (&&): if true_t is an if-block whose false-target is false_t (and preds == 1)
+        while (results_.count(true_t) && cfg_.blocks.count(true_t) && !stop_addrs.count(true_t) &&
+               !loop_headers_.count(true_t) && !try_by_start_.count(true_t)) {
+            const BlockResult& t_res = results_.at(true_t);
+            const Block& t_blk = cfg_.blocks.at(true_t);
+            if (cond && t_res.cond && t_res.term_kind == "if" && t_res.stmts.empty() &&
+                t_blk.succs.size() == 2 && t_blk.preds.size() == 1 && t_blk.handler_types.empty()) {
+                if (t_blk.succs[1] == false_t && t_blk.succs[0] != false_t) {
+                    cond = std::make_shared<BinOp>("&&", cond, t_res.cond, "boolean");
+                    true_t = t_blk.succs[0];
+                    progressed = true;
+                    continue;
+                } else if (t_blk.succs[0] == false_t && t_blk.succs[1] != false_t) {
+                    cond = std::make_shared<BinOp>("&&", cond, negate(t_res.cond), "boolean");
+                    true_t = t_blk.succs[1];
+                    progressed = true;
+                    continue;
+                }
+            }
+            break;
+        }
+        // 2. Logical OR (||): if false_t is an if-block whose true-target is true_t (and preds == 1)
+        while (results_.count(false_t) && cfg_.blocks.count(false_t) && !stop_addrs.count(false_t) &&
+               !loop_headers_.count(false_t) && !try_by_start_.count(false_t)) {
+            const BlockResult& f_res = results_.at(false_t);
+            const Block& f_blk = cfg_.blocks.at(false_t);
+            if (cond && f_res.cond && f_res.term_kind == "if" && f_res.stmts.empty() &&
+                f_blk.succs.size() == 2 && f_blk.preds.size() == 1 && f_blk.handler_types.empty()) {
+                if (f_blk.succs[0] == true_t && f_blk.succs[1] != true_t) {
+                    cond = std::make_shared<BinOp>("||", cond, f_res.cond, "boolean");
+                    false_t = f_blk.succs[1];
+                    progressed = true;
+                    continue;
+                } else if (f_blk.succs[1] == true_t && f_blk.succs[0] != true_t) {
+                    cond = std::make_shared<BinOp>("||", cond, negate(f_res.cond), "boolean");
+                    false_t = f_blk.succs[0];
+                    progressed = true;
+                    continue;
+                }
+            }
+            break;
+        }
+    }
+
     try {
         auto result = build_if_inner(pc, cond, true_t, false_t, stop_addrs);
         if_chain_depth_ -= 1;
@@ -942,7 +1022,16 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_if_inner(int64_t pc
             merge = find_forward_merge(true_t, false_t, stop_addrs, false);
         }
     }
-    // v2.0.5: ipdom_ is the exact mathematical postdominator; do not override with non-postdominating forward nodes
+    {
+        auto fwd_merge = find_forward_merge(true_t, false_t, stop_addrs, true);
+        if (fwd_merge.has_value()) {
+            if (!is_terminating(*fwd_merge) || !try_exit_stack_.empty()) {
+                if (!merge.has_value() || *fwd_merge < *merge) {
+                    merge = fwd_merge;
+                }
+            }
+        }
+    }
     if (merge.has_value()) {
         for (auto& entry : loop_stack_) {
             if (entry->header.has_value() && *entry->header == *merge) {
@@ -1053,9 +1142,51 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_switch(int64_t pc, 
     for (auto& [v, t] : targets) {
         if (!v.has_value()) { default_t = t; break; }
     }
+    bool default_is_exit = false;
     if (default_t.has_value()) {
-        if (!label_map.count(*default_t)) label_order.push_back(*default_t);
-        label_map[*default_t].push_back("default");
+        if (merge.has_value() && *default_t == *merge) {
+            default_is_exit = true;
+        } else {
+            // Check if any explicit case jumps to *default_t (indicates default_t is a break exit)
+            std::set<int64_t> visited;
+            std::vector<int64_t> q;
+            for (auto& [v, t] : targets) {
+                if (v.has_value()) q.push_back(t);
+            }
+            while (!q.empty()) {
+                int64_t cur = q.back();
+                q.pop_back();
+                if (visited.count(cur) || !cfg_.blocks.count(cur)) continue;
+                visited.insert(cur);
+                const Block& b = cfg_.blocks.at(cur);
+                if (!b.instrs.empty()) {
+                    const auto& last = b.instrs.back();
+                    if ((last.mnemonic == "goto" || last.mnemonic == "goto_w") && last.target.has_value()) {
+                        if (*last.target == *default_t) {
+                            default_is_exit = true;
+                            break;
+                        }
+                    }
+                }
+                for (int64_t succ : b.succs) {
+                    if (succ > pc && succ != *default_t && !visited.count(succ)) {
+                        if (succ < *default_t) {
+                            q.push_back(succ);
+                        }
+                    }
+                }
+            }
+        }
+        if (default_is_exit) {
+            if (!merge.has_value() || *default_t < *merge) {
+                merge = default_t;
+                entry->exit = merge;
+            }
+            entry->all_exits.insert(*default_t);
+        } else {
+            if (!label_map.count(*default_t)) label_order.push_back(*default_t);
+            label_map[*default_t].push_back("default");
+        }
     }
 
     if (label_map.empty()) {
@@ -1150,8 +1281,88 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_try(int64_t pc, con
     auto& entries = try_by_key_.at(key);
     consumed_try_.insert(pc);
 
+    std::set<int64_t> handler_pcs;
+    for (auto& [ct, h] : entries) handler_pcs.insert(h);
+
+    auto overall_it = ipdom_.find(start);
+    std::optional<int64_t> overall_merge = (overall_it != ipdom_.end()) ? overall_it->second : std::nullopt;
+    if (overall_merge.has_value() && (stop_addrs.count(*overall_merge) || handler_pcs.count(*overall_merge))) {
+        overall_merge = std::nullopt;
+    }
+
+    if (cfg_.blocks.count(end) && !stop_addrs.count(end)) {
+        const Block& end_block = cfg_.blocks.at(end);
+        bool is_trampoline = end_block.instrs.size() == 1 &&
+                              (end_block.instrs[0].mnemonic == "goto" || end_block.instrs[0].mnemonic == "goto_w");
+        if (!is_trampoline && !handler_pcs.count(end)) {
+            if (!overall_merge.has_value() || end < *overall_merge) overall_merge = end;
+        } else if (is_trampoline && !end_block.succs.empty()) {
+            int64_t target = end_block.succs[0];
+            if (!stop_addrs.count(target) && !handler_pcs.count(target)) {
+                if (!overall_merge.has_value() || target < *overall_merge) overall_merge = target;
+            }
+        }
+    }
+
+    if (!overall_merge.has_value()) {
+        std::set<int64_t> candidate_merges;
+        for (auto& [bpc, blk] : cfg_.blocks) {
+            if (bpc >= start && bpc < end) {
+                for (int64_t succ : blk.succs) {
+                    if (succ >= end && !stop_addrs.count(succ) && !handler_pcs.count(succ) && cfg_.blocks.count(succ)) {
+                        candidate_merges.insert(succ);
+                    }
+                }
+            }
+        }
+        if (!candidate_merges.empty()) {
+            overall_merge = *candidate_merges.begin();
+        }
+    }
+
+    // v2.0.6: Если тело try завершается возвратом/throw и не имеет выходов,
+    // ищем общий выход среди обработчиков catch
+    if (!overall_merge.has_value()) {
+        std::set<int64_t> catch_merges;
+        for (int64_t hpc : handler_pcs) {
+            std::set<int64_t> h_visited;
+            std::vector<int64_t> h_stack = {hpc};
+            while (!h_stack.empty()) {
+                int64_t curr = h_stack.back();
+                h_stack.pop_back();
+                if (h_visited.count(curr) || !cfg_.blocks.count(curr)) continue;
+                h_visited.insert(curr);
+                const Block& b = cfg_.blocks.at(curr);
+                for (int64_t s : b.succs) {
+                    if (!handler_pcs.count(s) && !stop_addrs.count(s) && cfg_.blocks.count(s)) {
+                        if (s >= end || s < start) {
+                            catch_merges.insert(s);
+                        } else if (!h_visited.count(s)) {
+                            h_stack.push_back(s);
+                        }
+                    }
+                }
+            }
+        }
+        if (!catch_merges.empty()) {
+            overall_merge = *catch_merges.begin();
+        }
+    }
+
+    bool pushed_merge = false;
+    if (overall_merge.has_value()) {
+        try_exit_stack_.push_back(*overall_merge);
+        pushed_merge = true;
+    }
+    struct TryExitGuard {
+        std::vector<int64_t>& stack;
+        bool pushed;
+        ~TryExitGuard() { if (pushed) stack.pop_back(); }
+    } exit_guard{try_exit_stack_, pushed_merge};
+
     std::set<int64_t> body_stop = stop_addrs;
     body_stop.insert(end);
+    if (overall_merge.has_value()) body_stop.insert(*overall_merge);
     auto body = region(start, body_stop);
 
     std::vector<CatchClause> catches;
@@ -1161,10 +1372,6 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_try(int64_t pc, con
         seen_handlers.insert(handler_pc);
         catch_var_ctr_ += 1;
         std::string disp_type = catch_type.has_value() ? ctx_.owner_display(*catch_type) : "Throwable";
-        // Переписано на явный if/else вместо тернарника - функционально
-        // идентично, но убирает шумовой -Wmaybe-uninitialized от GCC
-        // (ложное срабатывание: значение всегда либо валидное, либо
-        // nullopt, но GCC не может доказать это через тернарник).
         auto merge2_it = ipdom_.find(handler_pc);
         std::optional<int64_t> merge2;
         if (merge2_it != ipdom_.end()) {
@@ -1174,6 +1381,7 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_try(int64_t pc, con
         }
         std::set<int64_t> local_stop = stop_addrs;
         if (merge2.has_value()) local_stop.insert(*merge2);
+        if (overall_merge.has_value()) local_stop.insert(*overall_merge);
         auto cbody = region(handler_pc, local_stop);
         std::string var_name = "e" + std::to_string(catch_var_ctr_);
         if (!cbody.empty() && cbody[0]->kind == StmtKind::LocalDecl && is_sentinel(static_cast<LocalDecl*>(cbody[0].get())->init)) {
@@ -1210,27 +1418,6 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_try(int64_t pc, con
         catches.push_back({disp_type, var_name, cbody});
     }
 
-    auto overall_it = ipdom_.find(start);
-    std::optional<int64_t> overall_merge = (overall_it != ipdom_.end()) ? overall_it->second : std::nullopt;
-    if (overall_merge.has_value() && stop_addrs.count(*overall_merge)) overall_merge = std::nullopt;
-
-    std::set<int64_t> handler_pcs;
-    for (auto& [ct, h] : entries) handler_pcs.insert(h);
-
-    if (cfg_.blocks.count(end) && !stop_addrs.count(end)) {
-        const Block& end_block = cfg_.blocks.at(end);
-        bool is_trampoline = end_block.instrs.size() == 1 &&
-                              (end_block.instrs[0].mnemonic == "goto" || end_block.instrs[0].mnemonic == "goto_w");
-        if (!is_trampoline && !handler_pcs.count(end)) {
-            if (!overall_merge.has_value() || end < *overall_merge) overall_merge = end;
-        } else if (is_trampoline && !end_block.succs.empty()) {
-            int64_t target = end_block.succs[0];
-            if (!stop_addrs.count(target) && !handler_pcs.count(target)) {
-                if (!overall_merge.has_value() || target < *overall_merge) overall_merge = target;
-            }
-        }
-    }
-
     if (!overall_merge.has_value()) {
         std::set<int64_t> candidate_merges;
         for (auto& [bpc, blk] : cfg_.blocks) {
@@ -1244,6 +1431,23 @@ std::pair<StmtPtr, std::optional<int64_t>> Structurer::build_try(int64_t pc, con
         }
         if (!candidate_merges.empty()) {
             overall_merge = *candidate_merges.begin();
+        }
+    }
+    if (!overall_merge.has_value()) {
+        std::set<int64_t> catch_post_merges;
+        for (auto& [bpc, blk] : cfg_.blocks) {
+            if (all_consumed_.count(bpc)) {
+                for (int64_t succ : blk.succs) {
+                    if (!all_consumed_.count(succ) && !stop_addrs.count(succ) && !handler_pcs.count(succ) && cfg_.blocks.count(succ)) {
+                        if (succ >= end || succ < start) {
+                            catch_post_merges.insert(succ);
+                        }
+                    }
+                }
+            }
+        }
+        if (!catch_post_merges.empty()) {
+            overall_merge = *catch_post_merges.begin();
         }
     }
     last_try_merge_pc_ = overall_merge;
@@ -3057,57 +3261,255 @@ std::vector<StmtPtr> merge_sequential_short_circuit_ifs(std::vector<StmtPtr> stm
     return out;
 }
 
+static bool is_twr_close_expr(const ExprPtr& e, const std::string& res_name, const std::string& exc_name) {
+    if (!e) return false;
+    if (e->kind == ExprKind::MethodCall) {
+        auto* mc = static_cast<MethodCall*>(e.get());
+        if (mc->name == "close" && mc->target && mc->target->kind == ExprKind::Local &&
+            static_cast<Local*>(mc->target.get())->name == res_name) {
+            return true;
+        }
+        if (mc->name == "addSuppressed" && mc->target && mc->target->kind == ExprKind::Local &&
+            !exc_name.empty() && static_cast<Local*>(mc->target.get())->name == exc_name) {
+            return true;
+        }
+        if (mc->name == "$closeResource") {
+            for (auto& a : mc->args) {
+                if (a && a->kind == ExprKind::Local && static_cast<Local*>(a.get())->name == res_name) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+static bool is_twr_close_or_cleanup_stmt(const StmtPtr& s, const std::string& res_name, const std::string& exc_name) {
+    if (!s) return false;
+    if (s->kind == StmtKind::ExprStmt) {
+        return is_twr_close_expr(static_cast<ExprStmtNode*>(s.get())->expr, res_name, exc_name);
+    }
+    if (s->kind == StmtKind::IfStmt) {
+        auto* ifs = static_cast<IfStmt*>(s.get());
+        bool then_all = true;
+        for (const auto& ts : ifs->then_body) {
+            if (!is_twr_close_or_cleanup_stmt(ts, res_name, exc_name)) {
+                then_all = false;
+                break;
+            }
+        }
+        if (!then_all) return false;
+        if (ifs->else_body.has_value()) {
+            for (const auto& es : *ifs->else_body) {
+                if (!is_twr_close_or_cleanup_stmt(es, res_name, exc_name)) return false;
+            }
+        }
+        return true;
+    }
+    if (s->kind == StmtKind::TryStmt) {
+        auto* ts = static_cast<TryStmt*>(s.get());
+        for (const auto& b : ts->body) {
+            if (!is_twr_close_or_cleanup_stmt(b, res_name, exc_name)) return false;
+        }
+        for (const auto& c : ts->catches) {
+            for (const auto& cb : c.body) {
+                if (!is_twr_close_or_cleanup_stmt(cb, res_name, exc_name)) return false;
+            }
+        }
+        if (ts->finally_body.has_value()) {
+            for (const auto& fb : *ts->finally_body) {
+                if (!is_twr_close_or_cleanup_stmt(fb, res_name, exc_name)) return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+static bool is_twr_synthetic_catch(const CatchClause& c, const std::string& exc_name) {
+    if (c.type != "Throwable" && c.type != "java.lang.Throwable" &&
+        c.type != "Exception" && c.type != "java.lang.Exception") {
+        return false;
+    }
+    if (c.body.empty() || c.body.size() > 2) return false;
+    bool has_throw = false;
+    bool has_assign = false;
+    for (const auto& s : c.body) {
+        if (!s) continue;
+        if (s->kind == StmtKind::ThrowStmt) {
+            auto* ts = static_cast<ThrowStmt*>(s.get());
+            if (ts->expr && ts->expr->kind == ExprKind::Local) {
+                std::string ln = static_cast<Local*>(ts->expr.get())->name;
+                if (ln == c.var_name || (!exc_name.empty() && ln == exc_name)) {
+                    has_throw = true;
+                }
+            }
+        } else if (s->kind == StmtKind::ExprStmt) {
+            auto* es = static_cast<ExprStmtNode*>(s.get());
+            if (es->expr && es->expr->kind == ExprKind::Assign) {
+                auto* as = static_cast<Assign*>(es->expr.get());
+                if (as->target && as->target->kind == ExprKind::Local) {
+                    std::string tn = static_cast<Local*>(as->target.get())->name;
+                    if (!exc_name.empty() && tn == exc_name) {
+                        has_assign = true;
+                    }
+                }
+            }
+        }
+    }
+    return has_throw && (c.body.size() == 1 || has_assign);
+}
+
+static bool is_standalone_close_stmt(const StmtPtr& s, const std::string& res_name) {
+    if (!s) return false;
+    if (s->kind == StmtKind::ExprStmt) {
+        auto* es = static_cast<ExprStmtNode*>(s.get());
+        if (es->expr && es->expr->kind == ExprKind::MethodCall) {
+            auto* mc = static_cast<MethodCall*>(es->expr.get());
+            if (mc->name == "close" && mc->target && mc->target->kind == ExprKind::Local &&
+                static_cast<Local*>(mc->target.get())->name == res_name) {
+                return true;
+            }
+        }
+    }
+    if (s->kind == StmtKind::IfStmt) {
+        auto* ifs = static_cast<IfStmt*>(s.get());
+        if (ifs->then_body.size() == 1 && is_standalone_close_stmt(ifs->then_body[0], res_name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool is_javac_modern_twr_catch(const CatchClause& c, const std::string& res_name) {
+    if (c.type != "Throwable" && c.type != "java.lang.Throwable") return false;
+    bool has_close = false;
+    for (const auto& s : c.body) {
+        if (contains_local_ref_stmt(s, res_name)) {
+            has_close = true;
+            break;
+        }
+    }
+    return has_close;
+}
+
 std::vector<StmtPtr> fold_try_with_resources(std::vector<StmtPtr> stmts) {
+    for (auto& s : stmts) {
+        if (!s) continue;
+        if (s->kind == StmtKind::IfStmt) {
+            auto* if_s = static_cast<IfStmt*>(s.get());
+            if_s->then_body = fold_try_with_resources(if_s->then_body);
+            if (if_s->else_body.has_value()) {
+                if_s->else_body = fold_try_with_resources(*if_s->else_body);
+            }
+        } else if (s->kind == StmtKind::WhileStmt) {
+            auto* w = static_cast<WhileStmt*>(s.get());
+            w->body = fold_try_with_resources(w->body);
+        } else if (s->kind == StmtKind::DoWhileStmt) {
+            auto* d = static_cast<DoWhileStmt*>(s.get());
+            d->body = fold_try_with_resources(d->body);
+        } else if (s->kind == StmtKind::ForStmt) {
+            auto* f = static_cast<ForStmt*>(s.get());
+            f->body = fold_try_with_resources(f->body);
+        } else if (s->kind == StmtKind::BlockStmt) {
+            auto* b = static_cast<BlockStmt*>(s.get());
+            b->stmts = fold_try_with_resources(b->stmts);
+        } else if (s->kind == StmtKind::TryStmt) {
+            auto* t = static_cast<TryStmt*>(s.get());
+            t->body = fold_try_with_resources(t->body);
+            for (auto& c : t->catches) c.body = fold_try_with_resources(c.body);
+            if (t->finally_body.has_value()) t->finally_body = fold_try_with_resources(*t->finally_body);
+        } else if (s->kind == StmtKind::SwitchStmt) {
+            auto* sw = static_cast<SwitchStmt*>(s.get());
+            for (auto& c : sw->cases) c.body = fold_try_with_resources(c.body);
+        } else if (s->kind == StmtKind::SyncStmt) {
+            auto* sy = static_cast<SyncStmt*>(s.get());
+            sy->body = fold_try_with_resources(sy->body);
+        }
+    }
+
     if (stmts.size() < 2) return stmts;
     std::vector<StmtPtr> out;
     size_t i = 0;
     while (i < stmts.size()) {
-        if (i + 1 < stmts.size() && stmts[i]->kind == StmtKind::LocalDecl && stmts[i + 1]->kind == StmtKind::TryStmt) {
+        if (i + 1 < stmts.size() && stmts[i]->kind == StmtKind::LocalDecl) {
             auto* ld = static_cast<LocalDecl*>(stmts[i].get());
-            auto* t = static_cast<TryStmt*>(stmts[i + 1].get());
-            std::string var_name = ld->name;
-            bool is_resource = false;
-            if (t->finally_body.has_value() && !t->finally_body->empty()) {
-                std::vector<StmtPtr> filtered_fb;
-                for (const auto& fs : *t->finally_body) {
-                    bool is_close = false;
-                    if (fs->kind == StmtKind::ExprStmt) {
-                        auto* es = static_cast<ExprStmtNode*>(fs.get());
-                        if (es->expr && es->expr->kind == ExprKind::MethodCall) {
-                            auto* mc = static_cast<MethodCall*>(es->expr.get());
-                            if (mc->name == "close" && mc->target && mc->target->kind == ExprKind::Local &&
-                                static_cast<Local*>(mc->target.get())->name == var_name) {
-                                is_close = true;
-                                is_resource = true;
-                            }
-                        }
-                    } else if (fs->kind == StmtKind::IfStmt) {
-                        auto* ifs = static_cast<IfStmt*>(fs.get());
-                        if (!ifs->then_body.empty() && ifs->then_body[0]->kind == StmtKind::ExprStmt) {
-                            auto* es = static_cast<ExprStmtNode*>(ifs->then_body[0].get());
-                            if (es->expr && es->expr->kind == ExprKind::MethodCall) {
-                                auto* mc = static_cast<MethodCall*>(es->expr.get());
-                                if (mc->name == "close" && mc->target && mc->target->kind == ExprKind::Local &&
-                                    static_cast<Local*>(mc->target.get())->name == var_name) {
-                                    is_close = true;
-                                    is_resource = true;
-                                }
-                            }
+            std::string res_name = ld->name;
+            std::string exc_name = "";
+            size_t try_idx = i + 1;
+
+            if (try_idx < stmts.size() && stmts[try_idx]->kind == StmtKind::LocalDecl) {
+                auto* ld2 = static_cast<LocalDecl*>(stmts[try_idx].get());
+                if ((ld2->type == "Throwable" || ld2->type == "java.lang.Throwable") &&
+                    (!ld2->init || ld2->init->kind == ExprKind::Const)) {
+                    exc_name = ld2->name;
+                    try_idx = i + 2;
+                }
+            }
+
+            if (try_idx < stmts.size() && stmts[try_idx]->kind == StmtKind::TryStmt) {
+                auto* t = static_cast<TryStmt*>(stmts[try_idx].get());
+                bool is_resource = false;
+                bool skip_after_close = false;
+
+                if (t->finally_body.has_value() && !t->finally_body->empty()) {
+                    std::vector<StmtPtr> filtered_fb;
+                    for (const auto& fs : *t->finally_body) {
+                        if (is_twr_close_or_cleanup_stmt(fs, res_name, exc_name)) {
+                            is_resource = true;
+                        } else {
+                            filtered_fb.push_back(fs);
                         }
                     }
-                    if (!is_close) {
-                        filtered_fb.push_back(fs);
+                    if (is_resource) {
+                        if (filtered_fb.empty()) {
+                            t->finally_body = std::nullopt;
+                        } else {
+                            t->finally_body = filtered_fb;
+                        }
                     }
                 }
-                if (is_resource) {
-                    t->resources.push_back(stmts[i]);
-                    if (filtered_fb.empty()) {
-                        t->finally_body = std::nullopt;
-                    } else {
-                        t->finally_body = filtered_fb;
+
+                if (!is_resource) {
+                    for (const auto& c : t->catches) {
+                        if (is_javac_modern_twr_catch(c, res_name)) {
+                            is_resource = true;
+                            break;
+                        }
                     }
-                    out.push_back(stmts[i + 1]);
-                    i += 2;
+                    if (is_resource) {
+                        if (try_idx + 1 < stmts.size() && is_standalone_close_stmt(stmts[try_idx + 1], res_name)) {
+                            skip_after_close = true;
+                        }
+                    }
+                }
+
+                if (is_resource) {
+                    std::vector<CatchClause> filtered_catches;
+                    for (const auto& c : t->catches) {
+                        if (!is_twr_synthetic_catch(c, exc_name) && !is_javac_modern_twr_catch(c, res_name)) {
+                            filtered_catches.push_back(c);
+                        }
+                    }
+                    t->catches = filtered_catches;
+                    t->resources.push_back(stmts[i]);
+
+                    if (!t->body.empty() && is_standalone_close_stmt(t->body.back(), res_name)) {
+                        t->body.pop_back();
+                    }
+
+                    while (t->body.size() == 1 && t->body[0] && t->body[0]->kind == StmtKind::TryStmt) {
+                        auto* inner_t = static_cast<TryStmt*>(t->body[0].get());
+                        if (!inner_t->resources.empty() && !inner_t->finally_body.has_value() && inner_t->catches.empty()) {
+                            t->resources.insert(t->resources.end(), inner_t->resources.begin(), inner_t->resources.end());
+                            t->body = std::move(inner_t->body);
+                        } else {
+                            break;
+                        }
+                    }
+
+                    out.push_back(stmts[try_idx]);
+                    i = try_idx + 1 + (skip_after_close ? 1 : 0);
                     continue;
                 }
             }
@@ -3804,6 +4206,43 @@ std::vector<StmtPtr> eliminate_dead_code_and_labels(std::vector<StmtPtr> stmts, 
     return out;
 }
 
+std::vector<StmtPtr> desugar_assignment_ternaries(std::vector<StmtPtr> stmts) {
+    std::vector<StmtPtr> out;
+    size_t n = stmts.size();
+    for (size_t i = 0; i < n; ++i) {
+        auto& s = stmts[i];
+        if (!s) continue;
+        if (s->kind == StmtKind::IfStmt) {
+            auto* if_s = static_cast<IfStmt*>(s.get());
+            if_s->then_body = desugar_assignment_ternaries(if_s->then_body);
+            if (if_s->else_body.has_value()) {
+                if_s->else_body = desugar_assignment_ternaries(*if_s->else_body);
+            }
+            if (if_s->then_body.size() == 1 && if_s->then_body[0] && if_s->then_body[0]->kind == StmtKind::ExprStmt &&
+                if_s->else_body.has_value() && if_s->else_body->size() == 1 && (*if_s->else_body)[0] && (*if_s->else_body)[0]->kind == StmtKind::ExprStmt) {
+                auto* e1 = static_cast<ExprStmtNode*>(if_s->then_body[0].get());
+                auto* e2 = static_cast<ExprStmtNode*>((*if_s->else_body)[0].get());
+                if (e1->expr && e1->expr->kind == ExprKind::Assign && e2->expr && e2->expr->kind == ExprKind::Assign) {
+                    auto* a1 = static_cast<Assign*>(e1->expr.get());
+                    auto* a2 = static_cast<Assign*>(e2->expr.get());
+                    if (a1->op == "=" && a2->op == "=" && a1->target && a2->target) {
+                        std::string t1 = emit_expr(a1->target);
+                        std::string t2 = emit_expr(a2->target);
+                        if (!t1.empty() && t1 == t2) {
+                            std::string res_type = !a1->value->type.empty() ? a1->value->type : a2->value->type;
+                            auto tern = std::make_shared<Ternary>(if_s->cond, a1->value, a2->value, res_type);
+                            out.push_back(std::make_shared<ExprStmtNode>(std::make_shared<Assign>(a1->target, simplify_expr(tern), "=")));
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+        out.push_back(s);
+    }
+    return out;
+}
+
 std::vector<StmtPtr> desugar_return_ternaries(std::vector<StmtPtr> stmts) {
     std::vector<StmtPtr> out;
     size_t n = stmts.size();
@@ -3961,6 +4400,70 @@ std::vector<StmtPtr> group_multi_catch_blocks(std::vector<StmtPtr> stmts) {
 }
 
 std::vector<StmtPtr> desugar_enhanced_for_loops(std::vector<StmtPtr> stmts) {
+    // 1. Iterator while loop desugaring:
+    // Iterator it = container.iterator(); while (it.hasNext()) { Elem elem = (Elem) it.next(); ... }
+    std::vector<StmtPtr> new_stmts;
+    size_t s_len = stmts.size();
+    size_t s_i = 0;
+    while (s_i < s_len) {
+        if (s_i + 1 < s_len && stmts[s_i] && stmts[s_i + 1] &&
+            stmts[s_i]->kind == StmtKind::LocalDecl && stmts[s_i + 1]->kind == StmtKind::WhileStmt) {
+            auto* ld = static_cast<LocalDecl*>(stmts[s_i].get());
+            auto* w = static_cast<WhileStmt*>(stmts[s_i + 1].get());
+            if (ld->init && ld->init->kind == ExprKind::MethodCall) {
+                auto* mc = static_cast<MethodCall*>(ld->init.get());
+                if (mc->name == "iterator" && mc->args.empty() && mc->target && w->cond && w->cond->kind == ExprKind::MethodCall) {
+                    auto* hmc = static_cast<MethodCall*>(w->cond.get());
+                    if (hmc->name == "hasNext" && hmc->args.empty() && hmc->target && hmc->target->kind == ExprKind::Local &&
+                        static_cast<Local*>(hmc->target.get())->name == ld->name && !w->body.empty()) {
+                        // Check first statement in body: Type elem = (Type) it.next();
+                        StmtPtr first_b = w->body[0];
+                        std::string elem_type, elem_name;
+                        ExprPtr elem_next_target = nullptr;
+                        if (first_b->kind == StmtKind::LocalDecl) {
+                            auto* b_ld = static_cast<LocalDecl*>(first_b.get());
+                            ExprPtr init_e = b_ld->init;
+                            if (init_e && init_e->kind == ExprKind::Cast) {
+                                init_e = static_cast<Cast*>(init_e.get())->expr;
+                            }
+                            if (init_e && init_e->kind == ExprKind::MethodCall) {
+                                auto* nmc = static_cast<MethodCall*>(init_e.get());
+                                if (nmc->name == "next" && nmc->args.empty() && nmc->target && nmc->target->kind == ExprKind::Local &&
+                                    static_cast<Local*>(nmc->target.get())->name == ld->name) {
+                                    elem_type = b_ld->type;
+                                    elem_name = b_ld->name;
+                                }
+                            }
+                        }
+                        if (!elem_name.empty()) {
+                            // Verify iterator is never referenced in rest of body
+                            bool it_used_again = false;
+                            for (size_t b_idx = 1; b_idx < w->body.size(); ++b_idx) {
+                                if (contains_local_ref_stmt(w->body[b_idx], ld->name)) {
+                                    it_used_again = true;
+                                    break;
+                                }
+                            }
+                            if (!it_used_again) {
+                                std::string cont_str = emit_expr(mc->target);
+                                std::vector<StmtPtr> rem_body(w->body.begin() + 1, w->body.end());
+                                auto f_stmt = std::make_shared<ForStmt>(
+                                    std::make_shared<Raw>(mark_type(elem_type) + " " + elem_name + " : " + cont_str),
+                                    nullptr, nullptr, rem_body, w->label);
+                                new_stmts.push_back(f_stmt);
+                                s_i += 2;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        new_stmts.push_back(stmts[s_i]);
+        s_i++;
+    }
+    stmts = new_stmts;
+
     for (auto& s : stmts) {
         if (!s) continue;
         if (s->kind == StmtKind::ForStmt) {
@@ -5041,6 +5544,8 @@ std::vector<StmtPtr> prune_dead_synth_locals(std::vector<StmtPtr> stmts) {
     return compacted;
 }
 
+
+
 std::vector<StmtPtr> simplify_stmts(const std::vector<StmtPtr>& stmts) {
     
     nd::g_crash_pass_name = "simplify_stmt_initial";
@@ -5053,12 +5558,14 @@ std::vector<StmtPtr> simplify_stmts(const std::vector<StmtPtr>& stmts) {
         out = hoist_common_branch_tail(out);
         out = eliminate_redundant_else_after_return(out);
         out = desugar_return_ternaries(out);
+        out = desugar_assignment_ternaries(out);
         out = propagate_single_use_flags(out);
         out = collapse_nested_if_conditions(out);
         out = merge_sequential_short_circuit_ifs(out);
         out = group_multi_catch_blocks(out);
         out = desugar_enhanced_for_loops(out);
         out = fold_try_with_resources(out);
+        collapse_string_switches(out);
         out = fuse_for_initializers(out);
         out = propagate_local_constant_arrays(out);
         out = fold_try_catches(out);

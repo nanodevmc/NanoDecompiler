@@ -719,15 +719,52 @@ std::pair<std::string, OrderedImports> render_class(
         body_lines.push_back("");
     }
 
-    // HANDOFF_42: interface_field_inits ВСЕГДА пуст (см. render_class.hpp) -
-    // <clinit> интерфейса всегда считается "сложным", если он вообще есть.
+    // Интеллектуальная реконструкция статических полей интерфейса из <clinit>:
+    // Разбираем байткод <clinit> интерфейса, извлекаем putstatic-присваивания
+    // прямо в инициализаторы полей.
     bool interface_clinit_complex = false;
-    if (is_interface && !is_enum) {
-        for (auto& m : cf.methods) {
-            if (m.name == "<clinit>" && m.has_code) {
-                interface_clinit_complex = true;
-                break;
+    std::map<std::string, std::string> interface_field_inits;
+    MethodDecompileResult iface_clinit_result;
+    if (is_interface && !is_enum && clinit_m != nullptr && clinit_m->has_code) {
+        MethodDecompileResult cres =
+            decompile_method_body(cf, *clinit_m, renamer, known_internal_by_dotted, internal, 2, enum_ordinals, switchmap_tables, all_classes);
+        if (cres.ok) {
+            std::vector<StmtPtr> src_stmts = cres.stmts;
+            if (!src_stmts.empty()) {
+                auto* ret = dynamic_cast<ReturnStmt*>(src_stmts.back().get());
+                if (ret != nullptr && ret->expr == nullptr) src_stmts.pop_back();
             }
+            bool all_assigned = true;
+            for (auto& s : src_stmts) {
+                bool ok_stmt = false;
+                if (s->kind == StmtKind::ExprStmt) {
+                    auto* es = static_cast<ExprStmtNode*>(s.get());
+                    if (es->expr->kind == ExprKind::Assign) {
+                        auto* asg = static_cast<Assign*>(es->expr.get());
+                        if (asg->target->kind == ExprKind::FieldAccess) {
+                            auto* fa = static_cast<FieldAccess*>(asg->target.get());
+                            if (fa->is_static) {
+                                interface_field_inits[fa->name] = emit_expr(asg->value);
+                                ok_stmt = true;
+                            }
+                        }
+                    }
+                }
+                if (!ok_stmt) {
+                    all_assigned = false;
+                    break;
+                }
+            }
+            if (all_assigned) {
+                interface_clinit_complex = false;
+                iface_clinit_result = cres;
+                for (auto& [d, s] : iface_clinit_result.imports.items()) all_imports.set(d, s);
+            } else {
+                interface_clinit_complex = true;
+                interface_field_inits.clear();
+            }
+        } else {
+            interface_clinit_complex = true;
         }
     }
 
@@ -751,13 +788,17 @@ std::pair<std::string, OrderedImports> render_class(
         }
         std::string fname = renamer.friendly_field(internal, f->name, f->descriptor);
         std::string renamed_note = (fname == f->name) ? "" : ("  // было: " + f->name);
-        // interface_field_inits всегда пуст (см. выше) - cv только из ConstantValue.
+        // Восстановление значений полей интерфейса либо ConstantValue
         std::string cv;
         auto literal = format_field_constant(cf, f->constant_value, f->descriptor);
-        if (literal.has_value()) cv = " = " + *literal;
+        if (literal.has_value()) {
+            cv = " = " + *literal;
+        } else if (interface_field_inits.count(fname)) {
+            cv = " = " + interface_field_inits[fname];
+        }
         for (auto& a : f->annotations) body_lines.push_back("    " + format_annotation(a, renamer, known_internal_by_dotted, all_imports));
         std::string display_type = generic_jtype.has_value() ? *generic_jtype : mark_type(jtype);
-        body_lines.push_back(collapse_double_spaces("    " + fmods + " " + display_type + " " + fname + cv + ";" + renamed_note));
+        body_lines.push_back("    " + collapse_double_spaces(fmods + " " + display_type + " " + fname + cv + ";" + renamed_note));
         std::string base_jtype = strip_array_suffix(jtype);
         if (base_jtype.find('.') != std::string::npos) all_imports.set_default(base_jtype, simple_name_of_dotted(base_jtype));
     }
@@ -1092,7 +1133,7 @@ std::pair<std::string, OrderedImports> render_class(
         std::string ret_display = (used_generic_sig && m.name != "<init>") ? ret_disp : mark_type(ret_disp);
         std::string tparams_prefix = method_type_params.empty() ? "" : (method_type_params + " ");
         std::string sig =
-            collapse_double_spaces("    " + mmods + " " + tparams_prefix + ret_display + " " + mname + "(" + param_str + ")" + sig_end + renamed_note);
+            "    " + collapse_double_spaces(mmods + " " + tparams_prefix + ret_display + " " + mname + "(" + param_str + ")" + sig_end + renamed_note);
         body_lines.push_back(sig);
 
         if (result.has_value()) {

@@ -1,6 +1,0 @@
-feat(diff): добавить синтаксическую подсветку Java и оптимизировать размер сборки
-
-- src/lib/javaHighlight.tsx: экспортирован хелпер highlightJavaLineTokens;
-- src/components/PluginDiffModal.tsx: добавлена подсветка синтаксиса Java-кода в Diff-окне;
-- scripts/afterPack.cjs: удалены неиспользуемые платформы 7zip-bin (linux/mac/ia32/arm64), размер инсталлера снижен с 71.1 МБ до 67.3 МБ (-11 МБ на диске);
-- FakeNanoGuardPlugin.jar: подготовлен тестовый JAR с маркерами NanoGuard (выход с кодом 78).

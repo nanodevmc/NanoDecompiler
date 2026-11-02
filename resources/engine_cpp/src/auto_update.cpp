@@ -245,15 +245,56 @@ int compare_semver(const std::string& a, const std::string& b) {
     return 0;
 }
 
-// Имя файла релизного ассета для этой платформы.
-const char* platform_asset_name() {
+// Мульти-ассетный гибкий матчинг для движка
+std::pair<std::string, std::string> find_matching_engine_asset(const JsonValue& release) {
+    const JsonValue* assets = release.get("assets");
+    if (!assets || !assets->is_array() || !assets->arr_v) return {"", ""};
+
+    std::vector<std::pair<std::string, std::string>> candidates;
+    for (const auto& a : *assets->arr_v) {
+        if (!a.is_object()) continue;
+        const JsonValue* name_v = a.get("name");
+        const JsonValue* url_v = a.get("browser_download_url");
+        if (name_v && name_v->is_string() && url_v && url_v->is_string()) {
+            candidates.push_back({name_v->str_v, url_v->str_v});
+        }
+    }
+
 #ifdef _WIN32
-    return "NanoDecompilerClApi-windows.exe";
+    for (const auto& [name, url] : candidates) {
+        std::string ln = to_lower(name);
+        if (ln.find("nanodecompilercli") != std::string::npos && ln.find("windows") != std::string::npos && ln.find(".exe") != std::string::npos) return {name, url};
+        if (ln == "nanodecompilercli.exe" || ln == "nanodecompilerclapi-windows.exe") return {name, url};
+    }
 #elif defined(__APPLE__)
-    return "NanoDecompilerClApi-macos";
+    for (const auto& [name, url] : candidates) {
+        std::string ln = to_lower(name);
+        if (ln.find("nanodecompilercli") != std::string::npos && (ln.find("macos") != std::string::npos || ln.find("darwin") != std::string::npos)) return {name, url};
+        if (ln == "nanodecompilercli" || ln == "nanodecompilerclapi-macos") return {name, url};
+    }
 #else
-    return "NanoDecompilerClApi-linux";
+    for (const auto& [name, url] : candidates) {
+        std::string ln = to_lower(name);
+        if (ln.find("nanodecompilercli") != std::string::npos && ln.find("linux") != std::string::npos) return {name, url};
+        if (ln == "nanodecompilercli" || ln == "nanodecompilerclapi-linux") return {name, url};
+    }
 #endif
+    return {"", ""};
+}
+
+std::vector<std::pair<std::string, std::string>> list_ecosystem_assets(const JsonValue& release) {
+    std::vector<std::pair<std::string, std::string>> out;
+    const JsonValue* assets = release.get("assets");
+    if (!assets || !assets->is_array() || !assets->arr_v) return out;
+    for (const auto& a : *assets->arr_v) {
+        if (!a.is_object()) continue;
+        const JsonValue* name_v = a.get("name");
+        const JsonValue* url_v = a.get("browser_download_url");
+        if (name_v && name_v->is_string() && url_v && url_v->is_string()) {
+            out.push_back({name_v->str_v, url_v->str_v});
+        }
+    }
+    return out;
 }
 
 std::string find_asset_url(const JsonValue& release, const std::string& asset_name) {
@@ -286,33 +327,48 @@ bool read_file_bytes(const std::string& path, std::vector<uint8_t>& out) {
 
 }  // namespace
 
-void check_update() {
-    std::cout << "Checking for updates..." << std::endl;
+void check_update(const std::string& channel) {
+    std::cout << "======================================================\n";
+    std::cout << "  OTA Update Center (Channel: " << channel << ")\n";
+    std::cout << "======================================================\n";
+    std::cout << "[*] Querying GitHub releases..." << std::endl;
     std::string json_str;
     std::string fetch_err = https_fetch(kLatestReleaseUrl, kMaxJsonBytes, &json_str, "");
     if (!fetch_err.empty() || json_str.empty()) {
-        std::cerr << "Failed to check updates." << (fetch_err.empty() ? "" : " (" + fetch_err + ")") << std::endl;
+        std::cerr << "[!] Failed to check updates." << (fetch_err.empty() ? "" : " (" + fetch_err + ")") << std::endl;
         return;
     }
     auto opt_val = json_parse(json_str);
     if (!opt_val) {
-        std::cerr << "Failed to parse GitHub response." << std::endl;
+        std::cerr << "[!] Failed to parse GitHub response." << std::endl;
         return;
     }
     JsonValue val = *opt_val;
     if (val.is_object() && val.get("tag_name")) {
         std::string tag = val.get("tag_name")->as_string().value_or("");
-        std::cout << "Current version: " << NANO_DECOMPILER_VERSION << std::endl;
-        std::cout << "Latest version:  " << tag << std::endl;
+        std::cout << "[*] Component Status:\n";
+        std::cout << "  - Engine (C++ CLI):       " << NANO_DECOMPILER_VERSION << " (Latest: " << tag << ")\n";
+        std::cout << "  - FastScan Core (Rust):   " << NANO_DECOMPILER_VERSION << " (Latest: " << tag << ")\n";
+
+        auto eco = list_ecosystem_assets(val);
+        for (const auto& [aname, aurl] : eco) {
+            std::string lan = to_lower(aname);
+            if (lan.find(".apk") != std::string::npos) {
+                std::cout << "  - Android Mobile:         " << aname << "\n";
+            } else if (lan.find("setup.exe") != std::string::npos || lan.find(".appimage") != std::string::npos || lan.find(".dmg") != std::string::npos) {
+                std::cout << "  - Desktop Client GUI:     " << aname << "\n";
+            }
+        }
+
         std::string current_norm = normalize_version(NANO_DECOMPILER_VERSION);
         std::string latest_norm = normalize_version(tag);
         if (compare_semver(latest_norm, current_norm) > 0) {
-            std::cout << "\nUpdate available! Run with --update to upgrade." << std::endl;
+            std::cout << "\n[+] Update available! Run with --update to upgrade automatically.\n";
         } else {
-            std::cout << "\nYou are on the latest version." << std::endl;
+            std::cout << "\n[+] All core components are up to date!\n";
         }
     } else {
-        std::cerr << "Invalid response from GitHub." << std::endl;
+        std::cerr << "[!] Invalid response from GitHub." << std::endl;
     }
 }
 
@@ -328,7 +384,7 @@ void cleanup_update_leftovers() {
 
 // Параметр оставлен ради совместимости сигнатуры: путь к себе берётся у ОС
 // (argv[0] может быть относительным, результатом поиска в PATH или вообще не путём).
-void do_update(const std::string& /*self_path_argv*/) {
+void do_update(const std::string& /*self_path_argv*/, const std::string& channel) {
     std::cout << "Fetching latest release info..." << std::endl;
     std::string json_str;
     std::string err = https_fetch(kLatestReleaseUrl, kMaxJsonBytes, &json_str, "");
@@ -353,8 +409,7 @@ void do_update(const std::string& /*self_path_argv*/) {
         return;
     }
 
-    const std::string asset_name = platform_asset_name();
-    std::string asset_url = find_asset_url(release, asset_name);
+    auto [asset_name, asset_url] = find_matching_engine_asset(release);
     if (asset_url.empty()) {
         std::cerr << "Could not find compatible asset for this OS in the latest release." << std::endl;
         return;

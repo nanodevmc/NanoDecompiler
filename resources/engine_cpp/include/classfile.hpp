@@ -108,6 +108,7 @@ struct LocalVarEntry {
     uint16_t start_pc = 0, length = 0, slot = 0;
     std::string name;
     std::string descriptor;
+    std::string signature;
 };
 
 struct Field {

@@ -1503,6 +1503,83 @@ ipcMain.handle("engine:version", async () => {
   });
 });
 
+
+ipcMain.handle("engine:securityRadar", async (_e, jarPathRaw: unknown) => {
+  if (typeof jarPathRaw !== "string" || !jarPathRaw) return { ok: false, error: "Некорректный путь к JAR" };
+  const jarPath = path.resolve(expandHome(jarPathRaw));
+  let cmd: string, args: string[];
+  try {
+    ({ cmd, args } = engineInvocation(["--security-radar", jarPath, "--json"]));
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+  return new Promise((resolve) => {
+    let out = "";
+    const proc = spawn(cmd, args, { cwd: engineDir(), env: { ...process.env } });
+    proc.stdout.on("data", (d) => (out += d.toString("utf-8")));
+    proc.on("close", (code) => {
+      try {
+        const parsed = JSON.parse(out.trim());
+        resolve({ ok: code === 0, ...parsed });
+      } catch {
+        resolve({ ok: false, error: "Не удалось разобрать вывод Security Radar", raw: out });
+      }
+    });
+    proc.on("error", (e) => resolve({ ok: false, error: e.message }));
+  });
+});
+
+ipcMain.handle("engine:sandbox", async (_e, jarPathRaw: unknown) => {
+  if (typeof jarPathRaw !== "string" || !jarPathRaw) return { ok: false, error: "Некорректный путь к JAR" };
+  const jarPath = path.resolve(expandHome(jarPathRaw));
+  let cmd: string, args: string[];
+  try {
+    ({ cmd, args } = engineInvocation(["--sandbox", jarPath, "--json"]));
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+  return new Promise((resolve) => {
+    let out = "";
+    const proc = spawn(cmd, args, { cwd: engineDir(), env: { ...process.env } });
+    proc.stdout.on("data", (d) => (out += d.toString("utf-8")));
+    proc.on("close", (code) => {
+      try {
+        const parsed = JSON.parse(out.trim());
+        resolve({ ok: code === 0, ...parsed });
+      } catch {
+        resolve({ ok: false, error: "Не удалось разобрать вывод Sandbox", raw: out });
+      }
+    });
+    proc.on("error", (e) => resolve({ ok: false, error: e.message }));
+  });
+});
+
+ipcMain.handle("engine:patchUtf8", async (_e, inJarRaw: unknown, outJarRaw: unknown, oldStr: unknown, newStr: unknown) => {
+  if (typeof inJarRaw !== "string" || typeof outJarRaw !== "string" || typeof oldStr !== "string" || typeof newStr !== "string") {
+    return { ok: false, error: "Некорректные параметры" };
+  }
+  const inJar = path.resolve(expandHome(inJarRaw));
+  const outJar = path.resolve(expandHome(outJarRaw));
+  let cmd: string, args: string[];
+  try {
+    ({ cmd, args } = engineInvocation(["--patch-utf8", inJar, outJar, oldStr, newStr]));
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+  return new Promise((resolve) => {
+    let out = "";
+    let errOut = "";
+    const proc = spawn(cmd, args, { cwd: engineDir(), env: { ...process.env } });
+    proc.stdout.on("data", (d) => (out += d.toString("utf-8")));
+    proc.stderr.on("data", (d) => (errOut += d.toString("utf-8")));
+    proc.on("close", (code) => {
+      if (code === 0) resolve({ ok: true, output: out.trim() });
+      else resolve({ ok: false, error: errOut.trim() || out.trim() });
+    });
+    proc.on("error", (e) => resolve({ ok: false, error: e.message }));
+  });
+});
+
 ipcMain.handle("jar:summary", async (_e, jarPathRaw: unknown) => {
   if (typeof jarPathRaw !== "string" || !jarPathRaw || jarPathRaw.includes("\0")) {
     return { error: "некорректный путь" };

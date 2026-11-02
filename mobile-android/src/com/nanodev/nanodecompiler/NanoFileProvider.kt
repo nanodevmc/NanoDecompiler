@@ -42,6 +42,9 @@ class NanoFileProvider : ContentProvider() {
         if (ext.equals("zip", ignoreCase = true)) {
             return "application/zip"
         }
+        if (ext.equals("apk", ignoreCase = true)) {
+            return "application/vnd.android.package-archive"
+        }
         val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext.lowercase())
         return mime ?: "application/octet-stream"
     }
@@ -93,12 +96,16 @@ class NanoFileProvider : ContentProvider() {
         fun getUriForFile(context: android.content.Context, file: File): Uri {
             // Относительный путь от filesDir или getExternalFilesDir
             val extDir = context.getExternalFilesDir(null)
+            val cacheDir = context.cacheDir
             val relPath = when {
                 extDir != null && file.absolutePath.startsWith(extDir.absolutePath) -> {
                     file.absolutePath.removePrefix(extDir.absolutePath)
                 }
                 file.absolutePath.startsWith(context.filesDir.absolutePath) -> {
                     file.absolutePath.removePrefix(context.filesDir.absolutePath)
+                }
+                file.absolutePath.startsWith(cacheDir.absolutePath) -> {
+                    file.absolutePath.removePrefix(cacheDir.absolutePath)
                 }
                 else -> file.absolutePath
             }

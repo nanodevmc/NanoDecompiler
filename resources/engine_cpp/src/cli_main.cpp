@@ -34,6 +34,19 @@
 #include "auto_update.hpp"
 #include "archive_extractor.hpp"
 #include "version.hpp"
+#include "class_patcher.hpp"
+#include "zip_writer.hpp"
+#include "minecraft_porter.hpp"
+#include "semantic_namer.hpp"
+#include "security_radar.hpp"
+#include "sandbox.hpp"
+#include "zip_reader.hpp"
+#include "decomp_cache.hpp"
+#include "dependency_graph.hpp"
+#include "rejar_folia.hpp"
+#include "fuzzing_harness.hpp"
+#include "semantic_reconstructor.hpp"
+#include <iomanip>
 
 namespace fs = std::filesystem;
 
@@ -123,6 +136,313 @@ std::string banner_text() {
     return top + "\n" + pad(line1) + "\n" + pad(line2) + "\n" + sep + "\n" + pad(line3) + "\n" + bot;
 }
 
+
+int run_security_radar(const std::string& jar_path, bool json_out) {
+    std::error_code ec;
+    if (!fs::is_regular_file(fs::u8path(jar_path), ec)) {
+        if (json_out) std::cout << "{\"error\":\"File not found: " << json_escape(jar_path) << "\"}\n";
+        else std::cerr << "[!] File not found: " << jar_path << "\n";
+        return 1;
+    }
+    nd::ZipReader zr(jar_path);
+    std::map<std::string, nd::ClassFile> class_files;
+    for (const auto& name : zr.namelist()) {
+        if (name.size() > 6 && name.substr(name.size() - 6) == ".class") {
+            try {
+                auto b = zr.read(name);
+                nd::ClassFile cf(b);
+                class_files.emplace(cf.this_class_name, std::move(cf));
+            } catch (...) {}
+        }
+    }
+    auto report = nd::SecurityRadar::analyze_jar_security(class_files);
+    if (json_out) {
+        std::cout << "{\"status\":\"ok\",\"risk_score\":" << report.overall_risk_score
+                  << ",\"has_critical_backdoor\":" << (report.has_critical_backdoor ? "true" : "false")
+                  << ",\"threats\":[";
+        for (size_t i = 0; i < report.threats.size(); ++i) {
+            const auto& t = report.threats[i];
+            if (i > 0) std::cout << ",";
+            std::cout << "{\"threat_id\":\"" << json_escape(t.threat_id)
+                      << "\",\"class_name\":\"" << json_escape(t.class_name)
+                      << "\",\"method_name\":\"" << json_escape(t.method_name)
+                      << "\",\"description\":\"" << json_escape(t.description)
+                      << "\",\"severity\":" << static_cast<int>(t.severity)
+                      << ",\"can_auto_sanitize\":" << (t.can_auto_sanitize ? "true" : "false")
+                      << "}";
+        }
+        std::cout << "]}\n";
+        return 0;
+    }
+    std::cout << "\n======================================================\n";
+    std::cout << "  \u26A1 " << nd::NANO_DECOMPILER_VERSION << " Forensic Security Radar \n";
+    std::cout << "======================================================\n";
+    std::cout << "[*] Target JAR: " << jar_path << "\n";
+    std::cout << "[*] Total analyzed classes: " << class_files.size() << "\n";
+    std::cout << "[*] Risk Score: " << report.overall_risk_score << "/100 ";
+    if (report.overall_risk_score >= 70) {
+        std::cout << "[CRITICAL RISK - BACKDOOR / MALWARE DETECTED!]\n";
+    } else if (report.overall_risk_score >= 30) {
+        std::cout << "[SUSPICIOUS / ELEVATED RISK]\n";
+    } else {
+        std::cout << "[CLEAN / SAFE]\n";
+    }
+    if (!report.threats.empty()) {
+        std::cout << "\n[!] Detected Threats (" << report.threats.size() << "):\n";
+        for (const auto& t : report.threats) {
+            std::cout << "  - [" << t.threat_id << "] " << t.class_name << "." << t.method_name << "(): " << t.description << "\n";
+        }
+    } else {
+        std::cout << "[+] No known backdoors, force-op routines, or malicious payloads detected.\n";
+    }
+    std::cout << "======================================================\n\n";
+    return 0;
+}
+
+int run_sandbox_cli(const std::string& jar_path, bool json_out) {
+    std::error_code ec;
+    if (!fs::is_regular_file(fs::u8path(jar_path), ec)) {
+        if (json_out) std::cout << "{\"error\":\"File not found: " << json_escape(jar_path) << "\"}\n";
+        else std::cerr << "[!] File not found: " << jar_path << "\n";
+        return 1;
+    }
+    nd::ZipReader zr(jar_path);
+    std::map<std::string, nd::ClassFile> class_files;
+    std::string plugin_yml;
+    for (const auto& name : zr.namelist()) {
+        if (name == "plugin.yml") {
+            auto b = zr.read(name);
+            plugin_yml = std::string(reinterpret_cast<const char*>(b.data()), b.size());
+        } else if (name.size() > 6 && name.substr(name.size() - 6) == ".class") {
+            try {
+                auto b = zr.read(name);
+                nd::ClassFile cf(b);
+                class_files.emplace(cf.this_class_name, std::move(cf));
+            } catch (...) {}
+        }
+    }
+    std::string main_class;
+    size_t mpos = plugin_yml.find("main:");
+    if (mpos != std::string::npos) {
+        size_t eol = plugin_yml.find('\n', mpos);
+        std::string line = plugin_yml.substr(mpos + 5, eol - (mpos + 5));
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.erase(0, 1);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        for (char& c : line) if (c == '.') c = '/';
+        main_class = line;
+    }
+    auto report = nd::NanoSandbox::simulate_plugin(class_files, main_class, plugin_yml);
+    if (json_out) {
+        std::cout << "{\"status\":\"ok\",\"main_class\":\"" << json_escape(report.main_class)
+                  << "\",\"success\":" << (report.simulation_success ? "true" : "false")
+                  << ",\"registered_commands\":" << report.registered_commands_count
+                  << ",\"registered_listeners\":" << report.registered_listeners_count
+                  << ",\"scheduled_tasks\":" << report.scheduled_tasks_count
+                  << ",\"events\":[";
+        for (size_t i = 0; i < report.events.size(); ++i) {
+            const auto& ev = report.events[i];
+            if (i > 0) std::cout << ",";
+            std::cout << "{\"timestamp_ms\":" << ev.timestamp_ms
+                      << ",\"tag\":\"" << json_escape(ev.tag)
+                      << "\",\"details\":\"" << json_escape(ev.details)
+                      << "\",\"suspicious\":" << (ev.is_suspicious ? "true" : "false")
+                      << "}";
+        }
+        std::cout << "]}\n";
+        return 0;
+    }
+    std::cout << "\n======================================================\n";
+    std::cout << "  \u2615 " << nd::NANO_DECOMPILER_VERSION << " Headless Bukkit Sandbox \n";
+    std::cout << "======================================================\n";
+    std::cout << "[*] Plugin Main Class: " << (report.main_class.empty() ? "(auto-detected)" : report.main_class) << "\n";
+    std::cout << "[*] Simulation Status: " << (report.simulation_success ? "SUCCESS" : "PARTIAL") << "\n";
+    std::cout << "[*] Registered Commands: " << report.registered_commands_count << "\n";
+    std::cout << "[*] Event Listeners: " << report.registered_listeners_count << "\n";
+    std::cout << "[*] Scheduled Tasks: " << report.scheduled_tasks_count << "\n";
+    std::cout << "\n--- Simulation Event Timeline ---\n";
+    for (const auto& ev : report.events) {
+        std::printf("[+%6.2fms] [%-10s] %s%s\n", ev.timestamp_ms, ev.tag.c_str(), ev.details.c_str(), ev.is_suspicious ? " [!] SUSPICIOUS" : "");
+    }
+    std::cout << "======================================================\n\n";
+    return 0;
+}
+
+int run_patch_utf8(const std::string& in_jar, const std::string& out_jar, const std::string& old_s, const std::string& new_s) {
+    std::error_code ec;
+    if (!fs::is_regular_file(fs::u8path(in_jar), ec)) {
+        std::cerr << "[!] Input JAR not found: " << in_jar << "\n";
+        return 1;
+    }
+    auto t0 = std::chrono::steady_clock::now();
+    nd::ZipReader zr(in_jar);
+    std::map<std::string, std::vector<uint8_t>> replacements;
+    size_t patched_classes = 0;
+    for (const auto& name : zr.namelist()) {
+        if (name.size() > 6 && name.substr(name.size() - 6) == ".class") {
+            auto b = zr.read(name);
+            auto res = nd::ClassPatcher::patch_utf8_constant(b, old_s, new_s);
+            if (res.success) {
+                replacements[name] = std::move(res.patched_bytes);
+                patched_classes++;
+            }
+        }
+    }
+    if (replacements.empty()) {
+        std::cout << "[*] String \"" << old_s << "\" not found in constant pools of " << in_jar << ". No modifications made.\n";
+        return 0;
+    }
+    auto wres = nd::ZipWriter::patch_zip(in_jar, out_jar, replacements);
+    auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    if (wres.success) {
+        std::cout << "[+] Hot-Patched " << patched_classes << " classes in " << std::fixed << std::setprecision(1) << elapsed << " ms!\n";
+        std::cout << "[+] Successfully saved to: " << out_jar << "\n";
+        return 0;
+    } else {
+        std::cerr << "[!] Error writing patched JAR: " << wres.message << "\n";
+        return 1;
+    }
+}
+
+
+int run_api_diff(const std::string& old_jar, const std::string& new_jar, bool json_out) {
+    std::error_code ec;
+    if (!fs::is_regular_file(fs::u8path(old_jar), ec) || !fs::is_regular_file(fs::u8path(new_jar), ec)) {
+        if (json_out) std::cout << "{\"error\":\"One or both JAR files not found\"}\n";
+        else std::cerr << "[!] One or both JAR files not found\n";
+        return 1;
+    }
+    nd::ZipReader zr1(old_jar);
+    nd::ZipReader zr2(new_jar);
+    std::set<std::string> classes1, classes2;
+    for (const auto& n : zr1.namelist()) {
+        if (n.size() > 6 && n.substr(n.size() - 6) == ".class") classes1.insert(n);
+    }
+    for (const auto& n : zr2.namelist()) {
+        if (n.size() > 6 && n.substr(n.size() - 6) == ".class") classes2.insert(n);
+    }
+    std::vector<std::string> added_classes, removed_classes, common_classes;
+    for (const auto& c : classes2) {
+        if (!classes1.count(c)) added_classes.push_back(c);
+        else common_classes.push_back(c);
+    }
+    for (const auto& c : classes1) {
+        if (!classes2.count(c)) removed_classes.push_back(c);
+    }
+
+    if (json_out) {
+        std::cout << "{\"status\":\"ok\",\"old_classes\":" << classes1.size()
+                  << ",\"new_classes\":" << classes2.size()
+                  << ",\"added_count\":" << added_classes.size()
+                  << ",\"removed_count\":" << removed_classes.size()
+                  << ",\"common_count\":" << common_classes.size() << "}\n";
+        return 0;
+    }
+
+    std::cout << "\n======================================================\n";
+    std::cout << "  ⚙ " << nd::NANO_DECOMPILER_VERSION << " Semantic API & Binary Diff \n";
+    std::cout << "======================================================\n";
+    std::cout << "[*] Old JAR: " << old_jar << " (" << classes1.size() << " classes)\n";
+    std::cout << "[*] New JAR: " << new_jar << " (" << classes2.size() << " classes)\n";
+    std::cout << "[+] Added Classes: " << added_classes.size() << "\n";
+    for (size_t k = 0; k < std::min<size_t>(added_classes.size(), 10); ++k) {
+        std::cout << "    + " << added_classes[k] << "\n";
+    }
+    if (added_classes.size() > 10) std::cout << "    ... and " << (added_classes.size() - 10) << " more\n";
+
+    std::cout << "[-] Removed Classes (Breaking Changes): " << removed_classes.size() << "\n";
+    for (size_t k = 0; k < std::min<size_t>(removed_classes.size(), 10); ++k) {
+        std::cout << "    - " << removed_classes[k] << "\n";
+    }
+    if (removed_classes.size() > 10) std::cout << "    ... and " << (removed_classes.size() - 10) << " more\n";
+
+    std::cout << "[*] Unchanged / Retained Classes: " << common_classes.size() << "\n";
+    std::cout << "======================================================\n\n";
+    return 0;
+}
+
+
+int run_export_graph(const std::string& jar_path, const std::string& out_json) {
+    try {
+        nd::ZipReader zr(jar_path);
+        std::map<std::string, nd::ClassFile> class_files;
+        for (const auto& name : zr.namelist()) {
+            if (name.size() > 6 && name.substr(name.size() - 6) == ".class") {
+                auto bytes = zr.read(name);
+                try {
+                    class_files.emplace(name, nd::ClassFile(bytes));
+                } catch (...) {}
+            }
+        }
+        auto rep = nd::DependencyGraph::build_graph(class_files);
+        if (nd::DependencyGraph::export_to_file(rep, out_json)) {
+            std::cout << "{\"status\":\"ok\",\"nodes\":" << rep.nodes.size()
+                      << ",\"edges\":" << rep.edges.size()
+                      << ",\"high_risk\":" << rep.high_risk_classes
+                      << ",\"output\":\"" << json_escape(out_json) << "\"}\n";
+            return 0;
+        } else {
+            std::cout << "{\"status\":\"error\",\"message\":\"Failed to write graph file\"}\n";
+            return 1;
+        }
+    } catch (const std::exception& e) {
+        std::cout << "{\"status\":\"error\",\"message\":\"" << json_escape(e.what()) << "\"}\n";
+        return 1;
+    }
+}
+
+int run_fuzz_exploits(const std::string& jar_path, bool json_out) {
+    try {
+        nd::ZipReader zr(jar_path);
+        std::map<std::string, nd::ClassFile> class_files;
+        for (const auto& name : zr.namelist()) {
+            if (name.size() > 6 && name.substr(name.size() - 6) == ".class") {
+                auto bytes = zr.read(name);
+                try {
+                    class_files.emplace(name, nd::ClassFile(bytes));
+                } catch (...) {}
+            }
+        }
+        auto rep = nd::FuzzingHarness::audit_jar(class_files);
+        if (json_out) {
+            std::cout << nd::FuzzingHarness::to_json(rep) << "\n";
+        } else {
+            std::cout << "\n======================================================\n";
+            std::cout << "  [!] " << nd::NANO_DECOMPILER_VERSION << " Zero-Day & Exploit Fuzzing Harness\n";
+            std::cout << "======================================================\n";
+            std::cout << "[*] Classes Audited: " << rep.total_classes_audited << "\n";
+            std::cout << "[*] Vulnerabilities Found: " << rep.vulnerabilities_found << "\n";
+            std::cout << "[*] Max Exploit Severity: " << rep.max_exploit_severity << "/100\n";
+            for (const auto& v : rep.findings) {
+                std::cout << "  - [" << v.vuln_id << "] (Severity: " << v.severity_score << ") in "
+                          << v.class_name << "#" << v.method_name << "\n";
+                std::cout << "    Description: " << v.description << "\n";
+            }
+        }
+        return (rep.max_exploit_severity >= 80 ? 2 : 0);
+    } catch (const std::exception& e) {
+        if (json_out) std::cout << "{\"status\":\"error\",\"message\":\"" << json_escape(e.what()) << "\"}\n";
+        else std::cerr << "[!] Error: " << e.what() << "\n";
+        return 1;
+    }
+}
+
+int run_immunize(const std::string& in_jar, const std::string& out_jar) {
+    auto res = nd::FuzzingHarness::immunize_jar(in_jar, out_jar);
+    std::cout << "{\"status\":\"" << (res.success ? "ok" : "error") << "\","
+              << "\"message\":\"" << json_escape(res.message) << "\","
+              << "\"threats_neutralized\":" << res.threats_neutralized << "}\n";
+    return res.success ? 0 : 1;
+}
+
+int run_port_folia(const std::string& in_jar, const std::string& out_jar) {
+    auto res = nd::FoliaTranspiler::port_jar(in_jar, out_jar);
+    std::cout << "{\"status\":\"" << (res.success ? "ok" : "error") << "\","
+              << "\"message\":\"" << json_escape(res.message) << "\","
+              << "\"schedulers_found\":" << res.schedulers_found << ","
+              << "\"plugin_ymls_updated\":" << res.plugin_ymls_updated << "}\n";
+    return res.success ? 0 : 1;
+}
+
 void print_usage() {
     if (g_lang == "en") {
         std::cout << "Usage: NanoDecompilerCLI plugin.jar [output_dir] [--lang=en|ru]\n";
@@ -149,7 +469,7 @@ void print_usage() {
     }
 }
 
-int run_decompile_console(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool ignore_nanoguard = false, bool suppress_banner = false, bool skip_malware_scan = false) {
+int run_decompile_console(const std::string& jar_path, const std::string& out_dir, bool skip_legitimacy, bool ignore_nanoguard = false, bool suppress_banner = false, bool skip_malware_scan = false, bool port_to_121 = false, bool enable_semantic_namer = false, bool include_libs = false) {
     if (!suppress_banner) {
         std::cout << "\n" << banner_text() << "\n\n";
     }
@@ -163,7 +483,7 @@ int run_decompile_console(const std::string& jar_path, const std::string& out_di
         if (is_single_class) {
             jr = nd::process_single_class(jar_path, out_dir);
         } else {
-            jr = nd::process_jar_with_stats(jar_path, out_dir, skip_legitimacy, /*print_progress=*/true, ignore_nanoguard, skip_malware_scan);
+            jr = nd::process_jar_with_stats(jar_path, out_dir, skip_legitimacy, /*print_progress=*/true, ignore_nanoguard, skip_malware_scan, port_to_121, enable_semantic_namer, include_libs);
         }
     } catch (const std::exception& e) {
         std::cerr << "[!] ОШИБКА: " << e.what() << "\n";
@@ -364,12 +684,18 @@ int run_cli(int argc, char** argv) {
         return 1;
     }
 
-        if (args[0] == "--check-update") {
-        nd::check_update();
+            if (args[0].rfind("--check-update", 0) == 0) {
+        std::string channel = "stable";
+        if (args[0].size() > 15 && args[0][14] == '=') channel = args[0].substr(15);
+        else if (args.size() > 1 && args[1][0] != '-') channel = args[1];
+        nd::check_update(channel);
         return 0;
     }
-    if (args[0] == "--update") {
-        nd::do_update(argv[0]);
+    if (args[0].rfind("--update", 0) == 0) {
+        std::string channel = "stable";
+        if (args[0].size() > 9 && args[0][8] == '=') channel = args[0].substr(9);
+        else if (args.size() > 1 && args[1][0] != '-') channel = args[1];
+        nd::do_update(argv[0], channel);
         return 0;
     }
     if (args[0] == "--version") {
@@ -384,7 +710,94 @@ int run_cli(int argc, char** argv) {
     }
 
 
-      if (args[0] == "--jar-summary") {
+      if (args[0] == "--security-radar" || args[0] == "-sr") {
+        if (args.size() < 2) {
+            std::cout << "{\"error\":\"Usage: NanoDecompilerCLI --security-radar plugin.jar [--json]\"}\n";
+            return 1;
+        }
+        bool json_out = false;
+        for (size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "--json" || args[i] == "--json-output") json_out = true;
+        }
+        return run_security_radar(args[1], json_out);
+    }
+
+    if (args[0] == "--sandbox" || args[0] == "-sb") {
+        if (args.size() < 2) {
+            std::cout << "{\"error\":\"Usage: NanoDecompilerCLI --sandbox plugin.jar [--json]\"}\n";
+            return 1;
+        }
+        bool json_out = false;
+        for (size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "--json" || args[i] == "--json-output") json_out = true;
+        }
+        return run_sandbox_cli(args[1], json_out);
+    }
+
+    if (args[0] == "--patch-utf8" || args[0] == "-p") {
+        if (args.size() < 5) {
+            std::cout << "{\"error\":\"Usage: NanoDecompilerCLI --patch-utf8 in.jar out.jar old_str new_str\"}\n";
+            return 1;
+        }
+        return run_patch_utf8(args[1], args[2], args[3], args[4]);
+    }
+
+    
+    if (args[0] == "--api-diff" || args[0] == "-ad") {
+        if (args.size() < 3) {
+            std::cout << "{\"error\":\"Usage: NanoDecompilerCLI --api-diff old.jar new.jar [--json]\"}\n";
+            return 1;
+        }
+        bool json_out = false;
+        for (size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "--json" || args[i] == "--json-output") json_out = true;
+        }
+        return run_api_diff(args[1], args[2], json_out);
+    }
+
+    if (args[0] == "--export-graph" || args[0] == "-eg") {
+        if (args.size() < 3) {
+            std::cout << "{\"error\":\"Usage: NanoDecompilerCLI --export-graph plugin.jar out.json\"}\n";
+            return 1;
+        }
+        return run_export_graph(args[1], args[2]);
+    }
+
+    if (args[0] == "--fuzz-exploits" || args[0] == "-fe") {
+        if (args.size() < 2) {
+            std::cout << "{\"error\":\"Usage: NanoDecompilerCLI --fuzz-exploits plugin.jar [--json]\"}\n";
+            return 1;
+        }
+        bool json_out = false;
+        for (size_t i = 1; i < args.size(); ++i) {
+            if (args[i] == "--json" || args[i] == "--json-output") json_out = true;
+        }
+        return run_fuzz_exploits(args[1], json_out);
+    }
+
+    if (args[0] == "--immunize" || args[0] == "-im") {
+        if (args.size() < 3) {
+            std::cout << "{\"error\":\"Usage: NanoDecompilerCLI --immunize in.jar out_safe.jar\"}\n";
+            return 1;
+        }
+        return run_immunize(args[1], args[2]);
+    }
+
+    if (args[0] == "--port-folia" || args[0] == "-pf") {
+        if (args.size() < 3) {
+            std::cout << "{\"error\":\"Usage: NanoDecompilerCLI --port-folia in.jar out_folia.jar\"}\n";
+            return 1;
+        }
+        return run_port_folia(args[1], args[2]);
+    }
+
+    if (args[0] == "--clear-cache") {
+        nd::DecompCache::instance().clear();
+        std::cout << "{\"status\":\"ok\",\"message\":\"Bytecode deduplication cache cleared successfully\"}\n";
+        return 0;
+    }
+
+    if (args[0] == "--jar-summary") {
 
         if (args.size() < 2) {
             std::cout << "{\"error\":\"использование: NanoDecompilerCLI --jar-summary plugin.jar\"}\n";
@@ -449,6 +862,9 @@ int run_cli(int argc, char** argv) {
     bool keep_archive_temp = false;
     bool ignore_nanoguard = false;
     bool skip_malware_scan = false;
+    bool port_to_121 = false;
+    bool enable_semantic_namer = false;
+    bool include_libs = false;
     std::string explicit_out_dir;
     std::vector<std::string> positional_rest;
     for (size_t i = 1; i < args.size(); ++i) {
@@ -462,6 +878,12 @@ int run_cli(int argc, char** argv) {
             json_output = true;
         } else if (args[i] == "--keep-temp") {
             keep_archive_temp = true;  // не удалять распакованный архив из временной папки
+        } else if (args[i] == "--port-121" || args[i] == "--port") {
+            port_to_121 = true;
+        } else if (args[i] == "--semantic-names" || args[i] == "--semantic") {
+            enable_semantic_namer = true;
+        } else if (args[i] == "--include-libs" || args[i] == "--decompile-libs" || args[i] == "-il") {
+            include_libs = true;
         } else if ((args[i] == "-o" || args[i] == "--out" || args[i] == "--output") && i + 1 < args.size()) {
             explicit_out_dir = args[++i];
         } else {
@@ -570,7 +992,7 @@ int run_cli(int argc, char** argv) {
 
     if (json_output) return nd::run_json_output(jar_path, out_dir, skip_legitimacy, ignore_nanoguard);
 
-    return run_decompile_console(jar_path, out_dir, skip_legitimacy, ignore_nanoguard, /*suppress_banner=*/false, skip_malware_scan);
+    return run_decompile_console(jar_path, out_dir, skip_legitimacy, ignore_nanoguard, /*suppress_banner=*/false, skip_malware_scan, port_to_121, enable_semantic_namer, include_libs);
 }
 
 // БАГ-ФИКС v1.7.4 (реальный краш на Windows - необработанное исключение

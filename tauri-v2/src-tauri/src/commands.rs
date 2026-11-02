@@ -31,7 +31,7 @@ pub struct EnvItem {
 
 #[tauri::command]
 pub fn get_gui_version() -> String {
-    "2.0.3".to_string()
+    "2.0.6".to_string()
 }
 
 #[tauri::command]

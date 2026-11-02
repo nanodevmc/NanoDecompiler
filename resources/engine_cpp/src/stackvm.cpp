@@ -724,6 +724,9 @@ StmtPtr assign_stmt(const ExprPtr& target, const ExprPtr& value) {
 }
 
 std::string refine_type(const std::string& current, const ExprPtr& value_expr) {
+    if (!current.empty() && current.find('<') != std::string::npos) {
+        return current; // Сохраняем generic сигнатуру из LocalVariableTypeTable
+    }
     const std::string& t = value_expr->type;
     // БАГ-ФИКС (реальный, найден сравнением декомпилированного вывода с
     // настоящим исходником пользователя - "Object rest = ...;" затем
@@ -857,10 +860,18 @@ ExprPtr build_string_concat(const ClassFile& cf, const std::vector<uint16_t>& bs
         for (char ch : *recipe) {
             if (ch == '\x01') {
                 if (!buf.empty()) { parts.push_back(std::make_shared<Const>(java_string_literal(buf), "String")); buf.clear(); }
-                parts.push_back(call_args.at(dyn_i)); dyn_i += 1;
+                if (dyn_i < call_args.size()) {
+                    parts.push_back(call_args[dyn_i]);
+                    dyn_i += 1;
+                } else {
+                    parts.push_back(std::make_shared<Const>("\"\"", "String"));
+                }
             } else if (ch == '\x02') {
                 if (!buf.empty()) { parts.push_back(std::make_shared<Const>(java_string_literal(buf), "String")); buf.clear(); }
-                parts.push_back(const_args.at(const_i)); const_i += 1;
+                if (const_i < const_args.size()) {
+                    parts.push_back(const_args[const_i]);
+                    const_i += 1;
+                }
             } else {
                 buf += ch;
             }
@@ -870,9 +881,14 @@ ExprPtr build_string_concat(const ClassFile& cf, const std::vector<uint16_t>& bs
         parts = call_args;
     }
     if (parts.empty()) return std::make_shared<Const>("\"\"", "String");
+    if (parts.size() == 1) {
+        if (parts[0]->type == "String" || parts[0]->type == "java.lang.String") {
+            return parts[0];
+        }
+        return std::make_shared<MethodCall>(nullptr, "valueOf", parts, "String", true, std::optional<std::string>("String"));
+    }
     ExprPtr result = parts[0];
     for (size_t k = 1; k < parts.size(); ++k) result = std::make_shared<BinOp>("+", result, parts[k], "String");
-    result->type = "String";  // мутирует ТОТ ЖЕ узел, что и parts[0], если parts.size()==1 - как в оригинале
     return result;
 }
 
@@ -1220,6 +1236,20 @@ MethodCtx::MethodCtx(const ClassFile& cf_, const Method& method_, const IRenamer
     : cf(cf_), method(method_), renamer(renamer_), known(known_internal_by_dotted), class_internal(class_internal_),
       all_classes(all_classes_) {
     lvt_by_slot_ = build_lvt_names();
+    for (const auto& e : method.local_var_table) {
+        if (!lvt_type_by_slot_.count(e.slot)) {
+            if (!e.signature.empty()) {
+                auto parsed = parse_field_signature(e.signature);
+                if (parsed.has_value() && !parsed->empty()) {
+                    lvt_type_by_slot_[e.slot] = map_type(*parsed);
+                }
+            } else if (!e.descriptor.empty()) {
+                try {
+                    lvt_type_by_slot_[e.slot] = map_type(field_descriptor_to_java(e.descriptor));
+                } catch (...) {}
+            }
+        }
+    }
     used_local_names_.insert("this");
     init_params();
 }
@@ -1298,6 +1328,14 @@ void MethodCtx::init_params() {
         std::string name;
         if (lvt.has_value()) {
             name = *lvt;
+        } else if (method.name == "onCommand" && params.size() == 4) {
+            static const std::vector<std::string> kBukkitCmdParams = {"sender", "command", "label", "args"};
+            name = kBukkitCmdParams[i];
+        } else if (method.name == "onTabComplete" && params.size() == 4) {
+            static const std::vector<std::string> kBukkitTabParams = {"sender", "command", "alias", "args"};
+            name = kBukkitTabParams[i];
+        } else if (params.size() == 1 && (method.name.rfind("on", 0) == 0 || !method.annotations.empty()) && params[0].find("Event") != std::string::npos) {
+            name = "event";
         } else {
             static const std::map<std::string, std::string> kPrimitiveNames = {
                 {"int", "n"}, {"long", "n"}, {"double", "d"}, {"float", "f"}, {"boolean", "flag"},
@@ -1453,7 +1491,12 @@ LocalInfo& MethodCtx::local(int idx, char category) {
         LocalInfo info;
         auto lvt = lvt_name_for(idx);
         info.name = lvt.has_value() ? *lvt : ("var" + std::to_string(idx));
-        info.type = default_type_for_cat(category);
+        auto type_it = lvt_type_by_slot_.find(idx);
+        if (type_it != lvt_type_by_slot_.end() && !type_it->second.empty()) {
+            info.type = type_it->second;
+        } else {
+            info.type = default_type_for_cat(category);
+        }
         info.category = category;
         info.seen_categories = {category};
         auto res = locals.emplace(idx, std::move(info));

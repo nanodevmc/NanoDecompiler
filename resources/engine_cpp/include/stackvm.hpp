@@ -178,6 +178,7 @@ public:
 
 private:
     std::map<int, std::string> lvt_by_slot_;
+    std::map<int, std::string> lvt_type_by_slot_;
     std::set<std::string> used_local_names_;
 
     std::map<int, std::string> build_lvt_names() const;

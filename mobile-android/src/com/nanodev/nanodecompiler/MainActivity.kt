@@ -72,6 +72,15 @@ class MainActivity : Activity() {
     private val completedFiles = LinkedHashSet<File>()
     private val decompiledOutputs = HashMap<File, File>()
 
+    // OTA Обновления (Android)
+    private var otaStatusText: TextView? = null
+    private var otaProgressBar: ProgressBar? = null
+    private var btnCheckOta: Button? = null
+    private var btnApplyOta: Button? = null
+    private var latestApkUrl: String? = null
+    private var latestApkSha256: String? = null
+    private var latestVersionName: String? = null
+
     private fun resetDecompileButton() {
         isDecompiling = false
         btnStartDecompile.text = "  Запустить декомпиляцию"
@@ -972,7 +981,76 @@ class MainActivity : Activity() {
         }
         addSwitchCard("Виброотклик", "Тактильная отдача при нажатиях", optVibration) { optVibration = it }
 
-        // 3. О программе
+        // 3. Обновления по воздуху (OTA)
+        addSection("Обновления по воздуху (OTA)")
+        val otaCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = liquidGlassDrawable(COLOR_SURFACE_GLASS, COLOR_BORDER, 12f)
+        }
+        val tvOtaTitle = TextView(this).apply {
+            text = "OTA Обновления NanoDecompiler"
+            setTextColor(COLOR_TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        otaCard.addView(tvOtaTitle)
+
+        otaStatusText = TextView(this).apply {
+            val appVer = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0.6" } catch (_: Exception) { "2.0.6" }
+            text = "Текущая версия: v$appVer ARM64"
+            setTextColor(COLOR_TEXT_MUTED)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        otaCard.addView(otaStatusText)
+
+        otaProgressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            visibility = View.GONE
+            max = 100
+            progress = 0
+            setPadding(0, dp(2), 0, dp(8))
+        }
+        otaCard.addView(otaProgressBar)
+
+        val btnLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+
+        btnCheckOta = Button(this).apply {
+            text = "Проверить обновление"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            background = liquidGlassDrawable(COLOR_CARD_GLASS, COLOR_BORDER, 8f)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setOnClickListener {
+                vibrate(30)
+                checkAndroidOta(true)
+            }
+        }
+        btnLayout.addView(btnCheckOta)
+
+        btnApplyOta = Button(this).apply {
+            visibility = View.GONE
+            text = "Установить OTA"
+            setTextColor(Color.BLACK)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+            background = liquidGlassDrawable(COLOR_ACID, COLOR_ACID, 8f)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.leftMargin = dp(8)
+            layoutParams = lp
+            setOnClickListener {
+                vibrate(50)
+                startAndroidOtaDownload()
+            }
+        }
+        btnLayout.addView(btnApplyOta)
+
+        otaCard.addView(btnLayout)
+        layout.addView(otaCard)
+
+        // 4. О программе
         addSection("О программе")
         val aboutCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -980,7 +1058,8 @@ class MainActivity : Activity() {
             background = liquidGlassDrawable(COLOR_SURFACE_GLASS, COLOR_BORDER, 12f)
         }
         val tvAbout = TextView(this).apply {
-            text = "NanoDecompiler Mobile v2.0.3 ARM64\n" +
+            val appVer = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0.6" } catch (_: Exception) { "2.0.6" }
+            text = "NanoDecompiler Mobile v$appVer ARM64\n" +
                     "Автор: NanoDev\n" +
                     "Канал: t.me/WineSquad\n" +
                     "Связь: t.me/radoqi\n" +
@@ -995,6 +1074,201 @@ class MainActivity : Activity() {
 
         scroll.addView(layout)
         return scroll
+    }
+
+    // ==================== ANDROID OTA UPDATE SYSTEM ====================
+    private fun checkAndroidOta(manual: Boolean) {
+        runOnUiThread {
+            otaStatusText?.text = "Проверка обновлений на GitHub..."
+            otaStatusText?.setTextColor(COLOR_CYAN)
+            btnCheckOta?.isEnabled = false
+            btnCheckOta?.alpha = 0.5f
+        }
+        bgExecutor.execute {
+            try {
+                val manifestUrls = listOf(
+                    "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json",
+                    "https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/ota-manifest.json"
+                )
+                var jsonStr: String? = null
+                for (urlStr in manifestUrls) {
+                    try {
+                        val conn = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
+                        conn.connectTimeout = 8000
+                        conn.readTimeout = 8000
+                        conn.setRequestProperty("User-Agent", "NanoDecompiler-Android")
+                        if (conn.responseCode == 200) {
+                            jsonStr = conn.inputStream.bufferedReader().use { it.readText() }
+                            break
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                if (jsonStr == null) {
+                    runOnUiThread {
+                        otaStatusText?.text = "Ошибка проверки связи с сервером обновлений"
+                        otaStatusText?.setTextColor(COLOR_DANGER)
+                        btnCheckOta?.isEnabled = true
+                        btnCheckOta?.alpha = 1.0f
+                    }
+                    return@execute
+                }
+
+                val json = org.json.JSONObject(jsonStr)
+                val releaseTag = json.optString("releaseTag", "v2.0.7")
+                val remoteVer = releaseTag.removePrefix("v").trim()
+                val currentVer = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0.6" } catch (_: Exception) { "2.0.6" }
+
+                val components = json.optJSONObject("components")
+                val mobile = components?.optJSONObject("mobile_android")
+                val apkEntry = mobile?.optJSONObject("arm64_apk")
+
+                val apkUrl = apkEntry?.optString("url")
+                val apkSha = apkEntry?.optString("sha256")
+
+                val hasUpdate = isNewerVersion(remoteVer, currentVer)
+
+                runOnUiThread {
+                    btnCheckOta?.isEnabled = true
+                    btnCheckOta?.alpha = 1.0f
+                    if (hasUpdate && !apkUrl.isNullOrEmpty()) {
+                        latestApkUrl = apkUrl
+                        latestApkSha256 = apkSha
+                        latestVersionName = remoteVer
+                        otaStatusText?.text = "Доступно OTA обновление v$remoteVer (текущая v$currentVer)"
+                        otaStatusText?.setTextColor(COLOR_ACID)
+                        btnApplyOta?.visibility = View.VISIBLE
+                        btnApplyOta?.text = "Скачать и установить v$remoteVer (OTA)"
+                        vibrate(40)
+                    } else {
+                        otaStatusText?.text = "Установлена актуальная версия v$currentVer"
+                        otaStatusText?.setTextColor(COLOR_TEXT_MUTED)
+                        btnApplyOta?.visibility = View.GONE
+                        if (manual) {
+                            Toast.makeText(this@MainActivity, "Установлена актуальная версия v$currentVer", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    otaStatusText?.text = "Ошибка: ${e.message}"
+                    otaStatusText?.setTextColor(COLOR_DANGER)
+                    btnCheckOta?.isEnabled = true
+                    btnCheckOta?.alpha = 1.0f
+                }
+            }
+        }
+    }
+
+    private fun isNewerVersion(remote: String, current: String): Boolean {
+        try {
+            val rParts = remote.split(".").map { it.toIntOrNull() ?: 0 }
+            val cParts = current.split(".").map { it.toIntOrNull() ?: 0 }
+            for (i in 0 until maxOf(rParts.size, cParts.size)) {
+                val r = if (i < rParts.size) rParts[i] else 0
+                val c = if (i < cParts.size) cParts[i] else 0
+                if (r > c) return true
+                if (r < c) return false
+            }
+        } catch (_: Exception) {}
+        return false
+    }
+
+    private fun startAndroidOtaDownload() {
+        val urlStr = latestApkUrl ?: return
+        val expectedSha = latestApkSha256
+        val ver = latestVersionName ?: "update"
+
+        runOnUiThread {
+            btnApplyOta?.isEnabled = false
+            btnApplyOta?.alpha = 0.5f
+            otaProgressBar?.visibility = View.VISIBLE
+            otaProgressBar?.progress = 0
+            otaStatusText?.text = "Скачивание v$ver..."
+            otaStatusText?.setTextColor(COLOR_CYAN)
+        }
+
+        bgExecutor.execute {
+            var tmpFile: File? = null
+            try {
+                val otaDir = File(cacheDir, "ota_updates")
+                if (!otaDir.exists()) otaDir.mkdirs()
+                tmpFile = File(otaDir, "NanoDecompiler-$ver.apk")
+                if (tmpFile.exists()) tmpFile.delete()
+
+                val conn = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
+                conn.connectTimeout = 15000
+                conn.readTimeout = 30000
+                conn.setRequestProperty("User-Agent", "NanoDecompiler-Android")
+                val totalBytes = conn.contentLength.toLong()
+
+                var downloadedBytes = 0L
+                conn.inputStream.use { input ->
+                    tmpFile.outputStream().use { output ->
+                        val buffer = ByteArray(32768)
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            downloadedBytes += read
+                            if (totalBytes > 0) {
+                                val progress = ((downloadedBytes * 100) / totalBytes).toInt()
+                                runOnUiThread {
+                                    otaProgressBar?.progress = progress
+                                    otaStatusText?.text = "Скачивание v$ver: $progress% (${downloadedBytes / 1024} КБ)"
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!expectedSha.isNullOrEmpty()) {
+                    val digest = java.security.MessageDigest.getInstance("SHA-256")
+                    tmpFile.inputStream().use { fis ->
+                        val buf = ByteArray(16384)
+                        var len: Int
+                        while (fis.read(buf).also { len = it } != -1) {
+                            digest.update(buf, 0, len)
+                        }
+                    }
+                    val actualSha = digest.digest().joinToString("") { "%02x".format(it) }
+                    if (!actualSha.equals(expectedSha, ignoreCase = true)) {
+                        tmpFile.delete()
+                        throw IllegalStateException("Хеш SHA-256 не совпадает с манифестом!")
+                    }
+                }
+
+                runOnUiThread {
+                    otaProgressBar?.visibility = View.GONE
+                    otaStatusText?.text = "Скачивание завершено! Запуск инсталлятора..."
+                    otaStatusText?.setTextColor(COLOR_ACID)
+                    btnApplyOta?.isEnabled = true
+                    btnApplyOta?.alpha = 1.0f
+                    vibrate(80)
+                    installDownloadedApk(tmpFile)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    otaProgressBar?.visibility = View.GONE
+                    otaStatusText?.text = "Ошибка загрузки: ${e.message}"
+                    otaStatusText?.setTextColor(COLOR_DANGER)
+                    btnApplyOta?.isEnabled = true
+                    btnApplyOta?.alpha = 1.0f
+                }
+            }
+        }
+    }
+
+    private fun installDownloadedApk(apkFile: File) {
+        try {
+            val uri = NanoFileProvider.getUriForFile(this, apkFile)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Не удалось запустить установщик: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun createBottomNav(): LinearLayout {
@@ -1876,6 +2150,16 @@ class MainActivity : Activity() {
         if (!optVibration) return
         try {
             vibrator?.let { if (it.hasVibrator()) it.vibrate(ms) }
+        } catch (_: Exception) {}
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        try {
+            if (isDecompiling) {
+                DecompilerEngine.stop()
+            }
+            bgExecutor.shutdownNow()
         } catch (_: Exception) {}
     }
 }

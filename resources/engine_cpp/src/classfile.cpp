@@ -959,8 +959,40 @@ void ClassFile::parse_code(Method& method, const std::vector<uint8_t>& a_data) {
                     method.local_var_table.push_back(lv);
                 }
             }
+        } else if (a_name == "LocalVariableTypeTable") {
+            auto sub_data = cr.bytes(sub_len);
+            Reader sr(sub_data);
+            uint16_t n = sr.u2();
+            for (uint16_t k = 0; k < n; ++k) {
+                uint16_t start_pc = sr.u2();
+                uint16_t length = sr.u2();
+                uint16_t name_idx = sr.u2();
+                uint16_t sig_idx = sr.u2();
+                uint16_t slot = sr.u2();
+                const std::string* name = utf8(name_idx);
+                const std::string* sig = utf8(sig_idx);
+                if (sig && !sig->empty()) {
+                    bool matched = false;
+                    for (auto& lv : method.local_var_table) {
+                        if (lv.slot == slot && lv.start_pc == start_pc) {
+                            lv.signature = *sig;
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if (!matched && name && *name != "this") {
+                        LocalVarEntry lv;
+                        lv.start_pc = start_pc;
+                        lv.length = length;
+                        lv.name = *name;
+                        lv.signature = *sig;
+                        lv.slot = slot;
+                        method.local_var_table.push_back(lv);
+                    }
+                }
+            }
         } else {
-            cr.skip(sub_len);  // LineNumberTable/LocalVariableTypeTable/StackMapTable - не нужны
+            cr.skip(sub_len);  // LineNumberTable/StackMapTable - не нужны
         }
     }
 }

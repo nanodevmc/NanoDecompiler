@@ -1,6 +1,6 @@
 [package]
 name = "nanodecompiler-tauri"
-version = "2.0.5"
+version = "2.0.6"
 description = "NanoDecompiler Native Desktop App (Tauri v2 Edition)"
 authors = ["NanoDev"]
 edition = "2021"

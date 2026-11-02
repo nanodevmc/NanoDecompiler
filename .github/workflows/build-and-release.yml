@@ -1078,6 +1078,12 @@ jobs:
           cp release-files/NanoDecompiler-Electron-Linux-x64-${TAG}.AppImage release-files/NanoDecompiler-Client.AppImage
           cp release-files/NanoDecompiler-Electron-macOS-arm64-${TAG}.dmg release-files/NanoDecompiler-Client.dmg
 
+      # Упаковать легковесные OTA-пакеты (.ndota)
+      - name: Собрать легковесные OTA пакеты (.ndota)
+        shell: bash
+        run: |
+          python3 scripts/package_ndota.py --tag "${RELEASE_TAG}" --release-dir release-files
+
       # Сгенерировать versions.json (для апдейтера)
       - name: Сгенерировать versions.json (для апдейтера - client vs api)
         shell: bash
@@ -1085,14 +1091,17 @@ jobs:
           printf '{"client":"%s","api":"%s"}' "$CLIENT_VERSION" "$API_VERSION" > release-files/versions.json
 
       # Сгенерировать checksums.json (SHA256 всех артефактов)
-      - name: Сгенерировать checksums.json (SHA256 всех артефактов)
+      - name: Сгенерировать checksums.json и ota-manifest.json
         shell: bash
         run: |
           python3 - <<'PYEOF'
           import hashlib, json, os
-          out = {}
-          for name in os.listdir("release-files"):
-              if name in ("versions.json", "checksums.json"):
+          from datetime import datetime, timezone
+
+          # 1. Сгенерировать checksums.json
+          checksums = {}
+          for name in sorted(os.listdir("release-files")):
+              if name in ("versions.json", "checksums.json", "ota-manifest.json"):
                   continue
               path = os.path.join("release-files", name)
               if not os.path.isfile(path):
@@ -1101,10 +1110,79 @@ jobs:
               with open(path, "rb") as f:
                   for chunk in iter(lambda: f.read(1 << 20), b""):
                       h.update(chunk)
-              out[name] = h.hexdigest()
-          with open("release-files/checksums.json", "w") as f:
-              json.dump(out, f, indent=2)
-          print(json.dumps(out, indent=2))
+              checksums[name] = h.hexdigest()
+
+          with open("release-files/checksums.json", "w", encoding="utf-8") as f:
+              json.dump(checksums, f, indent=2)
+          print("Сгенерирован checksums.json")
+
+          # 2. Сгенерировать ota-manifest.json для всех экосистемных компонентов
+          tag = os.environ.get("RELEASE_TAG", "v2.0.6")
+          ver = tag.lstrip("v")
+          repo = os.environ.get("GITHUB_REPOSITORY", "nanodevmc/NanoDecompiler")
+
+          def make_entry(filename):
+              if not filename or filename not in checksums:
+                  return None
+              p = os.path.join("release-files", filename)
+              size = os.path.getsize(p) if os.path.exists(p) else 0
+              return {
+                  "name": filename,
+                  "version": ver,
+                  "sha256": checksums[filename],
+                  "sizeBytes": size,
+                  "url": f"https://github.com/{repo}/releases/download/{tag}/{filename}"
+              }
+
+          manifest = {
+              "manifestVersion": "2.0.6",
+              "releaseTag": tag,
+              "generatedAt": datetime.now(timezone.utc).isoformat(),
+              "channels": ["stable", "beta", "nightly"],
+              "checksums": checksums,
+              "components": {
+                  "engine": {
+                      "windows_x64": make_entry(f"NanoDecompilerCLI-Windows-x64-{tag}.exe") or make_entry("NanoDecompilerClApi-windows.exe"),
+                      "linux_x64": make_entry(f"NanoDecompilerCLI-Linux-x64-{tag}") or make_entry("NanoDecompilerClApi-linux"),
+                      "macos_arm64": make_entry(f"NanoDecompilerCLI-macOS-arm64-{tag}") or make_entry("NanoDecompilerClApi-macos"),
+                  },
+                  "desktop_tauri": {
+                      "windows_setup": make_entry(f"NanoDecompiler-Tauri-v2-Windows-x64-{tag}.exe"),
+                      "windows_portable": make_entry(f"NanoDecompiler-Tauri-v2-Windows-x64-{tag}-Portable.exe"),
+                      "linux_x64": make_entry(f"NanoDecompiler-Tauri-v2-Linux-x64-{tag}"),
+                  },
+                  "desktop_electron": {
+                      "windows_setup": make_entry(f"NanoDecompiler-Electron-Windows-x64-{tag}.exe") or make_entry("NanoDecompiler-Client-Setup.exe"),
+                      "linux_appimage": make_entry(f"NanoDecompiler-Electron-Linux-x64-{tag}.AppImage") or make_entry("NanoDecompiler-Client.AppImage"),
+                      "macos_dmg": make_entry(f"NanoDecompiler-Electron-macOS-arm64-{tag}.dmg") or make_entry("NanoDecompiler-Client.dmg"),
+                  },
+                  "desktop_lite": {
+                      "windows_x64": make_entry(f"NanoDecompilerLite-Windows-x64-{tag}.exe"),
+                      "linux_x64": make_entry(f"NanoDecompilerLite-Linux-x64-{tag}"),
+                      "macos_arm64": make_entry(f"NanoDecompilerLite-macOS-arm64-{tag}"),
+                  },
+                  "mobile_android": {
+                      "arm64_apk": make_entry(f"NanoDecompiler-Android-arm64-{tag}.apk"),
+                  }
+              },
+              "guiModules": {
+                  "web_ui": make_entry(f"NanoDecompiler-WebUI-{tag}.ndota")
+              },
+              "engineModules": {
+                  "windows_x64": make_entry(f"NanoDecompiler-Engine-Windows-x64-{tag}.ndota"),
+                  "android_arm64": make_entry(f"NanoDecompiler-Engine-Android-arm64-{tag}.ndota")
+              },
+              "otaPackages": {
+                  "web_ui_ndota": make_entry(f"NanoDecompiler-WebUI-{tag}.ndota"),
+                  "engine_windows_ndota": make_entry(f"NanoDecompiler-Engine-Windows-x64-{tag}.ndota"),
+                  "engine_android_ndota": make_entry(f"NanoDecompiler-Engine-Android-arm64-{tag}.ndota")
+              }
+          }
+
+          with open("release-files/ota-manifest.json", "w", encoding="utf-8") as f:
+              json.dump(manifest, f, indent=2)
+          print("Сгенерирован ota-manifest.json:")
+          print(json.dumps(manifest, indent=2))
           PYEOF
 
       - name: Подготовить release_notes.md из CHANGELOG.md
@@ -1151,6 +1229,10 @@ jobs:
               f"| `NanoDecompilerCLI-Windows-x64-{tag_full}.exe` | Движок декомпиляции (C++ CLI/API) | Windows x64 |",
               f"| `NanoDecompilerCLI-Linux-x64-{tag_full}` | Движок декомпиляции (C++ CLI/API) | Linux x64 |",
               f"| `NanoDecompilerCLI-macOS-arm64-{tag_full}` | Движок декомпиляции (C++ CLI/API) | macOS Apple Silicon |",
+              f"| `NanoDecompiler-WebUI-{tag_full}.ndota` | **Легковесный OTA пакет UI** (горячее обновление без переустановки) | Универсальный |",
+              f"| `NanoDecompiler-Engine-Windows-x64-{tag_full}.ndota` | Легковесный OTA модуль движка (Windows) | Windows x64 |",
+              f"| `NanoDecompiler-Engine-Android-arm64-{tag_full}.ndota` | Легковесный OTA модуль движка (Android) | Android ARM64 |",
+              "| `ota-manifest.json` | **Манифест и спецификация компонентов для OTA обновлений** | - |",
               "| `versions.json` | Машиночитаемые версии для автообновления | - |",
               "| `checksums.json` | Контрольные суммы SHA256 всех бинарников | - |",
               "",
