@@ -6,23 +6,31 @@ import argparse
 from datetime import datetime, timezone
 
 def create_ndota_package(out_path, meta, file_mappings):
-    print(f"Creating NDOTA package: {os.path.basename(out_path)}")
+    print(f"Creating NDOTA GUI package: {os.path.basename(out_path)}")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-        # Write metadata
         zf.writestr("ndota_meta.json", json.dumps(meta, indent=2))
-        # Write included files
+        count = 0
         for src_path, arc_name in file_mappings:
-            if os.path.exists(src_path):
+            if os.path.exists(src_path) and os.path.isfile(src_path):
                 zf.write(src_path, arc_name)
-                print(f"  + {arc_name} ({os.path.getsize(src_path):,} bytes)")
-            else:
-                print(f"  - warning: {src_path} not found")
-    print(f"  -> Total size: {os.path.getsize(out_path):,} bytes")
+                count += 1
+        print(f"  + Included {count} files -> Total size: {os.path.getsize(out_path):,} bytes")
+
+def collect_tree(src_dir, base_prefix=""):
+    files = []
+    if os.path.exists(src_dir):
+        for root, _, filenames in os.walk(src_dir):
+            for f in filenames:
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, src_dir).replace("\\", "/")
+                arc_name = f"{base_prefix}/{rel}".lstrip("/") if base_prefix else rel
+                files.append((full, arc_name))
+    return files
 
 def main():
-    parser = argparse.ArgumentParser(description="Package NanoDecompiler OTA (.ndota) bundles")
-    parser.add_argument("--tag", default="v2.0.6", help="Release tag e.g. v2.0.7")
+    parser = argparse.ArgumentParser(description="Package NanoDecompiler GUI OTA (.ndota) bundles")
+    parser.add_argument("--tag", default="v2.0.7", help="Release tag e.g. v2.0.7")
     parser.add_argument("--release-dir", default="release-files", help="Release directory")
     args = parser.parse_args()
 
@@ -33,66 +41,64 @@ def main():
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
-    # 1. WebUI .ndota
-    webui_out = os.path.join(rel_dir, f"NanoDecompiler-WebUI-{tag}.ndota")
-    webui_files = []
-    # Check dist or mobile-android assets
-    ui_src = "dist" if os.path.exists("dist") else "mobile-android/assets"
-    if os.path.exists(ui_src):
-        for root, _, files in os.walk(ui_src):
-            for f in files:
-                full = os.path.join(root, f)
-                rel = os.path.relpath(full, ui_src).replace("\\", "/")
-                webui_files.append((full, rel))
+    # 1. WebUI .ndota (чистый Web/SPA фронтенд)
+    webui_out = os.path.join(rel_dir, f"NanoDecompiler-GUI-WebUI-{tag}.ndota")
+    webui_files = collect_tree("dist")
+    if not webui_files:
+        webui_files = collect_tree("mobile-android/assets")
     create_ndota_package(webui_out, {
-        "packageName": "NanoDecompiler-WebUI",
+        "packageName": "NanoDecompiler-GUI-WebUI",
         "format": "ndota-bundle-v1",
         "version": ver,
         "releaseTag": tag,
-        "type": "gui_renderer",
+        "type": "gui_webui",
         "createdAt": now_iso
     }, webui_files)
+    # Сохраняем также каноническое имя NanoDecompiler-WebUI-{tag}.ndota
+    legacy_webui = os.path.join(rel_dir, f"NanoDecompiler-WebUI-{tag}.ndota")
+    if os.path.exists(webui_out):
+        import shutil
+        shutil.copy2(webui_out, legacy_webui)
 
-    # 2. Windows C++ Engine .ndota
-    win_cli = os.path.join(rel_dir, f"NanoDecompilerCLI-Windows-x64-{tag}.exe")
-    if not os.path.exists(win_cli):
-        win_cli = "resources/engine/NanoDecompilerCLI.exe"
-    if not os.path.exists(win_cli):
-        win_cli = "resources/engine_cpp/build/NanoDecompilerCLI.exe"
-    if os.path.exists(win_cli):
-        engine_win_out = os.path.join(rel_dir, f"NanoDecompiler-Engine-Windows-x64-{tag}.ndota")
-        create_ndota_package(engine_win_out, {
-            "packageName": "NanoDecompiler-Engine-Windows-x64",
-            "format": "ndota-bundle-v1",
-            "version": ver,
-            "releaseTag": tag,
-            "type": "engine_binary",
-            "targetOs": "windows",
-            "targetArch": "x64",
-            "createdAt": now_iso
-        }, [(win_cli, "bin/NanoDecompilerCLI.exe")])
+    # 2. Electron GUI .ndota (Renderer + Main/Preload scripts для горячего обновления Electron)
+    electron_out = os.path.join(rel_dir, f"NanoDecompiler-GUI-Electron-{tag}.ndota")
+    electron_files = collect_tree("dist", "dist") + collect_tree("dist-electron", "dist-electron")
+    create_ndota_package(electron_out, {
+        "packageName": "NanoDecompiler-GUI-Electron",
+        "format": "ndota-bundle-v1",
+        "version": ver,
+        "releaseTag": tag,
+        "type": "gui_electron",
+        "createdAt": now_iso
+    }, electron_files)
 
-    # 3. Android ARM64 Engine .ndota
-    android_lib_dir = "mobile-android/lib/arm64-v8a"
-    if os.path.exists(android_lib_dir):
-        android_ndota_out = os.path.join(rel_dir, f"NanoDecompiler-Engine-Android-arm64-{tag}.ndota")
-        android_files = []
-        for f in os.listdir(android_lib_dir):
-            full = os.path.join(android_lib_dir, f)
-            if os.path.isfile(full):
-                android_files.append((full, f"lib/arm64-v8a/{f}"))
-        create_ndota_package(android_ndota_out, {
-            "packageName": "NanoDecompiler-Engine-Android-arm64",
-            "format": "ndota-bundle-v1",
-            "version": ver,
-            "releaseTag": tag,
-            "type": "engine_native_library",
-            "targetOs": "android",
-            "targetArch": "arm64-v8a",
-            "createdAt": now_iso
-        }, android_files)
+    # 3. Android Mobile GUI .ndota (WebView ассеты и интерфейс мобильного приложения)
+    android_out = os.path.join(rel_dir, f"NanoDecompiler-GUI-Android-{tag}.ndota")
+    android_files = collect_tree("mobile-android/assets")
+    if not android_files:
+        android_files = collect_tree("dist")
+    create_ndota_package(android_out, {
+        "packageName": "NanoDecompiler-GUI-Android",
+        "format": "ndota-bundle-v1",
+        "version": ver,
+        "releaseTag": tag,
+        "type": "gui_android",
+        "createdAt": now_iso
+    }, android_files)
 
-    print("\nAll .ndota bundles generated successfully!")
+    # 4. Lite GUI .ndota (Ассеты, иконки и темы C# Avalonia Lite клиента)
+    lite_out = os.path.join(rel_dir, f"NanoDecompiler-GUI-Lite-{tag}.ndota")
+    lite_files = collect_tree("src_lite_cs/NanoDecompilerLite/Assets", "Assets")
+    create_ndota_package(lite_out, {
+        "packageName": "NanoDecompiler-GUI-Lite",
+        "format": "ndota-bundle-v1",
+        "version": ver,
+        "releaseTag": tag,
+        "type": "gui_lite",
+        "createdAt": now_iso
+    }, lite_files)
+
+    print("\nAll GUI .ndota bundles generated successfully (WebUI, Electron, Android, Lite)!")
 
 if __name__ == "__main__":
     main()

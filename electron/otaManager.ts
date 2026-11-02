@@ -145,6 +145,11 @@ export class OtaManager {
       }
     });
 
+    ipcMain.handle("ota:fetchManifest", async (_e, manifestUrl?: string) => {
+      const url = manifestUrl || "https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/ota-manifest.json";
+      return await this.fetchManifest(url);
+    });
+
     ipcMain.handle("ota:syncModule", async (_e, mod: OtaModuleInfo) => {
       if (!mod || !mod.name || !mod.sha256 || !mod.url) return { ok: false, error: "Некорректный дескриптор модуля" };
       return await this.syncModule(mod);

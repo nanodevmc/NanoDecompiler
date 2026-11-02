@@ -1,4 +1,4 @@
-import { Copy, Hash, Search, WrapText, ZoomIn, ZoomOut } from "lucide-react";
+import { Check, Copy, Hash, Search, WrapText, ZoomIn, ZoomOut } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useEngine } from "../state/engine";
 import { JavaCode } from "../lib/javaHighlight";
@@ -110,6 +110,7 @@ export const CodeView = memo(function CodeView({
   const { copyText, selectFile, toast, settings, addJarPaths, jobs } = useEngine();
   const lang = settings.language;
   const [wrap, setWrap] = useState(false);
+  const [copied, setCopied] = useState(false);
   const codeContainerRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(() => {
     try {
@@ -331,12 +332,18 @@ export const CodeView = memo(function CodeView({
           <WrapText size={14} />
         </button>
         <button
-          className="icon-btn h-7 w-7"
-          title={lang === "ru" ? "Скопировать исходник" : "Copy source"}
+          className={`icon-btn h-7 w-7 transition-colors ${copied ? "text-emerald-400 bg-emerald-500/10" : ""}`}
+          title={copied ? (lang === "ru" ? "Скопировано!" : "Copied!") : (lang === "ru" ? "Скопировать исходник" : "Copy source")}
           disabled={displayCode === undefined}
-          onClick={() => displayCode !== undefined && copyText(displayCode, `Исходник ${file.name}`)}
+          onClick={() => {
+            if (displayCode !== undefined && file) {
+              copyText(displayCode, `Исходник ${file.name}`);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }
+          }}
         >
-          <Copy size={14} />
+          {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
         </button>
         <div className="flex items-center gap-0.5 border-l border-line pl-1.5 ml-0.5">
           <button

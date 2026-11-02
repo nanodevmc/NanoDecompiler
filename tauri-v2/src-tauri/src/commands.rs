@@ -31,7 +31,12 @@ pub struct EnvItem {
 
 #[tauri::command]
 pub fn get_gui_version() -> String {
-    "2.0.6".to_string()
+    "2.0.7".to_string()
+}
+
+#[tauri::command]
+pub fn get_hardware_concurrency() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2)
 }
 
 #[tauri::command]

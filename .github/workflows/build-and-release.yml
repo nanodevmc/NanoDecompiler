@@ -1056,39 +1056,21 @@ jobs:
             mv release-files-tmp/tauri/NanoDecompiler-Android-arm64.apk release-files/NanoDecompiler-Android-arm64-${TAG}.apk
           fi
 
-          # Главный стандартный файл ведет прямо на быстрый нативный клиент Tauri v2!
-          cp release-files/NanoDecompiler-Tauri-v2-Windows-x64-${TAG}.exe release-files/NanoDecompiler-Windows-x64-${TAG}.exe
-          cp release-files/NanoDecompiler-Tauri-v2-Windows-x64-${TAG}.exe release-files/NanoDecompiler-Setup.exe
-
-          # 2. КЛАССИЧЕСКИЕ КЛИЕНТЫ (ELECTRON GUI - FALLBACK)
+          # 2. КЛАССИЧЕСКИЕ КЛИЕНТЫ (ELECTRON GUI)
           mv release-files-tmp/clients/NanoDecompiler-Client-Setup.exe release-files/NanoDecompiler-Electron-Windows-x64-${TAG}.exe
           mv release-files-tmp/clients/NanoDecompiler-Client.AppImage release-files/NanoDecompiler-Electron-Linux-x64-${TAG}.AppImage
           mv release-files-tmp/clients/NanoDecompiler-Client.dmg release-files/NanoDecompiler-Electron-macOS-arm64-${TAG}.dmg
 
-          # 3. ДВИЖКИ CLI (C++ CLI/API)
+          # 3. ДВИЖКИ CLI (C++ CLI)
           mv release-files-tmp/windows/NanoDecompilerClApi.exe release-files/NanoDecompilerCLI-Windows-x64-${TAG}.exe
           mv release-files-tmp/linux/NanoDecompilerClApi release-files/NanoDecompilerCLI-Linux-x64-${TAG}
           mv release-files-tmp/macos/NanoDecompilerClApi release-files/NanoDecompilerCLI-macOS-arm64-${TAG}
-
-          # Обратная совместимость для старых скриптов и автоапдейтера
-          cp release-files/NanoDecompilerCLI-Windows-x64-${TAG}.exe release-files/NanoDecompilerClApi-windows.exe
-          cp release-files/NanoDecompilerCLI-Linux-x64-${TAG} release-files/NanoDecompilerClApi-linux
-          cp release-files/NanoDecompilerCLI-macOS-arm64-${TAG} release-files/NanoDecompilerClApi-macos
-          cp release-files/NanoDecompiler-Electron-Windows-x64-${TAG}.exe release-files/NanoDecompiler-Client-Setup.exe
-          cp release-files/NanoDecompiler-Electron-Linux-x64-${TAG}.AppImage release-files/NanoDecompiler-Client.AppImage
-          cp release-files/NanoDecompiler-Electron-macOS-arm64-${TAG}.dmg release-files/NanoDecompiler-Client.dmg
 
       # Упаковать легковесные OTA-пакеты (.ndota)
       - name: Собрать легковесные OTA пакеты (.ndota)
         shell: bash
         run: |
           python3 scripts/package_ndota.py --tag "${RELEASE_TAG}" --release-dir release-files
-
-      # Сгенерировать versions.json (для апдейтера)
-      - name: Сгенерировать versions.json (для апдейтера - client vs api)
-        shell: bash
-        run: |
-          printf '{"client":"%s","api":"%s"}' "$CLIENT_VERSION" "$API_VERSION" > release-files/versions.json
 
       # Сгенерировать checksums.json (SHA256 всех артефактов)
       - name: Сгенерировать checksums.json и ota-manifest.json
@@ -1135,16 +1117,16 @@ jobs:
               }
 
           manifest = {
-              "manifestVersion": "2.0.6",
+              "manifestVersion": ver,
               "releaseTag": tag,
               "generatedAt": datetime.now(timezone.utc).isoformat(),
               "channels": ["stable", "beta", "nightly"],
               "checksums": checksums,
               "components": {
                   "engine": {
-                      "windows_x64": make_entry(f"NanoDecompilerCLI-Windows-x64-{tag}.exe") or make_entry("NanoDecompilerClApi-windows.exe"),
-                      "linux_x64": make_entry(f"NanoDecompilerCLI-Linux-x64-{tag}") or make_entry("NanoDecompilerClApi-linux"),
-                      "macos_arm64": make_entry(f"NanoDecompilerCLI-macOS-arm64-{tag}") or make_entry("NanoDecompilerClApi-macos"),
+                      "windows_x64": make_entry(f"NanoDecompilerCLI-Windows-x64-{tag}.exe"),
+                      "linux_x64": make_entry(f"NanoDecompilerCLI-Linux-x64-{tag}"),
+                      "macos_arm64": make_entry(f"NanoDecompilerCLI-macOS-arm64-{tag}"),
                   },
                   "desktop_tauri": {
                       "windows_setup": make_entry(f"NanoDecompiler-Tauri-v2-Windows-x64-{tag}.exe"),
@@ -1152,30 +1134,25 @@ jobs:
                       "linux_x64": make_entry(f"NanoDecompiler-Tauri-v2-Linux-x64-{tag}"),
                   },
                   "desktop_electron": {
-                      "windows_setup": make_entry(f"NanoDecompiler-Electron-Windows-x64-{tag}.exe") or make_entry("NanoDecompiler-Client-Setup.exe"),
-                      "linux_appimage": make_entry(f"NanoDecompiler-Electron-Linux-x64-{tag}.AppImage") or make_entry("NanoDecompiler-Client.AppImage"),
-                      "macos_dmg": make_entry(f"NanoDecompiler-Electron-macOS-arm64-{tag}.dmg") or make_entry("NanoDecompiler-Client.dmg"),
+                      "windows_setup": make_entry(f"NanoDecompiler-Electron-Windows-x64-{tag}.exe"),
+                      "linux_appimage": make_entry(f"NanoDecompiler-Electron-Linux-x64-{tag}.AppImage"),
+                      "macos_dmg": make_entry(f"NanoDecompiler-Electron-macOS-arm64-{tag}.dmg"),
                   },
                   "desktop_lite": {
                       "windows_x64": make_entry(f"NanoDecompilerLite-Windows-x64-{tag}.exe"),
                       "linux_x64": make_entry(f"NanoDecompilerLite-Linux-x64-{tag}"),
+                      "macos_x64": make_entry(f"NanoDecompilerLite-macOS-x64-{tag}"),
                       "macos_arm64": make_entry(f"NanoDecompilerLite-macOS-arm64-{tag}"),
                   },
                   "mobile_android": {
                       "arm64_apk": make_entry(f"NanoDecompiler-Android-arm64-{tag}.apk"),
                   }
               },
-              "guiModules": {
-                  "web_ui": make_entry(f"NanoDecompiler-WebUI-{tag}.ndota")
-              },
-              "engineModules": {
-                  "windows_x64": make_entry(f"NanoDecompiler-Engine-Windows-x64-{tag}.ndota"),
-                  "android_arm64": make_entry(f"NanoDecompiler-Engine-Android-arm64-{tag}.ndota")
-              },
               "otaPackages": {
-                  "web_ui_ndota": make_entry(f"NanoDecompiler-WebUI-{tag}.ndota"),
-                  "engine_windows_ndota": make_entry(f"NanoDecompiler-Engine-Windows-x64-{tag}.ndota"),
-                  "engine_android_ndota": make_entry(f"NanoDecompiler-Engine-Android-arm64-{tag}.ndota")
+                  "gui_webui": make_entry(f"NanoDecompiler-GUI-WebUI-{tag}.ndota") or make_entry(f"NanoDecompiler-WebUI-{tag}.ndota"),
+                  "gui_electron": make_entry(f"NanoDecompiler-GUI-Electron-{tag}.ndota"),
+                  "gui_android": make_entry(f"NanoDecompiler-GUI-Android-{tag}.ndota"),
+                  "gui_lite": make_entry(f"NanoDecompiler-GUI-Lite-{tag}.ndota")
               }
           }
 

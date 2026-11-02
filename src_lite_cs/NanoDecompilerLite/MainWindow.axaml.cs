@@ -21,7 +21,7 @@ public partial class MainWindow : Window
 {
     private string? _currentOutDir;
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(6) };
-    private const string CurrentVersion = "2.0.0-alpha";
+    private const string CurrentVersion = "2.0.7";
 
     public MainWindow()
     {
@@ -531,7 +531,7 @@ public partial class MainWindow : Window
             _http.DefaultRequestHeaders.UserAgent.Clear();
             _http.DefaultRequestHeaders.UserAgent.ParseAdd("NanoDecompilerLite-Updater");
 
-            string json = await _http.GetStringAsync("https://api.github.com/repos/NanoDev1488/NanoDecompiler/releases/latest");
+            string json = await _http.GetStringAsync("https://api.github.com/repos/nanodevmc/NanoDecompiler/releases/latest");
             using var doc = JsonDocument.Parse(json);
             string tagName = doc.RootElement.GetProperty("tag_name").GetString() ?? "";
             string remoteVer = tagName.TrimStart('v', 'V');

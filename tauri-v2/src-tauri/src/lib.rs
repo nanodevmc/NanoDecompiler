@@ -9,6 +9,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_gui_version,
+            get_hardware_concurrency,
             scan_jar,
             start_decompile,
             check_env,

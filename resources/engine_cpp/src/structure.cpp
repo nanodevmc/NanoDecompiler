@@ -2380,6 +2380,16 @@ ExprPtr simplify_expr(ExprPtr e, int depth = 0) {
                 auto* u = static_cast<UnOp*>(t->cond.get());
                 return std::make_shared<Ternary>(u->expr, t->fval, t->tval, t->type);
             }
+            if (t->cond && t->cond->kind == ExprKind::BinOp) {
+                auto* bo = static_cast<BinOp*>(t->cond.get());
+                if (bo->op == "==" && bo->right && bo->right->kind == ExprKind::Const &&
+                    static_cast<Const*>(bo->right.get())->literal == "null") {
+                    if (is_same_expr(bo->left, t->fval)) {
+                        auto new_cond = std::make_shared<BinOp>("!=", bo->left, bo->right, "boolean");
+                        return std::make_shared<Ternary>(new_cond, t->fval, t->tval, t->type);
+                    }
+                }
+            }
             break;
         }
         case ExprKind::Assign: {

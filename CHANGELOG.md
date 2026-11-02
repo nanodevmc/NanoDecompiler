@@ -1,5 +1,25 @@
 # Журнал изменений NanoDecompiler
 
+## [v2.0.7] - 2026-11-02 (Full GUI OTA Ecosystem, Release Clean-up & Subsystem Modernization)
+
+### [+] Добавлено
+- **Полноценная экосистема GUI OTA обновлений (.ndota для всех частей интерфейса)**:
+  - Пакеты обновления для ВСЕХ GUI клиентов без раздувания дистрибутива:
+    - `NanoDecompiler-GUI-WebUI-v2.0.7.ndota` — Web/SPA фронтенд.
+    - `NanoDecompiler-GUI-Electron-v2.0.7.ndota` — Renderer + Electron Main/Preload скрипты для мгновенного горячего обновления Electron без перекачивания 65 МБ инсталлятора.
+    - `NanoDecompiler-GUI-Android-v2.0.7.ndota` — WebView ассеты мобильного клиента.
+    - `NanoDecompiler-GUI-Lite-v2.0.7.ndota` — Ассеты и темы C# Avalonia Lite клиента.
+  - Убраны ненужные тяжёлые OTA-пакеты для движка CLI.
+  - Устранены все дубликаты файлов с разными именами в GitHub Releases: каждый артефакт теперь имеет ровно одно уникальное каноническое имя по стандарту [Name]-[OS]-[arch]-[version][ext].
+- **C++ Engine: Canonical Null-Coalescing & String Escaping**:
+  - `structure.cpp`: оптимизация тернарных операторов вида `x == null ? fallback : x` в каноническую форму `x != null ? x : fallback`.
+  - `stackvm.cpp`: поддержка стандартных escape-последовательностей `\b` и `\f` при форматировании строковых констант.
+- **WebUI & Desktop GUI Modernization**:
+  - `StatusBar.tsx`: анимированный бейдж `OTA Ready` с мягким пульсирующим статусом активности дельта-обновлений.
+  - `CodeView.tsx`: кнопка копирования кода с плавной микроинтеракцией (иконка галочки с подтверждением на 1.5 сек в стиле Hallmark).
+  - `tauri-v2`: новая команда `get_hardware_concurrency` для адаптивного распределения потоков по ядрам процессора.
+  - `NanoDecompilerLite`: исправлен URL репозитория обновлений (`nanodevmc/NanoDecompiler`), версия синхронизирована до 2.0.7.
+
 ## [v2.0.6] - 2026-11-02 (5 Mega-Galactic Innovations, 15 Compiler Innovations, OTA .ndota Ecosystem, Android Self-Update, Mod Support & 1.5M+ Lines Audit)
 
 ### [+] Добавлено

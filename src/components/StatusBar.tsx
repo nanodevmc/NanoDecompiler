@@ -95,7 +95,13 @@ export function StatusBar() {
           неоткуда без доступа к реальному репозиторию - честнее показать
           только реальную версию (app.getVersion(), см. gui:version в
           main.ts), без придуманного build-хэша. */}
-      <span className="hidden md:inline">GUI v{guiVersion ?? "…"}</span>
+      <div className="flex items-center gap-2">
+        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-400 border border-emerald-500/20" title="OTA Live Updates Active">
+          <span className="size-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          OTA Ready
+        </span>
+        <span className="hidden md:inline">GUI v{guiVersion ?? "…"}</span>
+      </div>
     </footer>
   );
 }

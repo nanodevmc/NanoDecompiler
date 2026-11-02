@@ -61,6 +61,10 @@ std::string java_string_literal(const std::string& s) {
             out += "\\t";
         } else if (c == '\r') {
             out += "\\r";
+        } else if (c == '\b') {
+            out += "\\b";
+        } else if (c == '\f') {
+            out += "\\f";
         } else if (c < 0x20 || c == 0x7f) {
             char buf[8];
             std::snprintf(buf, sizeof(buf), "\\u%04x", c);
