@@ -38,7 +38,7 @@ def find_file(patterns):
 
 def main():
     parser = argparse.ArgumentParser(description="Build NanoDecompiler Native Android APK")
-    parser.add_argument("--version", default="v2.0.7", help="Version tag, e.g. v2.0.7")
+    parser.add_argument("--version", default="v2.0.8", help="Version tag, e.g. v2.0.7")
     parser.add_argument("--out-dir", default=".", help="Directory to save final APK")
     parser.add_argument("--keystore", default=None, help="Path to release keystore")
     parser.add_argument("--keystore-pass", default="regi12345.", help="Keystore password")

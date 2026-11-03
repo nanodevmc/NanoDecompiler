@@ -177,8 +177,21 @@ export class OtaManager {
     });
 
     ipcMain.handle("ota:fetchManifest", async (_e, manifestUrl?: string) => {
-      const url = manifestUrl || "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json";
-      return await this.fetchManifest(url);
+      const urls = [
+        manifestUrl,
+        "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json",
+        "https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/ota-manifest.json",
+      ].filter(Boolean) as string[];
+
+      for (const u of urls) {
+        const manifest = await this.fetchManifest(u);
+        if (manifest) return manifest;
+      }
+      return null;
+    });
+
+    ipcMain.handle("ota:platformInfo", async () => {
+      return { platform: "electron", version: "2.0.8", otaReady: true, buildTag: "Electron Liquid Glass" };
     });
 
     ipcMain.handle("ota:syncModule", async (_e, mod: OtaModuleInfo) => {

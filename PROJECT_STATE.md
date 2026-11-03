@@ -1,6 +1,6 @@
 # NanoDecompiler - Состояние проекта
 
-- **Версия**: 2.0.7 (Standardized Release & Lightweight Ecosystem)
+- **Версия**: 2.0.8 (Cross-Platform Micro-Update & Live OTA Verification)
 - **Стек**: C++17 нативный движок (`resources/engine_cpp`), Rust FastScan Core (`crates/nanodecompiler-fastscan`), Tauri v2 Native (`tauri-v2`), Electron/React (TypeScript, Tailwind, Liquid Glass), Android Kotlin (Material Design 3), C# Avalonia Lite (`src_lite_cs`).
 - **Окружение**: Windows 10, процессор Intel Celeron P4600 (2 ядра, 2 потока), 4 ГБ ОЗУ.
 - **Главные правила**:
@@ -36,6 +36,13 @@
 5. **Отказоустойчивость CI/CD (CI Pipeline Resilience)**:
    - Изоляция матричных сборок `build-lite-gui` (сбои/задержки очередей macOS больше не блокируют Windows и Linux).
    - `publish-release` оснащен отказоустойчивым шлюзом (`if: always() && ...`), проверками наличия артефактов и динамической генерацией таблицы релизных заметок.
+
+
+## Микро-обновление v2.0.8 и сквозная верификация OTA:
+- **Electron**: заголовок окна `⚡ NanoDecompiler v2.0.8 [Electron Glass]`, отказоустойчивый опрос манифеста и метод `ota:platformInfo`.
+- **Tauri**: заголовок окна `⚡ NanoDecompiler v2.0.8 [Tauri Native]`, мост `tauriBridge.ts` с резервным адресом релизного манифеста.
+- **Android**: шапка `⚡ NanoDecompiler v2.0.8`, бейдж `Kotlin FastScan • OTA v2.0.8 Live` и синхронизация WebView чанков.
+- **WebUI & StatusBar**: статус-бар с бейджем `⚡ OTA v2.0.8` и прямая загрузка пакетов `.ndota`.
 
 ## 5 Мега-Галактических Инноваций движка:
 1. **NanoNeural Semantic Source Reconstructor (`semantic_reconstructor.cpp`, `semantic_reconstructor.hpp`)**:

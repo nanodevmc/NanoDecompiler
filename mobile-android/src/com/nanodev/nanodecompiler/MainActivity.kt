@@ -421,7 +421,7 @@ class MainActivity : Activity() {
             titleLayout.addView(tvTitle)
 
             val tvBadge = TextView(this@MainActivity).apply {
-                text = "v2.0.3"
+                text = "v2.0.8"
                 setTextColor(COLOR_ACID)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
                 background = liquidGlassDrawable(Color.argb(40, 155, 242, 70), COLOR_ACID, 6f)
@@ -997,7 +997,7 @@ class MainActivity : Activity() {
         otaCard.addView(tvOtaTitle)
 
         otaStatusText = TextView(this).apply {
-            val appVer = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0.6" } catch (_: Exception) { "2.0.6" }
+            val appVer = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0.8" } catch (_: Exception) { "2.0.8" }
             text = "Текущая версия: v$appVer ARM64"
             setTextColor(COLOR_TEXT_MUTED)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
@@ -1058,7 +1058,7 @@ class MainActivity : Activity() {
             background = liquidGlassDrawable(COLOR_SURFACE_GLASS, COLOR_BORDER, 12f)
         }
         val tvAbout = TextView(this).apply {
-            val appVer = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0.6" } catch (_: Exception) { "2.0.6" }
+            val appVer = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0.8" } catch (_: Exception) { "2.0.8" }
             text = "NanoDecompiler Mobile v$appVer ARM64\n" +
                     "Автор: NanoDev\n" +
                     "Канал: t.me/WineSquad\n" +
@@ -1115,9 +1115,9 @@ class MainActivity : Activity() {
                 }
 
                 val json = org.json.JSONObject(jsonStr)
-                val releaseTag = json.optString("releaseTag", "v2.0.7")
+                val releaseTag = json.optString("releaseTag", "v2.0.8")
                 val remoteVer = releaseTag.removePrefix("v").trim()
-                val currentVer = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0.6" } catch (_: Exception) { "2.0.6" }
+                val currentVer = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "2.0.8" } catch (_: Exception) { "2.0.8" }
 
                 val components = json.optJSONObject("components")
                 val mobile = components?.optJSONObject("mobile_android")

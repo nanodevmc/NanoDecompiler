@@ -1,5 +1,15 @@
 # Журнал изменений NanoDecompiler
 
+## [v2.0.8] - 2026-11-03 (Cross-Platform Micro-Update & Live OTA Verification)
+
+### [+] Добавлено
+- **Сквозная проверка и верификация OTA обновлений (Over-The-Air)**:
+  - **Electron**: заголовок окна `⚡ NanoDecompiler v2.0.8 [Electron Glass]`, внедрён каскадный опрос GitHub API/Releases и IPC-метод `ota:platformInfo`.
+  - **Tauri**: заголовок окна `⚡ NanoDecompiler v2.0.8 [Tauri Native]`, мост `tauriBridge.ts` с поддержкой прямого и резервного каналов манифеста (`releases/latest/download/ota-manifest.json`).
+  - **Android**: заголовок шапки `⚡ NanoDecompiler v2.0.8`, бейдж `Kotlin FastScan • OTA v2.0.8 Live` и синхронизация WebView чанков.
+  - **WebUI & StatusBar**: неоновый бейдж `⚡ OTA v2.0.8` в нижнем статус-баре и обновлённая панель дельта-пакетов в `UpdateModal`.
+  - Полный комплект из 4 канонических дельта-пакетов `.ndota` для WebUI, Electron, Android и Lite GUI.
+
 ## [v2.0.7] - 2026-11-02 (Full GUI OTA Ecosystem, Release Clean-up & Subsystem Modernization)
 
 ### [+] Добавлено

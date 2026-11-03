@@ -76,11 +76,11 @@ export function initTauriBridge() {
   (window as any).nano = {
     __is_tauri_bridge: true,
 
-    getGuiVersion: async () => "2.0.7",
+    getGuiVersion: async () => "2.0.8",
 
     getEngineVersion: async () => ({
       ok: true,
-      version: "2.0.7",
+      version: "2.0.8",
     }),
 
     getSettings: async () => getStoredSettings(),
@@ -384,18 +384,25 @@ export function initTauriBridge() {
     },
 
     otaFetchManifest: async (customUrl?: string) => {
-      const url = customUrl || "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json";
-      try {
-        const resp = await fetch(url, { cache: "no-store" });
-        if (resp.ok) {
-          const manifest = await resp.json();
-          if (manifest.otaPackages && !manifest.guiModules) {
-            manifest.guiModules = manifest.otaPackages;
+      const urls = [
+        customUrl,
+        "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json",
+        "https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/ota-manifest.json",
+      ].filter(Boolean) as string[];
+
+      for (const u of urls) {
+        try {
+          const resp = await fetch(u, { cache: "no-store" });
+          if (resp.ok) {
+            const manifest = await resp.json();
+            if (manifest.otaPackages && !manifest.guiModules) {
+              manifest.guiModules = manifest.otaPackages;
+            }
+            return manifest;
           }
-          return manifest;
+        } catch {
+          // fallback к следующему URL
         }
-      } catch (e) {
-        console.warn("[TauriBridge] Fetch manifest failed:", e);
       }
       return null;
     },
@@ -428,40 +435,50 @@ export function initTauriBridge() {
     },
 
     checkUpdate: async () => {
-      const currentVer = "2.0.7";
-      try {
-        const resp = await fetch("https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json", { cache: "no-store" });
-        if (resp.ok) {
-          const manifest = await resp.json();
-          const remoteTag = manifest.releaseTag || "v2.0.7";
-          const remoteVer = remoteTag.replace(/^v/, "").trim();
+      const currentVer = "2.0.8";
+      const urls = [
+        "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json",
+        "https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/ota-manifest.json",
+      ];
+      for (const u of urls) {
+        try {
+          const resp = await fetch(u, { cache: "no-store" });
+          if (resp.ok) {
+            const manifest = await resp.json();
+            const remoteTag = manifest.releaseTag || "v2.0.8";
+            const remoteVer = remoteTag.replace(/^v/, "").trim();
 
-          const rParts = remoteVer.split(".").map((n: string) => parseInt(n, 10) || 0);
-          const cParts = currentVer.split(".").map((n: string) => parseInt(n, 10) || 0);
-          let hasUpdate = false;
-          for (let i = 0; i < Math.max(rParts.length, cParts.length); i++) {
-            const r = rParts[i] || 0;
-            const c = cParts[i] || 0;
-            if (r > c) { hasUpdate = true; break; }
-            if (r < c) { break; }
+            const rParts = remoteVer.split(".").map((n: string) => parseInt(n, 10) || 0);
+            const cParts = currentVer.split(".").map((n: string) => parseInt(n, 10) || 0);
+            let hasUpdate = false;
+            for (let i = 0; i < Math.max(rParts.length, cParts.length); i++) {
+              const r = rParts[i] || 0;
+              const c = cParts[i] || 0;
+              if (r > c) { hasUpdate = true; break; }
+              if (r < c) { break; }
+            }
+
+            const clientUrl = isTauri
+              ? (manifest.components?.desktop_tauri?.windows_setup?.url || `https://github.com/nanodevmc/NanoDecompiler/releases/download/${remoteTag}/NanoDecompiler-Tauri-Windows-x64-${remoteTag}.exe`)
+              : (manifest.components?.mobile_android?.arm64_apk?.url || `https://github.com/nanodevmc/NanoDecompiler/releases/download/${remoteTag}/NanoDecompiler-Android-arm64-${remoteTag}.apk`);
+
+            return {
+              ok: true,
+              updateKind: hasUpdate ? ("client" as const) : ("none" as const),
+              hasUpdate,
+              currentVersion: currentVer,
+              latestVersion: remoteVer,
+              releaseTag: remoteTag,
+              clientUrl,
+              manifest,
+              releaseUrl: `https://github.com/nanodevmc/NanoDecompiler/releases/tag/${remoteTag}`,
+              clientDownloadUrl: clientUrl,
+              changelog: `Доступна новая версия NanoDecompiler ${remoteTag}!`,
+            };
           }
-
-          const clientUrl = isTauri
-            ? (manifest.components?.desktop_tauri?.windows_setup?.url || `https://github.com/nanodevmc/NanoDecompiler/releases/download/${remoteTag}/NanoDecompiler-Tauri-Windows-x64-${remoteTag}.exe`)
-            : (manifest.components?.mobile_android?.arm64_apk?.url || `https://github.com/nanodevmc/NanoDecompiler/releases/download/${remoteTag}/NanoDecompiler-Android-arm64-${remoteTag}.apk`);
-
-          return {
-            ok: true,
-            updateKind: hasUpdate ? ("client" as const) : ("none" as const),
-            currentVersion: currentVer,
-            latestVersion: remoteVer,
-            releaseUrl: `https://github.com/nanodevmc/NanoDecompiler/releases/tag/${remoteTag}`,
-            clientDownloadUrl: clientUrl,
-            changelog: `Доступна новая версия NanoDecompiler ${remoteTag}!`,
-          };
+        } catch (e) {
+          console.warn("[TauriBridge] Check update try failed for url:", u, e);
         }
-      } catch (e) {
-        console.warn("[TauriBridge] Check update failed:", e);
       }
       return {
         ok: true,

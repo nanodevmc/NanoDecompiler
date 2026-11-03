@@ -35,7 +35,7 @@ def collect_tree(src_dir, base_prefix=""):
 
 def main():
     parser = argparse.ArgumentParser(description="Package NanoDecompiler OTA (.ndota) bundles")
-    parser.add_argument("--tag", default="v2.0.7", help="Release tag e.g. v2.0.7")
+    parser.add_argument("--tag", default="v2.0.8", help="Release tag e.g. v2.0.7")
     parser.add_argument("--release-dir", default="release-files", help="Release directory")
     args = parser.parse_args()
 

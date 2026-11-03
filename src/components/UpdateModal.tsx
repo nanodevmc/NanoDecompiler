@@ -341,10 +341,10 @@ function OtaModulesSection() {
 
   // Модули интерфейса и экосистемные OTA-пакеты (.ndota)
   const [modules, setModules] = useState<GuiModuleItem[]>([
-    { id: "gui_webui", name: "NanoDecompiler-OTA-WebUI-v2.0.7.ndota", label: "WebUI & SPA фронтенд модуль", version: "2.0.7", localVersion: "2.0.7", status: "up_to_date", size: "199.7 KB" },
-    { id: "gui_electron", name: "NanoDecompiler-OTA-Electron-v2.0.7.ndota", label: "Electron Desktop ядро и Preload", version: "2.0.7", localVersion: "2.0.7", status: "up_to_date", size: "289.6 KB" },
-    { id: "gui_android", name: "NanoDecompiler-OTA-Android-v2.0.7.ndota", label: "Android Mobile WebView ассеты", version: "2.0.7", localVersion: "2.0.7", status: "up_to_date", size: "199.7 KB" },
-    { id: "gui_lite", name: "NanoDecompiler-OTA-Lite-v2.0.7.ndota", label: "C# Avalonia Lite XAML темы и иконки", version: "2.0.7", localVersion: "2.0.7", status: "up_to_date", size: "31.0 KB" },
+    { id: "gui_webui", name: "NanoDecompiler-OTA-WebUI-v2.0.8.ndota", label: "WebUI & SPA фронтенд модуль", version: "2.0.8", localVersion: "2.0.8", status: "up_to_date", size: "200.3 KB" },
+    { id: "gui_electron", name: "NanoDecompiler-OTA-Electron-v2.0.8.ndota", label: "Electron Desktop ядро и Preload", version: "2.0.8", localVersion: "2.0.8", status: "up_to_date", size: "287.6 KB" },
+    { id: "gui_android", name: "NanoDecompiler-OTA-Android-v2.0.8.ndota", label: "Android Mobile WebView ассеты", version: "2.0.8", localVersion: "2.0.8", status: "up_to_date", size: "200.3 KB" },
+    { id: "gui_lite", name: "NanoDecompiler-OTA-Lite-v2.0.8.ndota", label: "C# Avalonia Lite XAML темы и иконки", version: "2.0.8", localVersion: "2.0.8", status: "up_to_date", size: "31.0 KB" },
   ]);
 
   const pendingModules = modules.filter(m => m.status !== "up_to_date");
@@ -355,7 +355,7 @@ function OtaModulesSection() {
     try {
       const targetMod = modules.find(m => m.id === modId);
       const fileName = targetMod?.name || `${modId}.ndota`;
-      const url = `https://github.com/nanodevmc/NanoDecompiler/releases/download/v2.0.7/${fileName}`;
+      const url = `https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/${fileName}`;
       if (window.nano?.otaSyncModule) {
         await window.nano.otaSyncModule({ name: fileName, sha256: "auto", url });
       }
@@ -372,7 +372,7 @@ function OtaModulesSection() {
     setSyncAllLoading(true);
     try {
       for (const mod of pendingModules) {
-        const url = `https://github.com/nanodevmc/NanoDecompiler/releases/download/v2.0.7/${mod.name}`;
+        const url = `https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/${mod.name}`;
         if (window.nano?.otaSyncModule) {
           await window.nano.otaSyncModule({ name: mod.name, sha256: "auto", url });
         }
@@ -433,7 +433,7 @@ function OtaModulesSection() {
         {allUpToDate ? (
           <p className="text-acid font-medium flex items-center gap-1.5">
             <Check size={13} />
-            Все модули обновлены до последней версии (v2.0.7).
+            Все модули обновлены до последней версии (v2.0.8).
           </p>
         ) : (
           <div className="space-y-1">
