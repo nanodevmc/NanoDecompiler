@@ -33,6 +33,9 @@
    - **Electron**: `OtaManager` с авто-следованием за HTTP 301/302 редиректами GitHub CDN, поддержка секции `otaPackages`.
    - **Tauri**: `tauriBridge.ts` без моков — живой `fetch()` к `ota-manifest.json`, семантическое сравнение версий и потоковая загрузка `.ndota`.
    - **UI**: `UpdateModal.tsx` динамически отображает и скачивает реальные `.ndota` пакеты.
+5. **Отказоустойчивость CI/CD (CI Pipeline Resilience)**:
+   - Изоляция матричных сборок `build-lite-gui` (сбои/задержки очередей macOS больше не блокируют Windows и Linux).
+   - `publish-release` оснащен отказоустойчивым шлюзом (`if: always() && ...`), проверками наличия артефактов и динамической генерацией таблицы релизных заметок.
 
 ## 5 Мега-Галактических Инноваций движка:
 1. **NanoNeural Semantic Source Reconstructor (`semantic_reconstructor.cpp`, `semantic_reconstructor.hpp`)**:

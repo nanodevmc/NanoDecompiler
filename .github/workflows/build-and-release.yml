@@ -324,7 +324,9 @@ jobs:
 
   build-client-macos:
     needs: [resolve-version, build-clapi-macos]
+    if: always() && !cancelled() && needs.resolve-version.result == 'success' && needs.build-clapi-macos.result == 'success'
     runs-on: macos-latest
+    timeout-minutes: 30
     env:
       API_VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
@@ -567,6 +569,7 @@ jobs:
   build-clapi-macos:
     needs: [resolve-version]
     runs-on: macos-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -630,8 +633,10 @@ jobs:
 
   build-lite-gui:
     needs: [resolve-version, build-clapi-windows, build-clapi-linux, build-clapi-macos]
+    if: always() && !cancelled() && needs.resolve-version.result == 'success'
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - rid: win-x64
@@ -670,19 +675,29 @@ jobs:
       - uses: actions/checkout@v4
       - name: Скачать собранный нативный CLI движок
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: ${{ matrix.clapi_artifact }}
           path: clapi_temp
       - name: Встроить нативный движок в ресурсы NanoDecompilerLite
+        id: embed_engine
         run: |
+          if [ ! -f "clapi_temp/${{ matrix.clapi_bin }}" ]; then
+            echo "::warning::Движок ${{ matrix.clapi_bin }} не найден для ${{ matrix.rid }} (раннер был в очереди или отменен). Пропуск сборки слайса."
+            echo "skip_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           mkdir -p src_lite_cs/NanoDecompilerLite/Resources
           cp clapi_temp/${{ matrix.clapi_bin }} src_lite_cs/NanoDecompilerLite/Resources/${{ matrix.embedded_name }}
           chmod +x src_lite_cs/NanoDecompilerLite/Resources/${{ matrix.embedded_name }}
+          echo "skip_build=false" >> "$GITHUB_OUTPUT"
       - name: Установка .NET 8 SDK
+        if: steps.embed_engine.outputs.skip_build != 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
       - name: Кэш NuGet пакетов (.NET Avalonia)
+        if: steps.embed_engine.outputs.skip_build != 'true'
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
@@ -690,16 +705,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
       - name: Сборка и публикация NanoDecompilerLite (${{ matrix.rid }})
+        if: steps.embed_engine.outputs.skip_build != 'true'
         working-directory: src_lite_cs/NanoDecompilerLite
         run: |
           dotnet publish -c Release -r ${{ matrix.rid }} --self-contained false -p:PublishSingleFile=true -p:DebugType=none -p:DebugSymbols=false -o out
           mv out/NanoDecompilerLite${{ matrix.ext }} "../../${{ matrix.out_file }}-${{ needs.resolve-version.outputs.version }}${{ matrix.ext }}"
       - name: Загрузка артефакта Lite
+        if: steps.embed_engine.outputs.skip_build != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: lite-artifact-${{ matrix.rid }}
           path: ${{ matrix.out_file }}-${{ needs.resolve-version.outputs.version }}${{ matrix.ext }}
-          if-no-files-found: error
+          if-no-files-found: ignore
 
   # =========================================================================
   # ОСНОВНОЙ КЛИЕНТ НОВОГО ПОКОЛЕНИЯ: TAURI V2 NATIVE (WINDOWS & LINUX)
@@ -973,7 +990,25 @@ jobs:
     permissions:
       contents: write
     # HANDOFF_54: явно перечислены ВСЕ клиентские, ClApi и Lite job'ы
-    needs: [resolve-version, build-tauri-windows, build-tauri-linux, build-android-native, build-client-windows, build-client-linux, build-client-macos, build-clapi-windows, build-clapi-linux, build-clapi-macos, build-lite-gui]
+    needs: [
+      resolve-version,
+      build-tauri-windows,
+      build-tauri-linux,
+      build-android-native,
+      build-client-windows,
+      build-client-linux,
+      build-client-macos,
+      build-clapi-windows,
+      build-clapi-linux,
+      build-clapi-macos,
+      build-lite-gui
+    ]
+    if: always() && !cancelled() &&
+        needs.resolve-version.result == 'success' &&
+        needs.build-android-native.result == 'success' &&
+        needs.build-tauri-windows.result == 'success' &&
+        needs.build-client-windows.result == 'success' &&
+        needs.build-clapi-windows.result == 'success'
     runs-on: ubuntu-latest
     env:
       RELEASE_TAG: ${{ needs.resolve-version.outputs.version }}
@@ -983,32 +1018,38 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: tauri-artifact-*
           path: release-files-tmp/tauri
           merge-multiple: true
 
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: client-artifact-*
           path: release-files-tmp/clients
           merge-multiple: true
 
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           pattern: lite-artifact-*
           path: release-files
           merge-multiple: true
 
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: clapi-artifacts-windows
           path: release-files-tmp/windows
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: clapi-artifacts-linux
           path: release-files-tmp/linux
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: clapi-artifacts-macos
           path: release-files-tmp/macos
@@ -1018,8 +1059,12 @@ jobs:
         run: |
           TAG="${RELEASE_TAG}"
           # 1. ОСНОВНЫЕ КЛИЕНТЫ: TAURI V2 NATIVE (НОВОЕ ПОКОЛЕНИЕ)
-          mv release-files-tmp/tauri/NanoDecompiler-Tauri-Windows-x64-Setup.exe release-files/NanoDecompiler-Tauri-Windows-x64-${TAG}.exe
-          mv release-files-tmp/tauri/NanoDecompiler-Tauri-Windows-x64-Standalone.exe release-files/NanoDecompiler-Tauri-Windows-x64-${TAG}-Portable.exe
+          if [ -f "release-files-tmp/tauri/NanoDecompiler-Tauri-Windows-x64-Setup.exe" ]; then
+            mv release-files-tmp/tauri/NanoDecompiler-Tauri-Windows-x64-Setup.exe release-files/NanoDecompiler-Tauri-Windows-x64-${TAG}.exe
+          fi
+          if [ -f "release-files-tmp/tauri/NanoDecompiler-Tauri-Windows-x64-Standalone.exe" ]; then
+            mv release-files-tmp/tauri/NanoDecompiler-Tauri-Windows-x64-Standalone.exe release-files/NanoDecompiler-Tauri-Windows-x64-${TAG}-Portable.exe
+          fi
           if [ -f "release-files-tmp/tauri/NanoDecompiler-Tauri-Linux-x64" ]; then
             mv release-files-tmp/tauri/NanoDecompiler-Tauri-Linux-x64 release-files/NanoDecompiler-Tauri-Linux-x64-${TAG}
           fi
@@ -1030,14 +1075,26 @@ jobs:
           fi
 
           # 2. КЛАССИЧЕСКИЕ КЛИЕНТЫ (ELECTRON GUI)
-          mv release-files-tmp/clients/NanoDecompiler-Client-Setup.exe release-files/NanoDecompiler-Electron-Windows-x64-${TAG}.exe
-          mv release-files-tmp/clients/NanoDecompiler-Client.AppImage release-files/NanoDecompiler-Electron-Linux-x64-${TAG}.AppImage
-          mv release-files-tmp/clients/NanoDecompiler-Client.dmg release-files/NanoDecompiler-Electron-macOS-arm64-${TAG}.dmg
+          if [ -f "release-files-tmp/clients/NanoDecompiler-Client-Setup.exe" ]; then
+            mv release-files-tmp/clients/NanoDecompiler-Client-Setup.exe release-files/NanoDecompiler-Electron-Windows-x64-${TAG}.exe
+          fi
+          if [ -f "release-files-tmp/clients/NanoDecompiler-Client.AppImage" ]; then
+            mv release-files-tmp/clients/NanoDecompiler-Client.AppImage release-files/NanoDecompiler-Electron-Linux-x64-${TAG}.AppImage
+          fi
+          if [ -f "release-files-tmp/clients/NanoDecompiler-Client.dmg" ]; then
+            mv release-files-tmp/clients/NanoDecompiler-Client.dmg release-files/NanoDecompiler-Electron-macOS-arm64-${TAG}.dmg
+          fi
 
           # 3. ДВИЖКИ CLI (C++ CLI)
-          mv release-files-tmp/windows/NanoDecompilerClApi.exe release-files/NanoDecompiler-CLI-Windows-x64-${TAG}.exe
-          mv release-files-tmp/linux/NanoDecompilerClApi release-files/NanoDecompiler-CLI-Linux-x64-${TAG}
-          mv release-files-tmp/macos/NanoDecompilerClApi release-files/NanoDecompiler-CLI-macOS-arm64-${TAG}
+          if [ -f "release-files-tmp/windows/NanoDecompilerClApi.exe" ]; then
+            mv release-files-tmp/windows/NanoDecompilerClApi.exe release-files/NanoDecompiler-CLI-Windows-x64-${TAG}.exe
+          fi
+          if [ -f "release-files-tmp/linux/NanoDecompilerClApi" ]; then
+            mv release-files-tmp/linux/NanoDecompilerClApi release-files/NanoDecompiler-CLI-Linux-x64-${TAG}
+          fi
+          if [ -f "release-files-tmp/macos/NanoDecompilerClApi" ]; then
+            mv release-files-tmp/macos/NanoDecompilerClApi release-files/NanoDecompiler-CLI-macOS-arm64-${TAG}
+          fi
 
       # Собрать ассеты и упаковать легковесные OTA-пакеты (.ndota)
       - uses: actions/setup-node@v4
@@ -1165,6 +1222,39 @@ jobs:
           
           tag_full = os.environ.get('RELEASE_TAG', 'v' + tag)
 
+          all_catalog = [
+              (f"NanoDecompiler-Tauri-Windows-x64-{tag_full}.exe", "**Tauri (Desktop)**", "⭐ **Основной клиент** (Installer, Liquid Glass + MD3)"),
+              (f"NanoDecompiler-Tauri-Windows-x64-{tag_full}-Portable.exe", "**Tauri (Desktop)**", "Нативный портативный клиент (без инсталляции)"),
+              (f"NanoDecompiler-Tauri-Linux-x64-{tag_full}", "**Tauri (Desktop)**", "⭐ **Основной клиент для Linux**"),
+              (f"NanoDecompiler-Electron-Windows-x64-{tag_full}.exe", "**Electron (Desktop)**", "Классический GUI инсталлятор (Fallback)"),
+              (f"NanoDecompiler-Electron-Linux-x64-{tag_full}.AppImage", "**Electron (Desktop)**", "Классический GUI AppImage"),
+              (f"NanoDecompiler-Electron-macOS-arm64-{tag_full}.dmg", "**Electron (Desktop)**", "Классический GUI DMG для Apple Silicon"),
+              (f"NanoDecompiler-Lite-Windows-x64-{tag_full}.exe", "**Lite (Avalonia)**", "Ультралегкий C# GUI клиент (мгновенный запуск)"),
+              (f"NanoDecompiler-Lite-Linux-x64-{tag_full}", "**Lite (Avalonia)**", "Ультралегкий C# GUI клиент для Linux"),
+              (f"NanoDecompiler-Lite-macOS-x64-{tag_full}", "**Lite (Avalonia)**", "Ультралегкий C# GUI клиент для macOS Intel"),
+              (f"NanoDecompiler-Lite-macOS-arm64-{tag_full}", "**Lite (Avalonia)**", "Ультралегкий C# GUI клиент для Apple Silicon"),
+              (f"NanoDecompiler-CLI-Windows-x64-{tag_full}.exe", "**CLI / Core**", "C++ Движок декомпиляции и CLI/API сервер"),
+              (f"NanoDecompiler-CLI-Linux-x64-{tag_full}", "**CLI / Core**", "C++ Движок декомпиляции (Linux)"),
+              (f"NanoDecompiler-CLI-macOS-arm64-{tag_full}", "**CLI / Core**", "C++ Движок декомпиляции (macOS ARM64)"),
+              (f"NanoDecompiler-Android-arm64-{tag_full}.apk", "**Android (Mobile)**", "⭐ **Нативный мобильный APK** (Kotlin + FastScan)"),
+              (f"NanoDecompiler-OTA-WebUI-{tag_full}.ndota", "**OTA / Delta**", "Легковесный OTA архив WebUI компонентов"),
+              (f"NanoDecompiler-OTA-Electron-{tag_full}.ndota", "**OTA / Delta**", "Легковесный OTA архив Electron Renderer"),
+              (f"NanoDecompiler-OTA-Android-{tag_full}.ndota", "**OTA / Delta**", "Легковесный OTA архив мобильного UI"),
+              (f"NanoDecompiler-OTA-Lite-{tag_full}.ndota", "**OTA / Delta**", "Легковесный OTA архив тем и ассетов Lite GUI"),
+              ("ota-manifest.json", "**Metadata**", "Манифест спецификации всех OTA пакетов и бинарников"),
+              ("checksums.json", "**Metadata**", "Контрольные суммы SHA256 всех релизных файлов"),
+          ]
+
+          table_rows = []
+          for fname, plat, desc in all_catalog:
+              fpath = os.path.join("release-files", fname)
+              if os.path.exists(fpath):
+                  sz = os.path.getsize(fpath)
+                  mb = sz / (1024 * 1024)
+                  kb = sz / 1024
+                  sz_str = f"**{mb:.2f} MB**" if mb >= 1.0 else f"**{kb:.1f} KB**"
+                  table_rows.append(f"| `{fname}` | {plat} | {desc} | {sz_str} |")
+
           lines = [
               f"## 🚀 NanoDecompiler {tag_full}",
               "",
@@ -1175,26 +1265,7 @@ jobs:
               "",
               "| Файл | Платформа | Описание | Размер |",
               "|------|-----------|----------|--------|",
-              f"| `NanoDecompiler-Tauri-Windows-x64-{tag_full}.exe` | **Tauri (Desktop)** | ⭐ **Основной клиент** (Installer, Liquid Glass + MD3) | ~3.7 MB |",
-              f"| `NanoDecompiler-Tauri-Windows-x64-{tag_full}-Portable.exe` | **Tauri (Desktop)** | Нативный портативный клиент (без инсталляции) | ~9.0 MB |",
-              f"| `NanoDecompiler-Tauri-Linux-x64-{tag_full}` | **Tauri (Desktop)** | ⭐ **Основной клиент для Linux** | ~16 MB |",
-              f"| `NanoDecompiler-Electron-Windows-x64-{tag_full}.exe` | **Electron (Desktop)** | Классический GUI инсталлятор (Fallback) | ~64 MB |",
-              f"| `NanoDecompiler-Electron-Linux-x64-{tag_full}.AppImage` | **Electron (Desktop)** | Классический GUI AppImage | ~75 MB |",
-              f"| `NanoDecompiler-Electron-macOS-arm64-{tag_full}.dmg` | **Electron (Desktop)** | Классический GUI DMG для Apple Silicon | ~187 MB |",
-              f"| `NanoDecompiler-Lite-Windows-x64-{tag_full}.exe` | **Lite (Avalonia)** | Ультралегкий C# GUI клиент (мгновенный запуск) | ~24 MB |",
-              f"| `NanoDecompiler-Lite-Linux-x64-{tag_full}` | **Lite (Avalonia)** | Ультралегкий C# GUI клиент для Linux | ~23 MB |",
-              f"| `NanoDecompiler-Lite-macOS-x64-{tag_full}` | **Lite (Avalonia)** | Ультралегкий C# GUI клиент для macOS Intel | ~32 MB |",
-              f"| `NanoDecompiler-Lite-macOS-arm64-{tag_full}` | **Lite (Avalonia)** | Ультралегкий C# GUI клиент для Apple Silicon | ~32 MB |",
-              f"| `NanoDecompiler-CLI-Windows-x64-{tag_full}.exe` | **CLI / Core** | C++ Движок декомпиляции и CLI/API сервер | ~1.6 MB |",
-              f"| `NanoDecompiler-CLI-Linux-x64-{tag_full}` | **CLI / Core** | C++ Движок декомпиляции (Linux) | ~1.1 MB |",
-              f"| `NanoDecompiler-CLI-macOS-arm64-{tag_full}` | **CLI / Core** | C++ Движок декомпиляции (macOS ARM64) | ~2.7 MB |",
-              f"| `NanoDecompiler-Android-arm64-{tag_full}.apk` | **Android (Mobile)** | ⭐ **Нативный мобильный APK** (Kotlin + FastScan) | **2.97 MB** |",
-              f"| `NanoDecompiler-OTA-WebUI-{tag_full}.ndota` | **OTA / Delta** | Легковесный OTA архив WebUI компонентов | ~205 KB |",
-              f"| `NanoDecompiler-OTA-Electron-{tag_full}.ndota` | **OTA / Delta** | Легковесный OTA архив Electron Renderer | ~294 KB |",
-              f"| `NanoDecompiler-OTA-Android-{tag_full}.ndota` | **OTA / Delta** | Легковесный OTA архив мобильного UI | ~205 KB |",
-              f"| `NanoDecompiler-OTA-Lite-{tag_full}.ndota` | **OTA / Delta** | Легковесный OTA архив тем и ассетов Lite GUI | ~31 KB |",
-              "| `ota-manifest.json` | **Metadata** | Манифест спецификации всех OTA пакетов и бинарников | ~9 KB |",
-              "| `checksums.json` | **Metadata** | Контрольные суммы SHA256 всех релизных файлов | ~2 KB |",
+          ] + table_rows + [
               "",
               "### Как проверялось",
               "Все сборки компилируются и верифицируются в CI матрице на реальных тестах декомпиляции.",
