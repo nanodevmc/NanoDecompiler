@@ -16,6 +16,13 @@ import hashlib
 import argparse
 import subprocess
 
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 TEST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 TEST_JARS = os.path.join(TEST_DIR, "test_jars")
 TEMP_OUT = os.path.join(TEST_DIR, "temp", "out", "stress_tests")
@@ -243,14 +250,14 @@ class SuiteRunner:
 
     def execute_all(self):
         self.log("\n=======================================================")
-        self.log("🚀 ЗАПУСК 15 СТРЕСС-ТЕСТОВ ДЕКОМПИЛЯТОРА NANODECOMPILER")
+        self.log("[START] ЗАПУСК 15 СТРЕСС-ТЕСТОВ ДЕКОМПИЛЯТОРА NANODECOMPILER")
         self.log(f"Бинарник движка: {self.binary}")
         self.log(f"Тестовые JARs:   {TEST_JARS}")
         self.log(f"Временный вывод: {TEMP_OUT}")
         self.log("=======================================================\n")
 
         if not os.path.isfile(self.binary):
-            self.log(f"❌ ОШИБКА: Бинарник движка не найден по пути {self.binary}")
+            self.log(f"[ERROR] Бинарник движка не найден по пути: {self.binary}")
             return 1
 
         tests = [
@@ -277,7 +284,7 @@ class SuiteRunner:
 
         total_time = time.time() - start_time
         self.log("\n=======================================================")
-        self.log(f"📊 ИТОГИ ТЕСТИРОВАНИЯ: {self.passed}/15 УСПЕШНО | {self.failed} ОШИБОК ({total_time:.2f}s)")
+        self.log(f"[SUMMARY] ИТОГИ ТЕСТИРОВАНИЯ: {self.passed}/15 УСПЕШНО | {self.failed} ОШИБОК ({total_time:.2f}s)")
         self.log("=======================================================")
 
         # Clean up temporary test outputs cleanly

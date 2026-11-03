@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import json
 import urllib.request
 
@@ -20,7 +21,7 @@ headers = {
 if pat:
     headers["Authorization"] = f"Bearer {pat}"
 
-run_id = "41719486275"
+run_id = sys.argv[1] if len(sys.argv) > 1 else "41740581192"
 url = f"https://api.github.com/repos/nanodevmc/NanoDecompiler/actions/runs/{run_id}/jobs?per_page=50"
 req = urllib.request.Request(url, headers=headers)
 
@@ -29,6 +30,6 @@ try:
         data = json.loads(resp.read().decode("utf-8"))
         for j in data.get("jobs", []):
             runner = j.get('runner_name') or 'None'
-            print(f"Job: {j['name']:<30} | ID: {j['id']} | Status: {j['status']:<11} | Conclusion: {str(j['conclusion']):<8} | Runner: {runner}")
+            print(f"Job: {j['name']:<30} | Status: {j['status']:<11} | Conclusion: {str(j['conclusion']):<8} | Runner: {runner}")
 except Exception as e:
     print(f"Error: {e}")

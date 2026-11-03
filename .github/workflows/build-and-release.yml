@@ -498,6 +498,8 @@ jobs:
           if ($jsonNeo.status -ne "ok") { throw "ClApi: NeoBuyer --json-output вернул status=$($jsonNeo.status), reason=$($jsonNeo.reason)" }
 
       - name: Запуск 15 тестов декомпилятора на стрессоустойчивость (Windows)
+        env:
+          PYTHONIOENCODING: utf-8
         run: python scripts/run_stress_test_suite.py --bin .\NanoDecompilerClApi.exe
 
       - uses: actions/upload-artifact@v4
