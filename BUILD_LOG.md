@@ -462,3 +462,17 @@
   - GitHub Actions Run ID `41498677513`: `SUCCESS` (все джобы успешно завершены).
   - GitHub Actions Run ID `41598080212`: `SUCCESS` (100% прогон всех 15 сборочных задач с новым workflow).
   - Релиз `v2.0.7`: ровно 20 стандартизированных файлов (нативный APK 2.87 МБ, 4 дельта-пакета `.ndota`, все нативные клиенты Tauri/Electron/Lite/CLI).
+
+## [2026-11-03] - v2.0.8: Кроссплатформенное микрообновление и верификация сквозного OTA
+- **Цель**: Проверка работы живого OTA-обновления «по воздуху» на всех целевых платформах (Android, Electron, Tauri, WebUI, Lite) через минимальный кроссплатформенный релиз.
+- **Внесённые микрообновления**:
+  1. **Android**: `versionCode="208"`, `versionName="2.0.8"` в `AndroidManifest.xml`, бейдж `v2.0.8` в `MainActivity.kt`, актуализирован fallback тег и синхронизированы продакшен-бандлы в `mobile-android/assets/`.
+  2. **Tauri**: Заголовок нативного окна `⚡ NanoDecompiler v2.0.8 [Tauri Native]` в `tauri.conf.json`, версия `2.0.8` в `Cargo.toml`, надёжный dual-URL fallback в `src/lib/tauriBridge.ts`.
+  3. **Electron**: IPC-обработчик платформы `ota:platformInfo` и dual-URL fallback в `electron/otaManager.ts`, бейдж `⚡ OTA v2.0.8` в `StatusBar.tsx`, список модулей `v2.0.8` в `UpdateModal.tsx`.
+  4. **Lite C#**: `<Version>2.0.8</Version>` в `NanoDecompilerLite.csproj`.
+- **Результаты проверки и публикация**:
+  - GitHub Actions Run ID `41719486275`: Успешная финализация и публикация `publish-release` (conclusion: `success`).
+  - GitHub Release `v2.0.8`: Опубликован (https://github.com/nanodevmc/NanoDecompiler/releases/tag/v2.0.8), 16 канонических файлов.
+  - Легковесные OTA-пакеты: `NanoDecompiler-OTA-Android-v2.0.8.ndota` (200.3 КБ), `NanoDecompiler-OTA-Electron-v2.0.8.ndota` (287.8 КБ), `NanoDecompiler-OTA-WebUI-v2.0.8.ndota` (200.3 КБ), `NanoDecompiler-OTA-Lite-v2.0.8.ndota` (31.0 КБ).
+  - Нативный APK: `NanoDecompiler-Android-arm64-v2.0.8.apk` (2.87 МБ).
+  - Манифест `ota-manifest.json`: проверен прямой HTTP-запрос по CDN `releases/latest/download/ota-manifest.json` — код 200 OK, манифест отдаёт `manifestVersion: "2.0.8"`.
