@@ -450,3 +450,15 @@
   - Renderer: `npm run build:renderer` -> код 0 (1,946 модулей трансформировано).
   - Tauri v2: `cargo check` -> код 0.
 - **Ограничение**: СТРОГО БЕЗ `git push` до 11:00 следующего дня.
+
+## [2026-11-03] - v2.0.7: Отказоустойчивость CI/CD и устранение задержек очередей GitHub Actions
+- **Причина**: В вечерние пиковые часы GitHub Actions раннеры `macos-latest` вставали в очередь ожидания и отменялись GitHub по таймауту 15 минут, блокируя через цепочку `needs:` публикацию релизов Windows, Linux и Android.
+- **Внесённые изменения**:
+  1. `build-lite-gui`: внедрено условие `if: always() && !cancelled() && needs.resolve-version.result == 'success'`, добавлен `continue-on-error: true` на загрузку движка и мягкий пропуск слайса `skip_build=true`, если раннер платформы был недоступен. Сборки Windows и Linux Lite теперь независимы от очередей macOS.
+  2. `build-client-macos`: защищен условием `if: always() && !cancelled() && needs.build-clapi-macos.result == 'success'` и таймаутом `timeout-minutes: 30`.
+  3. `build-clapi-macos`: добавлен `timeout-minutes: 25`.
+  4. `publish-release`: внедрен отказоустойчивый шлюз проверки базовых платформ, `continue-on-error: true` для всех артефактов, проверки `if [ -f ... ]; then mv ...; fi` и динамическая генерация таблицы release_notes.md с точными размерами файлов из `os.path.getsize`.
+- **Результаты проверки**:
+  - GitHub Actions Run ID `41498677513`: `SUCCESS` (все джобы успешно завершены).
+  - GitHub Actions Run ID `41598080212`: `SUCCESS` (100% прогон всех 15 сборочных задач с новым workflow).
+  - Релиз `v2.0.7`: ровно 20 стандартизированных файлов (нативный APK 2.87 МБ, 4 дельта-пакета `.ndota`, все нативные клиенты Tauri/Electron/Lite/CLI).
