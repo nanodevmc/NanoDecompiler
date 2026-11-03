@@ -3,6 +3,10 @@
  * Подключается к нативному Kotlin-движку NanoAndroid (CFR Decompiler Core) без моков.
  */
 
+import { DEFAULT_APP_VERSION, GITHUB_RELEASES_PAGE_URL, MANIFEST_CANDIDATE_URLS } from "./constants";
+import { fmtBytes } from "./model";
+import { isAndroid as checkAndroid, isTauri as checkTauri } from "./platform";
+
 export function initTauriBridge() {
   if (typeof window === "undefined") return;
 
@@ -65,18 +69,10 @@ export function initTauriBridge() {
     return null;
   };
 
-  // Форматирование байтов
-  const formatSize = (bytes: number): string => {
-    if (!bytes || bytes <= 0) return "0 Б";
-    if (bytes < 1024) return bytes + " Б";
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " КБ";
-    return (bytes / (1024 * 1024)).toFixed(2) + " МБ";
-  };
-
   (window as any).nano = {
     __is_tauri_bridge: true,
 
-    getGuiVersion: async () => "2.0.8",
+    getGuiVersion: async () => DEFAULT_APP_VERSION,
 
     getEngineVersion: async () => ({
       ok: true,
@@ -194,7 +190,7 @@ export function initTauriBridge() {
           if (p.ok) {
             return {
               name: p.fileName || fileName,
-              size: formatSize(p.sizeBytes),
+              size: fmtBytes(p.sizeBytes, 1, "ru"),
               size_bytes: p.sizeBytes,
               classes: p.classCount,
               packages: p.packageCount || Math.max(1, Math.round((p.classCount || 1) / 8)),
@@ -386,8 +382,7 @@ export function initTauriBridge() {
     otaFetchManifest: async (customUrl?: string) => {
       const urls = [
         customUrl,
-        "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json",
-        "https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/ota-manifest.json",
+        ...MANIFEST_CANDIDATE_URLS,
       ].filter(Boolean) as string[];
 
       for (const u of urls) {
@@ -435,11 +430,8 @@ export function initTauriBridge() {
     },
 
     checkUpdate: async () => {
-      const currentVer = "2.0.8";
-      const urls = [
-        "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json",
-        "https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/ota-manifest.json",
-      ];
+      const currentVer = DEFAULT_APP_VERSION;
+      const urls = [...MANIFEST_CANDIDATE_URLS];
       for (const u of urls) {
         try {
           const resp = await fetch(u, { cache: "no-store" });
@@ -485,7 +477,7 @@ export function initTauriBridge() {
         updateKind: "none" as const,
         currentVersion: currentVer,
         latestVersion: currentVer,
-        releaseUrl: "https://github.com/nanodevmc/NanoDecompiler/releases",
+        releaseUrl: GITHUB_RELEASES_PAGE_URL,
         changelog: `NanoDecompiler v${currentVer} (Все модули актуальны)`,
       };
     },

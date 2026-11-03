@@ -89,6 +89,7 @@ err*.txt
 *.class
 build/
 scratch/
+temp/
 tauri-v2/src-tauri/target/
 
 # Scratch & temporary scripts

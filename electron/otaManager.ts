@@ -24,6 +24,11 @@ export interface OtaManifest {
   engineModules?: Record<string, OtaModuleInfo>;
 }
 
+export const MANIFEST_FALLBACK_URLS = [
+  "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json",
+  "https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/ota-manifest.json",
+] as const;
+
 function httpsGetWithRedirects(
   targetUrl: string,
   headers: Record<string, string>,
@@ -177,11 +182,7 @@ export class OtaManager {
     });
 
     ipcMain.handle("ota:fetchManifest", async (_e, manifestUrl?: string) => {
-      const urls = [
-        manifestUrl,
-        "https://raw.githubusercontent.com/nanodevmc/NanoDecompiler/main/ota-manifest.json",
-        "https://github.com/nanodevmc/NanoDecompiler/releases/latest/download/ota-manifest.json",
-      ].filter(Boolean) as string[];
+      const urls = [manifestUrl, ...MANIFEST_FALLBACK_URLS].filter(Boolean) as string[];
 
       for (const u of urls) {
         const manifest = await this.fetchManifest(u);
@@ -191,7 +192,12 @@ export class OtaManager {
     });
 
     ipcMain.handle("ota:platformInfo", async () => {
-      return { platform: "electron", version: "2.0.8", otaReady: true, buildTag: "Electron Liquid Glass" };
+      return {
+        platform: "electron",
+        version: app.getVersion() || "2.0.8",
+        otaReady: true,
+        buildTag: "Electron Liquid Glass",
+      };
     });
 
     ipcMain.handle("ota:syncModule", async (_e, mod: OtaModuleInfo) => {

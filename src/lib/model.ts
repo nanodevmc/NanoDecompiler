@@ -243,10 +243,11 @@ export function rid(prefix: string) {
   return `${prefix}-${idCounter.toString(36)}`;
 }
 
-export function fmtBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} Б`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
-  return `${(bytes / (1024 * 1024)).toFixed(2)} МБ`;
+export function fmtBytes(bytes: number, decimals = 1, lang: "ru" | "en" = "ru") {
+  if (bytes < 1024) return lang === "ru" ? `${bytes} Б` : `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(decimals)} ${lang === "ru" ? "КБ" : "KB"}`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(decimals)} ${lang === "ru" ? "МБ" : "MB"}`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(decimals)} ${lang === "ru" ? "ГБ" : "GB"}`;
 }
 
 export function fmtNum(n: number) {

@@ -1,6 +1,6 @@
 # NanoDecompiler - Состояние проекта
 
-- **Версия**: 2.0.8 (Cross-Platform Micro-Update & Live OTA Verification)
+- **Версия**: 2.0.8 (Clean Workspace, DRY Architecture & 15 CI Stress Tests)
 - **Стек**: C++17 нативный движок (`resources/engine_cpp`), Rust FastScan Core (`crates/nanodecompiler-fastscan`), Tauri v2 Native (`tauri-v2`), Electron/React (TypeScript, Tailwind, Liquid Glass), Android Kotlin (Material Design 3), C# Avalonia Lite (`src_lite_cs`).
 - **Окружение**: Windows 10, процессор Intel Celeron P4600 (2 ядра, 2 потока), 4 ГБ ОЗУ.
 - **Главные правила**:
@@ -8,8 +8,25 @@
   - Все тяжёлые тесты/сборки запускать строго последовательно (1 процесс за раз).
   - СТРОГО БЕЗ `python -c` (любой вызов Python только через прямые файлы `.py`).
   - СТРОГО БЕЗ хардкода токенов и секретов в файлах репозитория.
+  - СТРОГОЕ ПРАВИЛО РАБОЧЕЙ ПАПКИ: любые временные файлы, одноразовые скрипты, тестовые дампы и логи размещаются ТОЛЬКО в `temp/` (корень проекта содержится в абсолютной чистоте).
 
-## Стандартизация релизов и сквозное подключение OTA (v2.0.7):
+## Рефакторинг DRY, чистота директорий и 15 стресс-тестов в CI:
+1. **DRY-рефакторинг фронтенда и платформенных мостов**:
+   - `src/lib/constants.ts`: вынесены канонические URL манифестов (`MANIFEST_CANDIDATE_URLS`), эндпоинты GitHub API и релизов.
+   - `src/lib/platform.ts`: централизованная детекция платформы (`isElectron`, `isTauri`, `isAndroid`, `isWeb`).
+   - `src/lib/model.ts`: унифицированный хелпер `fmtBytes(bytes, decimals, lang)` как единый источник форматирования размеров файлов.
+   - `src/lib/tauriBridge.ts`: ликвидированы локальные дубликаты `formatSize` и списков URL манифеста.
+   - `electron/otaManager.ts`: использование констант `MANIFEST_FALLBACK_URLS` и динамической версии `app.getVersion()`.
+   - `src/components/UpdateModal.tsx`: динамическая подгрузка дельта-пакетов из манифеста вместо захардкоженных списков.
+2. **Генеральная уборка директорий и регламент `temp/`**:
+   - Освобождено **1 687.34 МБ** дискового пространства (удалено 60 643 временных файлов).
+   - Корень проекта полностью очищен: удалены 52 старых файла (дампы ошибок, отработавшие патчи, старые тестовые установочники) и 30 временных папок декомпиляции (`test_wg6_out` 532 МБ, `temp_test_jars` 94 МБ и др.).
+   - Все временные рабочие операции переведены в директорию `temp/` (добавлена в `.gitignore`).
+3. **15 кроссплатформенных стресс-тестов в CI (`scripts/run_stress_test_suite.py`)**:
+   - Интегрированы в GitHub Actions на всех трёх платформах (`build-clapi-windows`, `build-clapi-linux`, `build-clapi-macos`).
+   - Покрытие: смоук-тест флагов, деобфускация строк (Aegis), свёртка lookupswitch ловушек, десахаризация лямбд (BSM), нередуцируемые циклы, удаление opaque predicates, иерархия внутренних классов, распаковка ресурсов YAML/properties, Bukkit аннотации, устойчивость к повреждённому байткоду (crash-bomb), 8-поточный стресс, крупномасштабные архивы, аудит баланса фигурных скобок AST, побайтовая идемпотентность и проверка потолка памяти.
+
+## Стандартизация релизов и сквозное подключение OTA (v2.0.7 - v2.0.8):
 1. **Канонический порядок именования релизных артефактов**:
    - Каждый файл строго декларирует технологию платформы: `[Name]-[Platform]-[OS]-[Arch]-[Version][Ext]`.
    - `NanoDecompiler-Tauri-*` (основной нативный клиент: Windows Setup, Portable, Linux).
@@ -19,39 +36,10 @@
    - `NanoDecompiler-Android-*` (нативное мобильное приложение).
    - `NanoDecompiler-OTA-*` (легковесные дельта-архивы для всех GUI компонентов).
 2. **Ликвидация тяжеловесного моста Android и оптимизация APK**:
-   - Устранен 12.8 МБ мост Tauri mobile; сборка переведена на нативный Kotlin (`scripts/build_android.py`).
-   - Итоговый размер релизного подписанного APK уменьшен до **2.87-2.97 МБ** (-76.8% редукция).
-   - Удален случайный 2.58 МБ бинарник из `mobile-android/assets/bin/`, очищены устаревшие чанки Vite.
+   - Размер релизного нативного APK уменьшен до **2.87 МБ** (-76.8% редукция).
 3. **Легковесные дельта-пакеты OTA (.ndota)**:
-   - Полное покрытие всех 4 GUI платформ без включения бинарников движка и .map-файлов:
-     - `NanoDecompiler-OTA-WebUI-v2.0.7.ndota`: ~199 KB (Web/SPA фронтенд)
-     - `NanoDecompiler-OTA-Electron-v2.0.7.ndota`: ~289 KB (Renderer + Preload)
-     - `NanoDecompiler-OTA-Android-v2.0.7.ndota`: ~199 KB (WebView ассеты)
-     - `NanoDecompiler-OTA-Lite-v2.0.7.ndota`: ~31 KB (Avalonia XAML темы и иконки)
+   - Полное покрытие всех 4 GUI платформ: WebUI (200 KB), Electron (288 KB), Android (200 KB), Lite (31 KB).
 4. **Сквозная интеграция OTA во всех платформах**:
-   - **Android**: 100% нативно в `MainActivity.kt` (опрос `ota-manifest.json`, фоновое скачивание, SHA-256 верификация, PackageInstaller).
-   - **Electron**: `OtaManager` с авто-следованием за HTTP 301/302 редиректами GitHub CDN, поддержка секции `otaPackages`.
-   - **Tauri**: `tauriBridge.ts` без моков — живой `fetch()` к `ota-manifest.json`, семантическое сравнение версий и потоковая загрузка `.ndota`.
-   - **UI**: `UpdateModal.tsx` динамически отображает и скачивает реальные `.ndota` пакеты.
-5. **Отказоустойчивость CI/CD (CI Pipeline Resilience)**:
-   - Изоляция матричных сборок `build-lite-gui` (сбои/задержки очередей macOS больше не блокируют Windows и Linux).
-   - `publish-release` оснащен отказоустойчивым шлюзом (`if: always() && ...`), проверками наличия артефактов и динамической генерацией таблицы релизных заметок.
-
-
-## Микро-обновление v2.0.8 и сквозная верификация OTA:
-- **Electron**: заголовок окна `⚡ NanoDecompiler v2.0.8 [Electron Glass]`, отказоустойчивый опрос манифеста и метод `ota:platformInfo`.
-- **Tauri**: заголовок окна `⚡ NanoDecompiler v2.0.8 [Tauri Native]`, мост `tauriBridge.ts` с резервным адресом релизного манифеста.
-- **Android**: шапка `⚡ NanoDecompiler v2.0.8`, бейдж `Kotlin FastScan • OTA v2.0.8 Live` и синхронизация WebView чанков.
-- **WebUI & StatusBar**: статус-бар с бейджем `⚡ OTA v2.0.8` и прямая загрузка пакетов `.ndota`.
-
-## 5 Мега-Галактических Инноваций движка:
-1. **NanoNeural Semantic Source Reconstructor (`semantic_reconstructor.cpp`, `semantic_reconstructor.hpp`)**:
-   - Контекстно-энтропийный анализ потока вызовов, семантическое восстановление параметров (`Player player`, `Location targetLocation`, `CommandSender sender`).
-2. **Holographic Reactive Dependency Graph & Exploit Vector Matrix (`dependency_graph.cpp`, `HolographicGraphModal.tsx`)**:
-   - Экспорт топологии плагина в JSON (`--export-graph`) с 6 архитектурными слоями и тепловой картой эксплойтов.
-3. **Adaptive Hardware-Aware Swarm & Bytecode Deduplication Engine (`decomp_cache.cpp`, `decomp_cache.hpp`)**:
-   - Локальный swarm без сторонних установок, персистентный SHA-256 кеш байткода.
-4. **Universal Paper/Folia Live Transpiler & Auto-Shim (`rejar_folia.cpp`, `rejar_folia.hpp`)**:
-   - Портирование Bukkit-плагинов под многопоточную Folia 1.21.4 в один шаг: `--port-folia`.
-5. **Deep Memory Zero-Day Vulnerability Hunter & Bytecode Fuzzing Harness (`fuzzing_harness.cpp`, `fuzzing_harness.hpp`)**:
-   - Символьный фаззер уязвимостей дюпов инвентаря и авто-вакцинация байткода (`--immunize`).
+   - In-app обновление на Android через нативный `PackageInstaller`, горячая подмена интерфейса в Electron и Tauri на лету.
+5. **Отказоустойчивость CI/CD**:
+   - Защита от таймаутов очередей раннеров macOS, изолированные сборки Lite, гарантированная публикация релизов.

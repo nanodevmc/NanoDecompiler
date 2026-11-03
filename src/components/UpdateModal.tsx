@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Check, Download, FileText, Loader2, RefreshCw, Sparkles, Terminal, X } from "lucide-react";
 import { useEngine } from "../state/engine";
 import { Kbd } from "./ui";
 import { cn } from "../utils/cn";
 import { ChangelogView } from "./ChangelogView";
-import { formatVersionsDisplay } from "../lib/model";
+import { formatVersionsDisplay, fmtBytes } from "../lib/model";
+import { DEFAULT_APP_VERSION } from "../lib/constants";
 import { ENGINE_MICRO_MODULES, EngineMicroModule } from "../lib/engineOta";
 
 export function UpdateModal() {
@@ -113,8 +114,8 @@ export function UpdateModal() {
                   {downloadProgress && (
                     <div className="flex justify-between text-[11px] font-mono text-faint">
                       <span>
-                        {(downloadProgress.downloaded / (1024 * 1024)).toFixed(1)} MB
-                        {downloadProgress.total ? ` / ${(downloadProgress.total / (1024 * 1024)).toFixed(1)} MB` : ""}
+                        {fmtBytes(downloadProgress.downloaded, 1, "en")}
+                        {downloadProgress.total ? ` / ${fmtBytes(downloadProgress.total, 1, "en")}` : ""}
                       </span>
                       {downloadProgress.percent !== null && <span>{downloadProgress.percent}%</span>}
                     </div>
@@ -168,8 +169,8 @@ export function UpdateModal() {
                   {downloadProgress && (
                     <div className="flex justify-between text-[11px] font-mono text-faint">
                       <span>
-                        {(downloadProgress.downloaded / (1024 * 1024)).toFixed(1)} MB
-                        {downloadProgress.total ? ` / ${(downloadProgress.total / (1024 * 1024)).toFixed(1)} MB` : ""}
+                        {fmtBytes(downloadProgress.downloaded, 1, "en")}
+                        {downloadProgress.total ? ` / ${fmtBytes(downloadProgress.total, 1, "en")}` : ""}
                       </span>
                       {downloadProgress.percent !== null && <span>{downloadProgress.percent}% завершено</span>}
                     </div>
@@ -349,6 +350,40 @@ function OtaModulesSection() {
 
   const pendingModules = modules.filter(m => m.status !== "up_to_date");
   const allUpToDate = pendingModules.length === 0;
+
+  useEffect(() => {
+    let active = true;
+    const fetchLiveModules = async () => {
+      try {
+        if (!window.nano?.otaFetchManifest) return;
+        const manifest = await window.nano.otaFetchManifest();
+        if (!manifest || !active) return;
+        const pkgs = manifest.otaPackages || manifest.guiModules;
+        if (pkgs && typeof pkgs === "object") {
+          const labels: Record<string, string> = {
+            gui_webui: "WebUI & SPA фронтенд модуль",
+            gui_electron: "Electron Desktop ядро и Preload",
+            gui_android: "Android Mobile WebView ассеты",
+            gui_lite: "C# Avalonia Lite XAML темы и иконки",
+          };
+          const loaded: GuiModuleItem[] = Object.entries(pkgs).map(([id, p]: [string, any]) => ({
+            id,
+            name: p.name || `${id}.ndota`,
+            label: labels[id] || p.name || id,
+            version: p.version || manifest.manifestVersion || DEFAULT_APP_VERSION,
+            localVersion: DEFAULT_APP_VERSION,
+            status: "up_to_date" as const,
+            size: p.sizeBytes ? fmtBytes(p.sizeBytes, 1, "en") : "200 KB",
+          }));
+          if (loaded.length > 0) {
+            setModules(loaded);
+          }
+        }
+      } catch {}
+    };
+    fetchLiveModules();
+    return () => { active = false; };
+  }, []);
 
   const handleDownloadModule = async (modId: string) => {
     setSyncingModule(modId);

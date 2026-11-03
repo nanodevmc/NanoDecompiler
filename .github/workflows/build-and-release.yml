@@ -497,6 +497,9 @@ jobs:
           $jsonNeo = $jsonNeoLine | ConvertFrom-Json
           if ($jsonNeo.status -ne "ok") { throw "ClApi: NeoBuyer --json-output вернул status=$($jsonNeo.status), reason=$($jsonNeo.reason)" }
 
+      - name: Запуск 15 тестов декомпилятора на стрессоустойчивость (Windows)
+        run: python scripts/run_stress_test_suite.py --bin .\NanoDecompilerClApi.exe
+
       - uses: actions/upload-artifact@v4
         with:
           name: clapi-artifacts-windows
@@ -559,6 +562,9 @@ jobs:
           echo "$JSON" | grep -q '"status":"ok"' || { echo "ClApi: --json-output вернул: $JSON"; exit 1; }
           JSON_NEO=$(./NanoDecompilerClApi test_jars/NeoBuyer.jar out_check_cli_neobuyer --json-output --no-legitimacy-check)
           echo "$JSON_NEO" | grep -q '"status":"ok"' || { echo "ClApi Linux: NeoBuyer вернул: $JSON_NEO"; exit 1; }
+
+      - name: Запуск 15 тестов декомпилятора на стрессоустойчивость (Linux)
+        run: python3 scripts/run_stress_test_suite.py --bin ./NanoDecompilerClApi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -624,6 +630,9 @@ jobs:
           echo "=== 3. Декомпиляция NeoBuyer (--json-output) ==="
           JSON_NEO=$(./NanoDecompilerClApi test_jars/NeoBuyer.jar out_check_cli_neobuyer_json --json-output --no-legitimacy-check)
           echo "$JSON_NEO" | grep -q '"status":"ok"' || { echo "ClApi macOS: NeoBuyer вернул: $JSON_NEO"; exit 1; }
+
+      - name: Запуск 15 тестов декомпилятора на стрессоустойчивость (macOS)
+        run: python3 scripts/run_stress_test_suite.py --bin ./NanoDecompilerClApi
 
       - uses: actions/upload-artifact@v4
         with:
